@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Certificado de Presença</title>
+    <style>
+        @page {
+            size: A4 landscape; /* Define a página como A4 deitado */
+            margin: 1cm;
+        }
+        body {
+            font-family: sans-serif;
+            text-align: center;
+            border: 10px solid #0bbbef;
+            padding: 2cm;
+            height: 100%;
+            box-sizing: border-box;
+        }
+        h1 {
+            font-size: 48px;
+            color: #213A8F;
+            margin-bottom: 50px;
+        }
+        p {
+            font-size: 20px;
+            line-height: 1.6;
+        }
+        .nome-participante {
+            font-size: 32px;
+            font-weight: bold;
+            color: #213a8f;
+            margin: 40px 0;
+            border-bottom: 2px solid #ccc;
+            display: inline-block;
+            padding-bottom: 10px;
+        }
+        .nome-evento {
+            font-weight: bold;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 40px;
+        }
+        .header img {
+            max-height: 80px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <img src="{{ logo_url }}" alt="Logo">
+        <img src="{{ brasao_url }}" alt="Brasão">
+    </div>
+    
+    <h1>CERTIFICADO DE PRESENÇA</h1>
+    
+    <p>
+        Certificamos que
+    </p>
+
+    <p class="nome-participante">
+        {{ nome_completo }}
+    </p>
+    
+    <p>
+        participou do evento <strong class="nome-evento">"{{ nome_evento }}"</strong>,
+        realizado em {{ data_evento }}.
+    </p>
+
+</body>
+</html>

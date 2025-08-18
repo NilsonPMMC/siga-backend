@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Ficha de Atendimento - {{ atendimento.protocolo }}</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 1cm;
+            @bottom-center {
+                content: "Página " counter(page) " de " counter(pages);
+                font-family: 'Helvetica', 'Arial', sans-serif; font-size: 9pt; color: #888;
+            }
+        }
+        body { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 11pt; color: #333; }
+        .header { text-align: center; margin-bottom: 20px; display: flex; justify-content: space-between; }
+        .header-container { text-align: center; margin-bottom: 30px; border-bottom: 1px solid #ccc; padding-bottom: 15px; }
+        .logo { height: 40px; }
+        .footer-logo { height: 20px; }
+        h1, h2, h3 { color: #2c3e50; }
+        h1 { font-size: 18pt; margin: 0; }
+        .section { margin-bottom: 15px; }
+        .section-title {
+            font-size: 13pt;
+            font-weight: bold;
+            color: #2c3e50;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eaeaea;
+            margin-bottom: 10px;
+        }
+        .info-grid {
+            background-color: #f9f9f9;
+            border: 1px solid #eee;
+            border-radius: 5px;
+            padding: 15px;
+        }
+        .info-grid p { margin: 0 0 8px 0; }
+        .timeline-item {
+            margin-bottom: 15px;
+            padding-left: 15px;
+            border-left: 3px solid #e0e0e0;
+        }
+        .timeline-item p { margin: 0 0 5px 0; }
+        .timeline-item small { color: #555; font-style: italic; }
+        ul { padding-left: 20px; list-style-type: square; }
+        li { margin-bottom: 5px; }
+        .footer { position: absolute; bottom: 0; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        {% if brasao_url %}
+            <img src="{{ brasao_url }}" alt="Brasão da Instituição" class="logo">
+        {% endif %}
+        {% if logo_conta_url %}
+            <img src="{{ logo_conta_url }}" alt="Logo da Conta" class="logo">
+        {% endif %}
+    </div>
+
+    <div class="header-container">
+        <h1 style="margin-top: 10px;">FICHA DE ATENDIMENTO</h1>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">PROTOCOLO {{ atendimento.protocolo }}</h3>
+        <div class="info-grid">
+            <p><strong>Assunto:</strong> {{ atendimento.titulo }}</p>
+            <p><strong>Status:</strong> {{ atendimento.get_status_display }}</p>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">Detalhes do Solicitante</h3>
+        <div class="info-grid">
+            <p><strong>Munícipe:</strong> {{ atendimento.municipe.nome_completo }}</p>
+            <p>
+                <strong>Telefone(s):</strong>
+                {% if atendimento.municipe.telefones %}
+                    {% for telefone in atendimento.municipe.telefones %}
+                        {{ telefone.numero }} ({{ telefone.tipo|capfirst }}){% if not forloop.last %}, {% endif %}
+                    {% endfor %}
+                {% else %}
+                    Não informado
+                {% endif %}
+            </p>
+            <p><strong>Gabinete de Destino:</strong> {{ atendimento.conta.nome }}</p>
+            <p><strong>Responsável Designado:</strong> {% if atendimento.responsavel %}{{ atendimento.responsavel.get_full_name|default:atendimento.responsavel.username }}{% else %}N/A{% endif %}</p>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">Descrição Completa</h3>
+        <p style="white-space: pre-wrap;">{{ atendimento.descricao }}</p>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">Histórico de Tramitações</h3>
+        <div class="timeline">
+            {% for tramitacao in atendimento.tramitacoes.all %}
+                <div class="timeline-item">
+                    <p>{{ tramitacao.despacho }}</p>
+                    <small>Por: {{ tramitacao.usuario.get_full_name|default:tramitacao.usuario.username }} em {{ tramitacao.data_tramitacao|date:"d/m/Y H:i" }}</small>
+                </div>
+            {% empty %}
+                <p>Nenhuma tramitação registrada.</p>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">Anexos</h3>
+        {% if atendimento.anexos.all %}
+            <ul>
+            {% for anexo in atendimento.anexos.all %}
+                <li>{{ anexo.arquivo.name|cut:"anexos/"|cut:"YYYY/MM/DD/" }}</li>
+            {% endfor %}
+            </ul>
+        {% else %}
+            <p>Nenhum anexo encontrado.</p>
+        {% endif %}
+    </div>
+
+    <div class="footer">
+        <p>{{ nome_instituicao }}</p>
+        <img src="{{ logo_siga_url }}" alt="Logo SIGA" class="footer-logo">
+    </div>
+
+</body>
+</html>

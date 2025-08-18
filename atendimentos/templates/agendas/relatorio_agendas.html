@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório de Solicitações de Agenda</title>
+    <style>
+        @page {
+            size: A4 landscape; /* Orientação paisagem */
+            margin: 1cm;
+            @bottom-center {
+                content: "Página " counter(page) " de " counter(pages);
+                font-family: 'Helvetica', 'Arial', sans-serif; font-size: 9pt; color: #888;
+            }
+        }
+        body { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 10pt; }
+        .header { text-align: center; margin-bottom: 20px; display: flex; justify-content: space-between; }
+        .logo { height: 40px; }
+        h1 { text-align: center; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .footer { position: absolute; bottom: 0; margin-top: 20px; }
+        .footer-logo { height: 20px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        {% if brasao_url %}
+            <img src="{{ brasao_url }}" alt="Brasão da Instituição" class="logo">
+        {% else %}
+            <div></div>
+        {% endif %}
+    
+        {% if logo_conta_url %}
+            <img src="{{ logo_conta_url }}" alt="Logo da Conta" class="logo">
+        {% endif %}
+    </div>
+
+    <h1>Relatório de Solicitações de Agenda</h1>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Data Solicitação</th>
+                <th>Solicitante</th>
+                <th>Cargo/Órgão</th>
+                <th>Pauta (Assunto)</th>
+                <th>Contato (Telefone)</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for solicitacao in solicitacoes %}
+            <tr>
+                <td>{{ solicitacao.data_criacao|date:"d/m/Y" }}</td>
+                <td>{{ solicitacao.solicitante.nome_completo|default:"" }}</td>
+                <td>{{ solicitacao.solicitante.cargo_orgao|default:"" }}</td>
+                <td>{{ solicitacao.assunto }}</td>
+                <td>
+                    {% if solicitacao.solicitante.telefones %}
+                        {{ solicitacao.solicitante.telefones.0.numero|default:"" }}
+                    {% endif %}
+                </td>
+                <td>{{ solicitacao.get_status_display }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" style="text-align:center;">Nenhuma solicitação encontrada para os filtros aplicados.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="footer">
+        <p style="margin: 0; font-size: 8pt; color: #555;">{{ nome_instituicao }}</p>
+        <img src="{{ logo_siga_url }}" alt="Logo SIGA" class="footer-logo">
+    </div>
+
+</body>
+</html>

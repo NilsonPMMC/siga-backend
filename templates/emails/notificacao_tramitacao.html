@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Atualização do seu Atendimento</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: sans-serif; background-color: #f4f4f4;">
+    <table width="100%" border="0" cellpadding="0" cellspacing="0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table width="600" border="0" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px;">
+                    <tr>
+                        <td align="center" style="padding: 20px;">
+                            {% if logo_conta_url %}
+                                <img src="{{ logo_conta_url }}" alt="Logo da Secretaria/Gabinete" style="max-height: 60px;">
+                            {% else %}
+                                {% if brasao_url %}
+                                    <img src="{{ brasao_url }}" alt="Brasão da Instituição" style="max-height: 60px;">
+                                {% endif %}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 20px 30px;">
+                            <h2 style="color: #333;">Atualização sobre seu Atendimento</h2>
+                            <p><strong>Protocolo:</strong> {{ protocolo }}</p>
+                            <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+                            <p style="color: #555; line-height: 1.5;">
+                                Prezado(a) {{ nome_municipe }},<br><br>
+                                Houve um novo andamento no seu atendimento referente a <strong>"{{ titulo }}"</strong>:
+                            </p>
+                            <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0; white-space: pre-wrap;">{{ despacho }}</div>
+                        </td>
+                    </tr>
+                     <tr>
+                        <td align="center" style="padding: 20px; font-size: 12px; color: #888;">
+                            {% if brasao_url %}
+                                <img src="{{ brasao_url }}" alt="Brasão da Instituição" style="max-height: 40px; margin-bottom: 5px;">
+                            {% endif %}
+                            <p>Este é um e-mail automático. Por favor, não responda.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

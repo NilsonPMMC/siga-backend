@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Suas Credenciais de Acesso ao SIGA</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: sans-serif; background-color: #f4f4f4;">
+    <table width="100%" border="0" cellpadding="0" cellspacing="0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table width="600" border="0" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                    <tr>
+                        <td align="center" style="padding: 20px;">
+                            <img src="https://gabinete.mogidascruzes.sp.gov.br/static/images/logo-siga-gab.png" alt="Logo SIGA Gabinete" style="height: 60px;">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 20px 30px;">
+                            <h2 style="color: #333;">Bem-vindo(a) ao SIGA Gabinete!</h2>
+                            <p style="color: #555; line-height: 1.5;">
+                                Olá, {{ nome_usuario }},<br><br>
+                                Sua conta de acesso para o Sistema Integrado de Gestão de Atendimentos (SIGA) foi criada. Utilize as credenciais abaixo para seu primeiro acesso.
+                            </p>
+                            <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                                <p><strong>Usuário:</strong> {{ username }}</p>
+                                <p><strong>Senha Provisória:</strong> {{ senha_provisoria }}</p>
+                            </div>
+                            <p style="color: #555; line-height: 1.5; font-weight: bold;">
+                                Por segurança, é fundamental que você altere esta senha provisória assim que realizar o seu primeiro login no sistema.
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td align="center" style="padding: 20px 30px;">
+                            <a href="{{ link_sistema }}" target="_blank" style="background-color: #007bff; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">
+                                Acessar o Sistema
+                            </a>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td align="center" style="padding: 20px; font-size: 12px; color: #888;">
+                            <p>Este é um e-mail automático gerado pelo SIGA - Gabinete.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

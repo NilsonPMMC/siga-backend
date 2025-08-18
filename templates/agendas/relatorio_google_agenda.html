@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório de Agenda Google</title>
+    <style>
+        @page {
+            size: A4 landscape;
+            margin: 20px;
+        }
+        body {
+            font-family: sans-serif;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        tr {
+            page-break-inside: avoid !important;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 4px;
+            vertical-align: top;
+        }
+        th {
+            background: #eee;
+            font-size: 7pt;
+            text-align: center;
+            font-weight: bold;
+            padding: 3px;
+        }
+        
+        /* --- CSS CORRIGIDO E SIMPLIFICADO --- */
+
+        /* Regra principal para dias passados. Afeta TUDO dentro do <td>. */
+        td.dia-passado {
+            color: #888;
+            font-style: italic;
+        }
+
+        td.fim-de-semana { background: #f4e3d7; }
+        td.hoje { background: #fffae6; }
+        
+        .titulo-mes {
+            text-align: center;
+            background: #222;
+            color: #fff;
+            padding: 5px;
+            font-size: 13pt;
+            font-weight: bold;
+        }
+
+        .dia-numero {
+            font-size: 12pt;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+        
+        /* Esta regra garante que o número do dia passado não fique em itálico */
+        td.dia-passado .dia-numero {
+            font-style: normal;
+        }
+
+        .dia-numero.passado { color: #999; }
+        .dia-numero.futuro { color: #cc0000; }
+        .dia-numero.hoje-texto { color: #cc0000; }
+        .outro-mes .dia-numero { color: #ccc; }
+
+        .evento-item {
+            font-size: 7pt; /* Fonte dos eventos ligeiramente diminuída */
+            line-height: 1.1;
+            margin-bottom: 15px;
+            word-wrap: break-word;
+        }
+        
+        /* Esta regra SOBRESCREVE o estilo itálico/cinza APENAS para eventos futuros "A definir" */
+        .evento-item.futuro-a-definir {
+            color: #cc0000;
+            font-weight: bold;
+            font-style: normal; /* Garante que não fique em itálico */
+        }
+        .page-break { page-break-before: always; }
+
+    </style>
+</head>
+<body>
+    {% for mes_data in meses_do_relatorio %}
+        <div class="month-container {% if not forloop.first %}page-break{% endif %}">            
+            <table>
+                <thead>
+                    <tr>
+                        <th colspan="7" class="titulo-mes">
+                            Relatório de Agenda - {{ mes_data.nome_mes }}
+                        </th>
+                    </tr>
+                    <tr><th>Seg</th><th>Ter</th><th>Qua</th><th>Qui</th><th>Sex</th><th>Sáb</th><th>Dom</th></tr>
+                </thead>
+                <tbody>
+                    {% for semana in mes_data.semanas %}
+                    <tr>
+                        {% for dia_data in semana %}
+                            {% with mes_atual=mes_data.mes_numero %}
+                                <td class="
+                                    {% if dia_data.data < hoje %}dia-passado{% endif %}
+                                    {% if dia_data.data == hoje %}hoje{% endif %}
+                                    {% if dia_data.data.isoweekday == 6 or dia_data.data.isoweekday == 7 %}fim-de-semana{% endif %}
+                                    {% if dia_data.data.month != mes_atual %}outro-mes{% endif %}
+                                ">
+                                    <div class="dia-numero 
+                                        {% if dia_data.data < hoje %}passado{% endif %}
+                                        {% if dia_data.data > hoje %}futuro{% endif %}
+                                        {% if dia_data.data == hoje %}hoje-texto{% endif %}
+                                    ">
+                                        {{ dia_data.data.day }}
+                                    </div>
+
+                                    {% for evento_item in dia_data.eventos %}
+                                        <div class="evento-item
+                                            {% if dia_data.data >= hoje and '(a definir)' in evento_item.summary|lower %}
+                                                futuro-a-definir
+                                            {% endif %}
+                                        ">
+                                            <b><u>{{ evento_item.start.dateTime|date:"H:i" }}</u> - {{ evento_item.summary }}</b>
+                                        </div>
+                                    {% endfor %}
+                                </td>
+                            {% endwith %}
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% endfor %}
+</body>
+</html>

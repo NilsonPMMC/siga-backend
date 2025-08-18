@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ assunto }}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: sans-serif; background-color: #f4f4f4;">
+    <table width="100%" border="0" cellpadding="0" cellspacing="0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table width="600" border="0" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                    <tr>
+                        <td align="center" style="padding: 20px;">
+                            <img src="https://gabinete.mogidascruzes.sp.gov.br/static/images/logo-siga-gab.png" alt="Logo Prefeitura" style="height: 60px;">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 20px 30px;">
+                            <h2 style="color: #333;">Novo Atendimento Atribuído</h2>
+                            <p style="color: #555; line-height: 1.5;">
+                                Olá, {{ nome_responsavel }},<br><br>
+                                Um novo atendimento foi direcionado para sua responsabilidade no sistema SIGA.
+                            </p>
+                            <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                                <p><strong>Protocolo:</strong> {{ protocolo }}</p>
+                                <p><strong>Título:</strong> {{ titulo }}</p>
+                                <p><strong>Munícipe:</strong> {{ nome_municipe }}</p>
+                            </div>
+                            <p style="color: #555; line-height: 1.5;">
+                                Por favor, acesse o sistema para ver mais detalhes e dar o devido andamento.
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td align="center" style="padding: 20px 30px;">
+                            <a href="{{ link_atendimento }}" target="_blank" style="background-color: #007bff; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">
+                                Ver Atendimento
+                            </a>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td align="center" style="padding: 20px; font-size: 12px; color: #888;">
+                            <p>Este é um e-mail automático gerado pelo SIGA - Gabinete.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

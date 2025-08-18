@@ -1,0 +1,17 @@
+# Arquivos de Ambiente Virtual
+venv/
+
+# Arquivos compilados do Python
+*.pyc
+__pycache__/
+
+# Segredos
+credentials.json
+token.json
+.env
+
+# Arquivos de Mídia e Logs
+/media/
+/siga_uploads/
+logs/
+*.log

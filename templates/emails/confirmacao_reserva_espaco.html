@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Sua Reserva de Espaço foi Confirmada</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: sans-serif; background-color: #f4f4f4;">
+    <table width="100%" border="0" cellpadding="0" cellspacing="0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table width="600" border="0" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                    <tr>
+                        <td align="center" style="padding: 20px;">
+                            {% if logo_conta_url %}
+                                <img src="{{ logo_conta_url }}" alt="Logo da Secretaria/Gabinete" style="max-height: 60px;">
+                            {% else %}
+                                {% if brasao_url %}
+                                    <img src="{{ brasao_url }}" alt="Brasão da Instituição" style="max-height: 60px;">
+                                {% endif %}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 20px 30px;">
+                            <h2 style="color: #333;">Reserva de Espaço Confirmada!</h2>
+                            <p style="color: #555; line-height: 1.5;">
+                                Olá, {{ nome_solicitante }},<br><br>
+                                Confirmamos a sua reserva de espaço para a reunião/evento detalhado abaixo.
+                            </p>
+                            <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                                <p><strong>Assunto:</strong> {{ assunto }}</p>
+                                <p><strong>Espaço Reservado:</strong> {{ nome_espaco }}</p>
+                                <p><strong>Início:</strong> {{ data_agendada }}</p>
+                                <p><strong>Término:</strong> {{ data_agendada_fim }}</p>
+                            </div>
+                            <p style="color: #555; line-height: 1.5;">
+                                Caso precise cancelar ou reagendar, por favor, entre em contato com a administração do gabinete.
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td align="center" style="padding: 20px; font-size: 12px; color: #888;">
+                            {% if brasao_url %}
+                                <img src="{{ brasao_url }}" alt="Brasão da Instituição" style="max-height: 40px; margin-bottom: 5px;">
+                            {% endif %}
+                            <p>Este é um e-mail automático gerado pelo SIGA - Gabinete.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
