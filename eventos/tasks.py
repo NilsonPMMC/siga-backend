@@ -20,12 +20,16 @@ def enviar_comunicacao_em_massa(comunicacao_id):
     falhas = 0
 
     for destinatario in destinatarios:
-        email_municipe = None
-        if destinatario.municipe.emails:
-            principal = next((e['email'] for e in destinatario.municipe.emails if e.get('tipo') == 'principal'), None)
-            email_municipe = principal or destinatario.municipe.emails[0].get('email')
+        # 1. Inicializa uma lista vazia para armazenar todos os e-mails do munícipe.
+        lista_emails = []
+        
+        # 2. Verifica se o campo 'emails' existe e é uma lista.
+        if destinatario.municipe.emails and isinstance(destinatario.municipe.emails, list):
+            # 3. Itera sobre a lista de dicionários de e-mail e extrai cada endereço válido.
+            lista_emails = [e['email'] for e in destinatario.municipe.emails if e.get('email')]
 
-        if not email_municipe:
+        # Se, após a verificação, a lista de e-mails estiver vazia, registra a falha.
+        if not lista_emails:
             LogDeEnvio.objects.create(
                 comunicacao=comunicacao,
                 destinatario=destinatario,
@@ -36,16 +40,16 @@ def enviar_comunicacao_em_massa(comunicacao_id):
             continue
 
         try:
-            # A lógica de personalização, anexos e envio continua a mesma
             corpo_html_personalizado = comunicacao.descricao.replace('{{ nome_completo }}', destinatario.municipe.nome_completo)
             
             if comunicacao.arte:
                 corpo_html_personalizado += f'<br><br><img src="cid:arte_comunicacao" style="max-width: 600px;">'
 
+            # 4. O campo 'to' agora recebe a lista completa de e-mails.
             email = EmailMultiAlternatives(
                 subject=comunicacao.titulo,
                 body=corpo_html_personalizado,
-                to=[email_municipe]
+                to=lista_emails
             )
             email.attach_alternative(corpo_html_personalizado, "text/html")
 

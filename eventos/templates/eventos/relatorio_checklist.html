@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório de Checklist do Evento</title>
+    <style>
+        @page {
+            size: A4 portrait; /* Retrato é melhor para esta lista */
+            margin: 1.5cm;
+        }
+        body {
+            font-family: 'Helvetica', sans-serif;
+            color: #333;
+            font-size: 12px;
+        }
+        .header {
+            display: flex;
+            align-items: flex-start;
+            border-bottom: 2px solid #ddd;
+            padding-bottom: 15px;
+            margin-bottom: 25px;
+        }
+        .header img {
+            height: 40px;
+        }
+        .header .title-section {
+            text-align: center;
+            flex-grow: 1;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 22px;
+        }
+        .footer {
+            position: fixed;
+            bottom: -0.5cm;
+            left: 0;
+            right: 0;
+            text-align: right;
+            font-size: 10px;
+            color: #777;
+        }
+        .event-details h2 {
+            font-size: 18px;
+            margin-top: 0;
+            margin-bottom: 5px;
+        }
+        .event-details p {
+            margin: 4px 0;
+            font-size: 11px;
+            color: #555;
+        }
+        .checklist-items {
+            margin-top: 25px;
+        }
+        .checklist-items h3 {
+            font-size: 16px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+            margin-bottom: 15px;
+        }
+        .item {
+            margin-bottom: 12px;
+            padding-left: 10px;
+        }
+        .item-name {
+            font-weight: bold;
+        }
+        .item-obs {
+            font-style: italic;
+            color: #666;
+            padding-left: 25px; /* Indentação para as observações */
+            display: block; /* Garante que a observação fique abaixo do nome */
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <img src="{{ logo_url }}" alt="Logo SIGA">
+        <div class="title-section">
+            <h1>Relatório de Checklist do Evento</h1>
+        </div>
+    </div>
+
+    <div class="footer">
+        Relatório emitido em {{ data_emissao|date:"d/m/Y H:i" }}
+    </div>
+
+    <main>
+        <div class="event-details">
+            <h2>{{ checklist.evento.nome }}</h2>
+            <p><strong>Data:</strong> {{ checklist.evento.data_evento|date:"d/m/Y 'às' H:i" }}</p>
+            <p><strong>Local:</strong> {{ checklist.evento.local }}</p>
+            {% if checklist.token_usado and checklist.nome_responsavel %}
+                <p><strong>Preenchido por:</strong> {{ checklist.nome_responsavel }} em {{ checklist.data_envio|date:"d/m/Y" }}</p>
+            {% else %}
+                <p><strong>Status:</strong> Checklist ainda não preenchido externamente.</p>
+            {% endif %}
+        </div>
+
+        <div class="checklist-items">
+            <h3>Itens Selecionados no Checklist</h3>
+            {% if itens_status %}
+                {% for item in itens_status %}
+                    <div class="item">
+                        <span class="item-name">✓ {{ item.item_mestre.nome }}</span>
+                        {% if item.observacoes %}
+                            <span class="item-obs">{{ item.observacoes }}</span>
+                        {% else %}
+                            <span class="item-obs">(Sem informações adicionais)</span>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>Nenhum item foi selecionado para este checklist.</p>
+            {% endif %}
+        </div>
+    </main>
+
+</body>
+</html>

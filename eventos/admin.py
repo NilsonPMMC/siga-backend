@@ -11,7 +11,8 @@ from .models import (
     EventoChecklist, 
     EventoChecklistItemStatus,
     Comunicacao,
-    Destinatario
+    Destinatario,
+    MailingList
 )
 
 # -----------------------------------------------------------------------------
@@ -99,16 +100,15 @@ class ChecklistItemAdmin(admin.ModelAdmin):
 
 @admin.register(EventoChecklist)
 class EventoChecklistAdmin(admin.ModelAdmin):
-    list_display = ('evento', 'nome_responsavel', 'token_usado', 'data_envio')
-    readonly_fields = ('evento', 'token', 'nome_responsavel', 'token_usado', 'data_envio', 'link_de_preenchimento')
+    list_display = ('evento', 'nome_responsavel', 'token_usado', 'data_envio', 'link_publico')
+    readonly_fields = ('evento', 'token', 'nome_responsavel', 'token_usado', 'data_envio', 'link_publico')
     inlines = [EventoChecklistItemStatusInline]
     
-    def link_de_preenchimento(self, obj):
-        if not obj.pk:
-            return "Salve primeiro para gerar o link"
-        url = reverse('preencher_checklist', kwargs={'token': obj.token})
-        return format_html('<a href="{0}" target="_blank">Copiar Link</a>', url)
-    link_de_preenchimento.short_description = "Link para o Responsável"
+    def link_publico(self, obj):
+        base_url_frontend = "https://gabinete.mogidascruzes.sp.gov.br"
+        url_completa = f"{base_url_frontend}/public/checklist/{obj.token}"
+        return format_html('<a href="{0}" target="_blank">{0}</a>', url_completa)
+    link_publico.short_description = 'Link Público para o Formulário'
 
 
 @admin.register(ListaPresenca)
@@ -140,3 +140,17 @@ class DestinatarioAdmin(admin.ModelAdmin):
     search_fields = ('municipe__nome_completo', 'comunicacao__titulo')
     autocomplete_fields = ('municipe', 'comunicacao')
     list_filter = ('comunicacao__evento',)
+
+@admin.register(MailingList)
+class MailingListAdmin(admin.ModelAdmin):
+    list_display = ('nome', 'conta', 'total_municipes')
+    list_filter = ('conta',)
+    search_fields = ('nome',)
+    filter_horizontal = ('municipes',) # Facilita a seleção de múltiplos contatos
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related('municipes')
+
+    def total_municipes(self, obj):
+        return obj.municipes.count()
+    total_municipes.short_description = 'Nº de Contatos'

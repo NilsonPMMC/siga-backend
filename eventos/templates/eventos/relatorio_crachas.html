@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Crachás do Evento</title>
+    <style>
+        @page {
+            size: A4 landscape;
+            margin: 1cm; /* Margem para impressão */
+        }
+        body {
+            font-family: 'Helvetica', sans-serif;
+            font-size: 10px;
+            margin: 0;
+            padding: 0;
+        }
+        .page-break {
+            page-break-after: always;
+        }
+        .card-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-content: flex-start;
+            width: 100%;
+            height: 100%;
+        }
+        .card {
+            box-sizing: border-box;
+            width: 120mm;
+            height: 80mm;
+            border: 1px dashed #4b4b4b; /* Linha de corte */
+            padding: 5mm 10mm;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            text-align: center;
+            overflow: hidden;
+        }        
+        .card-content {
+            width: 100%;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .card-content .name {
+            font-size: 25px; /* Tamanho grande para o nome */
+            font-weight: bold;
+            margin-bottom: 5mm;
+            text-transform: uppercase;
+            word-break: break-word;
+            overflow-wrap: break-word;
+        }
+        .card-content .details {
+            font-size: 15px;
+            line-height: 1.4;
+            word-wrap: break-word; /* Também aplica quebra de linha aqui */
+            text-transform: uppercase;
+        }
+        .card-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            font-weight: bold;
+            color: #4A90E2;
+            text-align: right; /* Alinha "PROTOCOLO" à direita */
+        }
+        .card-footer .protocolo{
+            font-size: 11px;
+            font-weight: bold;
+            color: #4A90E2;
+        }
+        .card-footer .logo img {
+            max-width: 100px;
+            max-height: 40px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="card-container">
+        {% for convidado in convidados %}
+            <div class="card">
+                <div class="card-content">
+                    <div class="name">
+                        {{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}
+                    </div>
+                    <div class="details">
+                        {% if convidado.municipe.cargo %}
+                            <strong>{{ convidado.municipe.cargo }}</strong><br>
+                        {% endif %}
+                        {% if convidado.municipe.orgao %}
+                            <span>{{ convidado.municipe.orgao }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <div class="logo">
+                        {% if brasao_url %}<img src="{{ brasao_url }}" alt="Brasão">{% endif %}
+                    </div>
+                    <div class="protocolo">
+                        PROTOCOLO
+                    </div>
+                </div>
+            </div>
+            {% if forloop.counter|divisibleby:4 and not forloop.last %}
+                </div><div class="page-break"></div><div class="card-container">
+            {% endif %}
+        {% endfor %}
+    </div>
+
+</body>
+</html>

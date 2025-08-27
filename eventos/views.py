@@ -1,19 +1,24 @@
 # eventos/views.py
-import datetime
+import uuid
+from datetime import datetime, time
 from openpyxl import Workbook
+from weasyprint import HTML
 from django.http import HttpResponse
-from django.db.models import Q 
+from django.db.models import Q
 from django.shortcuts import render, get_object_or_404, redirect
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
+from django.contrib.staticfiles import finders
+from django.template.loader import render_to_string
 from rest_framework.views import APIView
 from rest_framework import viewsets, permissions, serializers, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import Evento, ListaPresenca, EventoChecklist, Convidado, Comunicacao, Destinatario, LogDeEnvio 
+from .relatorios import gerar_pdf_checklist, gerar_pdf_eventos_periodo
+from .models import Evento, ListaPresenca, EventoChecklist, Convidado, Comunicacao, Destinatario, LogDeEnvio, EventoChecklistItemStatus, ChecklistItem, MailingList, Municipe
 from atendimentos.models import Municipe, CategoriaContato 
 from .forms import ListaPresencaForm
-from .serializers import EventoSerializer, ConvidadoSerializer, ComunicacaoSerializer, DestinatarioSerializer, LogDeEnvioSerializer, ListaPresencaSerializer, EventoChecklistSerializer 
+from .serializers import EventoSerializer, ConvidadoSerializer, ComunicacaoSerializer, DestinatarioSerializer, LogDeEnvioSerializer, ListaPresencaSerializer, EventoChecklistSerializer, EventoChecklistItemStatusSerializer, ChecklistItemSerializer, MailingListSerializer, MunicipeForConvidadoSerializer
 from .utils import gerar_e_enviar_certificado
 from .permissions import PodeGerenciarEventos
 from eventos.tasks import enviar_comunicacao_em_massa, gerar_e_enviar_certificado
@@ -136,6 +141,157 @@ class EventoViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=False, methods=['get'], url_path='gerar-relatorio-periodo')
+    def gerar_relatorio_periodo(self, request):
+        data_inicio_str = request.query_params.get('data_inicio')
+        data_fim_str = request.query_params.get('data_fim')
+
+        if not data_inicio_str or not data_fim_str:
+            return Response({'error': 'As datas de início e fim são obrigatórias.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            data_inicio = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+            data_fim = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Formato de data inválido. Use AAAA-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        start_datetime = datetime.combine(data_inicio, time.min)
+        end_datetime = datetime.combine(data_fim, time.max)
+        
+        # Filtra os eventos e ordena por data
+        queryset = self.get_queryset().filter(data_evento__range=[start_datetime, end_datetime]).order_by('data_evento')
+
+        # Contexto que será enviado para o template HTML
+        context = {
+            'eventos': queryset,
+            'data_inicio': data_inicio,
+            'data_fim': data_fim,
+            'data_emissao': timezone.now(),
+            'hoje': timezone.now(),
+            'logo_url': request.build_absolute_uri('/static/images/logo-siga-gab.png')
+        }
+        
+        # Renderiza o template HTML para uma string
+        html_string = render_to_string('eventos/relatorio_eventos.html', context)
+        
+        # Gera o PDF a partir do HTML
+        pdf_file = HTML(string=html_string).write_pdf()
+        
+        # Cria a resposta HTTP
+        response = HttpResponse(pdf_file, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="relatorio_eventos_{data_inicio_str}_a_{data_fim_str}.pdf"'
+        
+        return response
+
+    @action(detail=True, methods=['get'], url_path='relatorio-convidados-presentes')
+    def relatorio_convidados_presentes(self, request, pk=None):
+        """
+        Gera um relatório em PDF com a lista de TODOS os convidados do evento,
+        respeitando a ordem manual.
+        """
+        try:
+            evento = self.get_object()
+            
+            # CORREÇÃO: Remove o filtro de status='presente' para incluir todos os convidados.
+            todos_convidados = evento.convidados.filter(status='Presente').order_by('ordem')
+            
+            conta = evento.conta
+            logo_url = request.build_absolute_uri(conta.logo_conta.url) if conta.logo_conta else ''
+            brasao_url = request.build_absolute_uri(conta.brasao_instituicao.url) if conta.brasao_instituicao else ''
+
+            context = {
+                'evento': evento,
+                'convidados': todos_convidados,
+                'logo_url': logo_url,
+                'brasao_url': brasao_url,
+                'data_emissao': timezone.now(),
+            }
+
+            html_string = render_to_string('eventos/relatorio_convidados.html', context)
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+
+            response = HttpResponse(pdf_file, content_type='application/pdf')
+            # Ajuste no nome do arquivo para refletir o novo conteúdo
+            response['Content-Disposition'] = f'attachment; filename="relatorio_convidados_{evento.nome}.pdf"'
+            
+            return response
+        except Exception as e:
+            # Log do erro no servidor para facilitar a depuração
+            print(f"Erro ao gerar relatório de convidados: {e}")
+            return Response({'error': 'Ocorreu um erro interno ao gerar o relatório.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='relatorio-crachas')
+    def relatorio_crachas(self, request, pk=None):
+        """
+        Gera um PDF de crachás para uma lista de IDs de convidados selecionados.
+        """
+        convidado_ids = request.data.get('convidado_ids')
+
+        if not convidado_ids or not isinstance(convidado_ids, list):
+            return Response({'error': 'Uma lista de IDs de convidados é obrigatória.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            evento = self.get_object()
+            
+            # Busca os convidados selecionados, mantendo a ordem manual
+            convidados_selecionados = Convidado.objects.filter(id__in=convidado_ids, evento=evento).order_by('ordem')
+            
+            conta = evento.conta
+            logo_url = request.build_absolute_uri(conta.logo_conta.url) if conta.logo_conta else ''
+            brasao_url = request.build_absolute_uri(conta.brasao_instituicao.url) if conta.brasao_instituicao else ''
+            if request.is_secure():
+                logo_url = logo_url.replace('http://', 'https://')
+                brasao_url = brasao_url.replace('http://', 'https://')
+
+            context = {
+                'evento': evento,
+                'convidados': convidados_selecionados,
+                'logo_url': logo_url,
+                'brasao_url': brasao_url,
+            }
+
+            html_string = render_to_string('eventos/relatorio_crachas.html', context)
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+
+            response = HttpResponse(pdf_file, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="crachas_{evento.nome}.pdf"'
+            
+            return response
+        except Exception as e:
+            print(f"Erro ao gerar crachás: {e}")
+            return Response({'error': 'Ocorreu um erro interno ao gerar o relatório.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='relatorio-prismas')
+    def relatorio_prismas(self, request, pk=None):
+        """
+        Gera um PDF de prismas de mesa para uma lista de IDs de convidados selecionados.
+        """
+        convidado_ids = request.data.get('convidado_ids')
+
+        if not convidado_ids or not isinstance(convidado_ids, list):
+            return Response({'error': 'Uma lista de IDs de convidados é obrigatória.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            evento = self.get_object()
+            
+            convidados_selecionados = Convidado.objects.filter(id__in=convidado_ids, evento=evento).order_by('ordem')
+
+            context = {
+                'evento': evento,
+                'convidados': convidados_selecionados,
+            }
+
+            html_string = render_to_string('eventos/relatorio_prismas.html', context)
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+
+            response = HttpResponse(pdf_file, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="prismas_{evento.nome}.pdf"'
+            
+            return response
+        except Exception as e:
+            print(f"Erro ao gerar prismas: {e}")
+            return Response({'error': 'Ocorreu um erro interno ao gerar o relatório.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 def registrar_presenca(request, evento_id):
     evento = get_object_or_404(Evento, id=evento_id)
 
@@ -221,9 +377,10 @@ class ConvidadoViewSet(viewsets.ModelViewSet):
     - Filtra por evento: /api/convidados/?evento=1
     """
     serializer_class = ConvidadoSerializer
-    permission_classes = [PodeGerenciarEventos] # Usa a mesma permissão dos eventos
+    permission_classes = [PodeGerenciarEventos]
 
     def get_queryset(self):
+        # A ordenação agora é feita pelo 'ordering' no modelo, então o queryset já vem ordenado.
         usuario = self.request.user
         qs = Convidado.objects.none()
 
@@ -238,7 +395,55 @@ class ConvidadoViewSet(viewsets.ModelViewSet):
             return qs.filter(evento_id=evento_id)
         return qs.select_related('municipe')
 
-# ... (imports e outras ViewSets) ...
+    def perform_create(self, serializer):
+        # Define a ordem inicial do novo convidado
+        # Esta função agora funcionará porque 'models' foi importado.
+        evento_id = serializer.validated_data['evento'].id
+        maior_ordem = Convidado.objects.filter(evento_id=evento_id).aggregate(models.Max('ordem'))['ordem__max'] or 0
+        serializer.save(ordem=maior_ordem + 1)
+
+    @action(detail=False, methods=['post'], url_path='reorder')
+    def reorder(self, request):
+        """
+        Recebe uma lista de IDs de convidados na nova ordem e atualiza o campo 'ordem'.
+        """
+        ordered_ids = request.data.get('ordered_ids')
+        evento_id = request.query_params.get('evento')
+
+        if not ordered_ids or not evento_id:
+            return Response({'error': 'Lista de IDs e ID do evento são obrigatórios.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            for index, convidado_id in enumerate(ordered_ids):
+                Convidado.objects.filter(id=convidado_id, evento_id=evento_id).update(ordem=index)
+        
+        return Response({'status': 'Ordem dos convidados atualizada com sucesso.'})
+
+    @action(detail=True, methods=['post'], url_path='update-status')
+    def update_status(self, request, pk=None):
+        """
+        Atualiza o status de um convidado (ex: para 'presente').
+        """
+        try:
+            convidado = self.get_object()
+            novo_status = request.data.get('status')
+
+            # Valida se o status enviado é uma das opções válidas
+            status_choices = [choice[0] for choice in Convidado.STATUS_CHOICES]
+            if novo_status not in status_choices:
+                return Response({'error': f'Status inválido. Use um de: {status_choices}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            convidado.status = novo_status
+            # Atualiza a data do check-in se o status for 'presente'
+            if novo_status == 'presente' and not convidado.data_checkin:
+                convidado.data_checkin = timezone.now()
+            elif novo_status != 'presente':
+                convidado.data_checkin = None # Limpa a data se não estiver mais presente
+
+            convidado.save()
+            return Response({'status': 'Status atualizado com sucesso.'})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ComunicacaoViewSet(viewsets.ModelViewSet):
     serializer_class = ComunicacaoSerializer
@@ -316,6 +521,39 @@ class ComunicacaoViewSet(viewsets.ModelViewSet):
 
         return Response(
             {'status': f'{len(novos_destinatarios)} novo(s) destinatário(s) com e-mail foram adicionado(s).'},
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'], url_path='adicionar-por-mailing-list')
+    def adicionar_por_mailing_list(self, request, pk=None):
+        """
+        Adiciona todos os contatos de uma Mailing List como destinatários.
+        """
+        comunicacao = self.get_object()
+        mailing_list_id = request.data.get('mailing_list_id')
+
+        if not mailing_list_id:
+            return Response({'error': 'O ID da lista de mailing é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            mailing_list = MailingList.objects.get(id=mailing_list_id, conta=comunicacao.evento.conta)
+        except MailingList.DoesNotExist:
+            return Response({'error': 'Lista de mailing não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        destinatarios_existentes_ids = Destinatario.objects.filter(comunicacao=comunicacao).values_list('municipe_id', flat=True)
+        
+        municipes_para_adicionar = mailing_list.municipes.exclude(id__in=destinatarios_existentes_ids)
+
+        novos_destinatarios = [
+            Destinatario(comunicacao=comunicacao, municipe=municipe)
+            for municipe in municipes_para_adicionar
+        ]
+        
+        if novos_destinatarios:
+            Destinatario.objects.bulk_create(novos_destinatarios)
+
+        return Response(
+            {'status': f'{len(novos_destinatarios)} novo(s) destinatário(s) da lista "{mailing_list.nome}" foram adicionado(s).'},
             status=status.HTTP_200_OK
         )
 
@@ -418,6 +656,7 @@ class PublicCheckInView(APIView):
             return Response({
                 'evento_id': evento_ativo.id,
                 'evento_nome': evento_ativo.nome,
+                'evento_data': evento_ativo.data_evento.strftime('%d de %B de %Y'),
                 'logo_url': logo_url,
                 'brasao_url': brasao_url,
             })
@@ -507,17 +746,34 @@ class ListaPresencaViewSet(viewsets.ReadOnlyModelViewSet):
     """
     serializer_class = ListaPresencaSerializer
     permission_classes = [PodeGerenciarEventos]
+    # Manter o filterset_fields é uma boa prática, embora vamos controlar o filtro manualmente.
     filterset_fields = ['evento']
 
     def get_queryset(self):
-        # Lógica de permissão que já usamos, garantindo segurança
+        """
+        Garante que a lista de presença seja filtrada tanto pelas permissões do usuário
+        quanto pelo evento específico solicitado na URL.
+        """
         usuario = self.request.user
+        qs = ListaPresenca.objects.none()
+
+        # 1. Define o queryset base de acordo com as permissões do usuário
         if usuario.is_superuser:
-            return ListaPresenca.objects.all().order_by('-data_registro')
-        if hasattr(usuario, 'perfil'):
+            qs = ListaPresenca.objects.all()
+        elif hasattr(usuario, 'perfil'):
             contas_do_usuario = usuario.perfil.contas.all()
-            return ListaPresenca.objects.filter(evento__conta__in=contas_do_usuario)
-        return ListaPresenca.objects.none()
+            qs = ListaPresenca.objects.filter(evento__conta__in=contas_do_usuario)
+
+        # 2. APLICA O FILTRO DO EVENTO ESPECÍFICO
+        # Pega o 'evento' da URL (ex: ?evento=11) que o frontend envia
+        evento_id = self.request.query_params.get('evento')
+        if evento_id:
+            # Filtra o queryset base para retornar apenas as presenças do evento solicitado
+            return qs.filter(evento_id=evento_id).order_by('-data_registro')
+        
+        # Se nenhum evento for especificado, retorna o queryset baseado na permissão
+        # (geralmente não deve acontecer na tela de detalhes do evento)
+        return qs.order_by('-data_registro')
 
     @action(detail=False, methods=['get'], url_path='exportar-excel')
     def exportar_excel(self, request):
@@ -525,10 +781,9 @@ class ListaPresencaViewSet(viewsets.ReadOnlyModelViewSet):
         if not evento_id:
             return Response({"error": "O ID do evento é obrigatório."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # O queryset base já é filtrado por permissão do usuário
+        # O queryset base agora é filtrado corretamente pela função get_queryset
         queryset = self.get_queryset().filter(evento_id=evento_id)
         
-        # A variável 'Workbook' agora está definida por causa do import
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "Lista de Presença"
@@ -562,7 +817,89 @@ class EventoChecklistViewSet(viewsets.ModelViewSet):
     """
     serializer_class = EventoChecklistSerializer
     permission_classes = [PodeGerenciarEventos]
-    queryset = EventoChecklist.objects.all()
+    
+    def get_queryset(self):
+        """
+        Filtra o queryset com base na ação (list vs. detail) e permissões do usuário.
+        """
+        usuario = self.request.user
+        qs = EventoChecklist.objects.none() # Começa com um queryset vazio
+
+        # Define a base de checklists que o usuário pode acessar
+        if usuario.is_superuser:
+            qs = EventoChecklist.objects.all()
+        elif hasattr(usuario, 'perfil'):
+            contas_do_usuario = usuario.perfil.contas.all()
+            qs = EventoChecklist.objects.filter(evento__conta__in=contas_do_usuario)
+            
+        # Se a ação for a 'list', filtramos pelo parâmetro 'evento'.
+        if self.action == 'list':
+            evento_id = self.request.query_params.get('evento')
+            if evento_id:
+                return qs.filter(evento_id=evento_id)
+            # Se for a lista, mas sem evento, não retorna nada.
+            return EventoChecklist.objects.none()
+            
+        return qs
+
+    @action(detail=True, methods=['get'], url_path='gerar-relatorio')
+    def gerar_relatorio(self, request, pk=None):
+        """
+        Gera e retorna um relatório em PDF para um checklist específico usando um template HTML.
+        """
+        try:
+            checklist = self.get_object()
+            
+            # Contexto para o template HTML
+            context = {
+                'checklist': checklist,
+                'itens_status': checklist.itens_status.all().order_by('item_mestre__nome'),
+                'data_emissao': timezone.now(),
+                'logo_url': request.build_absolute_uri('/static/images/logo-siga-gab.png')
+            }
+
+            # Renderiza o template HTML para uma string
+            html_string = render_to_string('eventos/relatorio_checklist.html', context)
+            
+            # Gera o PDF a partir do HTML
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            
+            # Cria a resposta HTTP
+            response = HttpResponse(pdf_file, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="relatorio_checklist_{checklist.evento.nome}.pdf"'
+            
+            return response
+        except EventoChecklist.DoesNotExist:
+            return Response({'error': 'Checklist não encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='renovar-token')
+    def renovar_token(self, request, pk=None):
+        """
+        Gera um novo token para o checklist, reseta seu status e o retorna.
+        """
+        try:
+            checklist = self.get_object()
+            
+            # Gera um novo token UUID
+            checklist.token = uuid.uuid4()
+            
+            # Reseta os campos relacionados ao preenchimento externo
+            checklist.token_usado = False
+            checklist.nome_responsavel = None
+            checklist.data_envio = None
+            
+            checklist.save()
+            
+            # Retorna os dados atualizados do checklist
+            serializer = self.get_serializer(checklist)
+            return Response(serializer.data)
+            
+        except EventoChecklist.DoesNotExist:
+            return Response({'error': 'Checklist não encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class PublicChecklistView(APIView):
     """
@@ -580,24 +917,180 @@ class PublicChecklistView(APIView):
 
     def post(self, request, token, *args, **kwargs):
         try:
-            checklist = EventoChecklist.objects.get(token=token, token_usado=False)
+            checklist = EventoChecklist.objects.get(token=token)
         except EventoChecklist.DoesNotExist:
-            return Response({'error': 'Checklist inválido ou já preenchido.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Checklist inválido ou expirado.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 'items' será uma lista de objetos: [{id: 1, concluido: true, observacoes: '...'}, ...]
         items_data = request.data.get('items')
-        
-        # Atualiza cada item do checklist
-        for item_data in items_data:
-            EventoChecklistItemStatus.objects.filter(id=item_data.get('id'), evento_checklist=checklist).update(
-                concluido=item_data.get('concluido', False),
-                observacoes=item_data.get('observacoes', '')
-            )
-        
-        # Marca o token como usado e salva o nome do responsável
-        checklist.token_usado = True
-        checklist.nome_responsavel = request.data.get('nome_responsavel', 'Anônimo')
-        checklist.data_envio = timezone.now()
-        checklist.save()
+        nome_responsavel = request.data.get('nome_responsavel')
 
-        return Response({'status': 'Checklist preenchido com sucesso!'})
+        if not nome_responsavel or items_data is None:
+            return Response({'error': 'Dados incompletos.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                # Apaga itens antigos para o caso de um reenvio do formulário
+                EventoChecklistItemStatus.objects.filter(evento_checklist=checklist).delete()
+
+                # Cria os novos itens com base no que foi selecionado no formulário
+                for item_data in items_data:
+                    master_id = item_data.get('master_id')
+                    if not master_id:
+                        continue
+                    
+                    EventoChecklistItemStatus.objects.create(
+                        evento_checklist=checklist,
+                        item_mestre_id=master_id,
+                        observacoes=item_data.get('observacoes', ''),
+                        concluido=False # O status 'concluido' foi removido da lógica
+                    )
+                
+                # Atualiza o checklist principal
+                checklist.token_usado = True
+                checklist.nome_responsavel = nome_responsavel
+                checklist.data_envio = timezone.now()
+                checklist.save()
+
+            return Response({'status': 'Checklist preenchido com sucesso!'})
+
+        except Exception as e:
+            return Response({'error': f'Ocorreu um erro interno: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+class ChecklistItemViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API para listar e gerenciar (CRUD) os Itens Mestres de Checklist.
+    """
+    serializer_class = ChecklistItemSerializer
+    permission_classes = [permissions.AllowAny]
+    queryset = ChecklistItem.objects.all()
+
+class EventoChecklistItemStatusViewSet(viewsets.ModelViewSet):
+    """
+    API para gerenciar os itens individuais (status) de um checklist de evento.
+    """
+    serializer_class = EventoChecklistItemStatusSerializer
+    permission_classes = [PodeGerenciarEventos] # Reutiliza a permissão existente
+
+    def get_queryset(self):
+        # Garante que o usuário só possa ver/editar itens dos eventos de suas contas
+        usuario = self.request.user
+        if usuario.is_superuser:
+            return EventoChecklistItemStatus.objects.all()
+        if hasattr(usuario, 'perfil'):
+            contas_do_usuario = usuario.perfil.contas.all()
+            return EventoChecklistItemStatus.objects.filter(evento_checklist__evento__conta__in=contas_do_usuario)
+        return EventoChecklistItemStatus.objects.none()
+
+class MailingListViewSet(viewsets.ModelViewSet):
+    """
+    API para gerenciar Listas de Mailing.
+    """
+    serializer_class = MailingListSerializer
+    permission_classes = [PodeGerenciarEventos]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_superuser:
+            return MailingList.objects.all().prefetch_related('municipes')
+        if hasattr(user, 'perfil'):
+            contas_do_usuario = user.perfil.contas.all()
+            return MailingList.objects.filter(conta__in=contas_do_usuario).prefetch_related('municipes')
+        return MailingList.objects.none()
+
+    def perform_create(self, serializer):
+        conta_do_usuario = self.request.user.perfil.contas.first()
+        if conta_do_usuario:
+            serializer.save(conta=conta_do_usuario)
+        else:
+            raise serializers.ValidationError("O usuário não está associado a nenhuma conta.")
+
+    @action(detail=True, methods=['get'], url_path='municipes')
+    def listar_municipes(self, request, pk=None):
+        """
+        Lista os munícipes que estão nesta lista de mailing.
+        """
+        mailing_list = self.get_object()
+        municipes = mailing_list.municipes.all()
+        page = self.paginate_queryset(municipes)
+        if page is not None:
+            serializer = MunicipeForConvidadoSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = MunicipeForConvidadoSerializer(municipes, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='add-municipe')
+    def add_municipe(self, request, pk=None):
+        """
+        Adiciona um munícipe a uma lista de mailing, se ele tiver e-mail.
+        """
+        mailing_list = self.get_object()
+        municipe_id = request.data.get('municipe_id')
+
+        if not municipe_id:
+            return Response({'error': 'O ID do munícipe é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            municipe = Municipe.objects.get(id=municipe_id, contas__in=[mailing_list.conta])
+            
+            # Restrição: verifica se o campo de e-mails não está vazio ou nulo
+            if not municipe.emails or municipe.emails == '[]':
+                 return Response({'error': 'O munícipe não possui e-mail cadastrado e não pode ser adicionado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            mailing_list.municipes.add(municipe)
+            return Response({'status': 'Munícipe adicionado com sucesso.'}, status=status.HTTP_200_OK)
+
+        except Municipe.DoesNotExist:
+            return Response({'error': 'Munícipe não encontrado ou não pertence à sua conta.'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['post'], url_path='remove-municipe')
+    def remove_municipe(self, request, pk=None):
+        """
+        Remove um munícipe de uma lista de mailing.
+        """
+        mailing_list = self.get_object()
+        municipe_id = request.data.get('municipe_id')
+
+        if not municipe_id:
+            return Response({'error': 'O ID do munícipe é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            municipe = Municipe.objects.get(id=municipe_id)
+            mailing_list.municipes.remove(municipe)
+            return Response({'status': 'Munícipe removido com sucesso.'}, status=status.HTTP_200_OK)
+        except Municipe.DoesNotExist:
+             return Response({'error': 'Munícipe não encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['post'], url_path='add-by-category')
+    def add_by_category(self, request, pk=None):
+        """
+        Adiciona todos os municipes de uma categoria que possuem email a esta lista de mailing.
+        """
+        mailing_list = self.get_object()
+        categoria_id = request.data.get('categoria_id')
+
+        if not categoria_id:
+            return Response({'error': 'O ID da categoria é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Municipes que já estão na lista
+        existing_municipes_ids = mailing_list.municipes.values_list('id', flat=True)
+
+        # Encontra novos municipes da categoria que têm email e não estão na lista
+        municipes_to_add = Municipe.objects.filter(
+            categoria__id=categoria_id,
+            contas__in=[mailing_list.conta]
+        ).exclude(
+            id__in=existing_municipes_ids
+        ).filter(
+            Q(emails__isnull=False) & ~Q(emails__exact='[]')
+        )
+        
+        count = municipes_to_add.count()
+        
+        if count > 0:
+            mailing_list.municipes.add(*municipes_to_add)
+
+        return Response({'status': f'{count} novo(s) contato(s) com e-mail foram adicionados da categoria.'}, status=status.HTTP_200_OK)
+ 

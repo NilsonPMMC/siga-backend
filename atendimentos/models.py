@@ -5,7 +5,17 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 
-class Conta(models.Model):
+class UppercaseFieldsMixin:
+    UPPERCASE_EXCEPTIONS = ('emails', 'endereco')
+
+    def save(self, *args, **kwargs):
+        for field in self._meta.fields:
+            if field.name not in self.UPPERCASE_EXCEPTIONS:
+                if isinstance(field, (models.CharField, models.TextField)) and getattr(self, field.name):
+                    setattr(self, field.name, getattr(self, field.name).upper())
+        super().save(*args, **kwargs)
+
+class Conta(UppercaseFieldsMixin, models.Model):
     nome_instituicao = models.CharField(
         max_length=255,
         blank=True, null=True,
@@ -39,7 +49,7 @@ class PerfilUsuario(models.Model):
     )
     def __str__(self): return f"Perfil de {self.usuario.username}"
 
-class CategoriaContato(models.Model):
+class CategoriaContato(UppercaseFieldsMixin, models.Model):
     nome = models.CharField(max_length=100, unique=True)
     ativa = models.BooleanField(default=True)
 
@@ -49,7 +59,7 @@ class CategoriaContato(models.Model):
     class Meta:
         ordering = ['nome']
 
-class Municipe(models.Model):
+class Municipe(UppercaseFieldsMixin, models.Model):
     nome_completo = models.CharField(max_length=255, verbose_name="Nome Completo")
     nome_de_guerra = models.CharField(
         max_length=100, 
@@ -91,7 +101,7 @@ class Municipe(models.Model):
     class Meta: verbose_name = "Munícipe"; verbose_name_plural = "Munícipes"; ordering = ['nome_completo']
     def __str__(self): return self.nome_completo
 
-class CategoriaAtendimento(models.Model):
+class CategoriaAtendimento(UppercaseFieldsMixin, models.Model):
     nome = models.CharField(max_length=100, unique=True, verbose_name="Nome da Categoria")
     descricao = models.TextField(blank=True, null=True, verbose_name="Descrição")
     ativa = models.BooleanField(default=True, verbose_name="Está ativa?")
@@ -119,9 +129,12 @@ class Atendimento(models.Model):
             last_atendimento = Atendimento.objects.filter(protocolo__startswith=f'{current_year}-').order_by('protocolo').last()
             new_number = int(last_atendimento.protocolo.split('-')[1]) + 1 if last_atendimento else 1
             self.protocolo = f'{current_year}-{new_number:05d}'
+        
+        self.titulo = self.titulo.upper() if self.titulo else ''
+        self.descricao = self.descricao.upper() if self.descricao else ''
         super().save(*args, **kwargs)
 
-class Tramitacao(models.Model):
+class Tramitacao(UppercaseFieldsMixin, models.Model):
     atendimento = models.ForeignKey(Atendimento, on_delete=models.CASCADE, related_name='tramitacoes', verbose_name="Atendimento")
     despacho = models.TextField(verbose_name="Despacho / Nota de Progresso")
     usuario = models.ForeignKey(User, on_delete=models.PROTECT, verbose_name="Usuário Responsável")
@@ -138,7 +151,7 @@ class Anexo(models.Model):
     class Meta: verbose_name = "Anexo"; verbose_name_plural = "Anexos"; ordering = ['-data_upload']
     def __str__(self): return self.arquivo.name.split('/')[-1]
 
-class Espaco(models.Model):
+class Espaco(UppercaseFieldsMixin, models.Model):
     nome = models.CharField(max_length=100, unique=True, verbose_name="Nome do Espaço")
     capacidade = models.PositiveIntegerField(default=0, verbose_name="Capacidade de Pessoas")
     descricao = models.TextField(blank=True, null=True, verbose_name="Descrição e Recursos (Ex: Possui projetor)")
@@ -157,7 +170,7 @@ class Espaco(models.Model):
     def __str__(self):
         return self.nome
 
-class SolicitacaoAgenda(models.Model):
+class SolicitacaoAgenda(UppercaseFieldsMixin, models.Model):
     STATUS_AGENDA_CHOICES = [('SOLICITADO', 'Solicitado'), ('EM_ANALISE', 'Em Análise'), ('AGENDADO', 'Agendado'), ('NEGADO', 'Negado'), ('CANCELADO', 'Cancelado')]
     solicitante = models.ForeignKey(Municipe, on_delete=models.PROTECT, related_name='solicitacoes_agenda', verbose_name="Solicitante")
     conta = models.ForeignKey(Conta, on_delete=models.PROTECT, verbose_name="Conta/Gabinete Solicitado")
@@ -238,7 +251,7 @@ class GoogleApiToken(models.Model):
         return f"Token do Google para {self.usuario.username}"
 
 
-class RegistroVisita(models.Model):
+class RegistroVisita(UppercaseFieldsMixin, models.Model):
     """
     Modelo para registrar um check-in/visita rápida, 
     sem a complexidade de um Atendimento.
@@ -257,7 +270,7 @@ class RegistroVisita(models.Model):
         verbose_name = "Registro de Visita"
         verbose_name_plural = "Registros de Visita"
 
-class ReservaEspaco(models.Model):
+class ReservaEspaco(UppercaseFieldsMixin, models.Model):
     espaco = models.ForeignKey(Espaco, on_delete=models.PROTECT, related_name="reservas")
     titulo = models.CharField(max_length=255, verbose_name="Título/Assunto da Reserva")
     solicitante = models.ForeignKey(

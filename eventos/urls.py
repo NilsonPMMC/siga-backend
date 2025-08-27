@@ -13,9 +13,11 @@ router.register(r'destinatarios', views.DestinatarioViewSet, basename='destinata
 router.register(r'logs-de-envio', views.LogDeEnvioViewSet, basename='logdeenvio')
 router.register(r'lista-presenca', views.ListaPresencaViewSet, basename='listapresenca')
 router.register(r'checklists', views.EventoChecklistViewSet, basename='eventochecklist')
+router.register(r'checklist-items', views.EventoChecklistItemStatusViewSet, basename='eventochecklistitem')
+router.register(r'master-checklist-items', views.ChecklistItemViewSet, basename='masterchecklistitem')
+router.register(r'mailing-lists', views.MailingListViewSet, basename='mailinglist')
 
 public_urls = [
-    path('public/checklist/<uuid:token>/', views.preencher_checklist, name='preencher_checklist'),
     path('public/presenca/<int:evento_id>/', views.registrar_presenca, name='registrar_presenca'),
     path('public/presenca/sucesso/', views.presenca_sucesso, name='presenca_sucesso'),
     path('public/check-in/<int:conta_id>/', views.PublicCheckInView.as_view(), name='public-check-in'),

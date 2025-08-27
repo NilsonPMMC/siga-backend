@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Evento, Convidado, EventoChecklist, Comunicacao, Destinatario, LogDeEnvio, ListaPresenca, ChecklistItem, EventoChecklistItemStatus
+from .models import Evento, Convidado, EventoChecklist, Comunicacao, Destinatario, LogDeEnvio, ListaPresenca, ChecklistItem, EventoChecklistItemStatus, MailingList
 from atendimentos.models import Municipe 
 
 class EventoChecklistSerializer(serializers.ModelSerializer):
@@ -123,17 +123,35 @@ class ChecklistItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'nome']
 
 class EventoChecklistItemStatusSerializer(serializers.ModelSerializer):
-    # Traz o nome do item mestre para facilitar a exibição
     item_mestre = ChecklistItemSerializer(read_only=True)
+    item_mestre_id = serializers.PrimaryKeyRelatedField(
+        queryset=ChecklistItem.objects.all(),
+        source='item_mestre',
+        write_only=True
+    )
 
     class Meta:
         model = EventoChecklistItemStatus
-        fields = ['id', 'item_mestre', 'concluido', 'observacoes', 'data_conclusao']
+        fields = ['id', 'evento_checklist', 'item_mestre', 'item_mestre_id', 'concluido', 'observacoes']
+        extra_kwargs = {
+            'evento_checklist': {'write_only': True}
+        }
 
 class EventoChecklistSerializer(serializers.ModelSerializer):
-    # Aninha os itens do checklist dentro do objeto principal
     itens_status = EventoChecklistItemStatusSerializer(many=True, read_only=True)
+    evento = EventoSimpleSerializer(read_only=True)
 
     class Meta:
         model = EventoChecklist
-        fields = ['id', 'evento', 'responsavel_nome', 'token', 'token_usado', 'data_envio', 'itens_status']
+        fields = ['id', 'evento', 'nome_responsavel', 'token', 'token_usado', 'data_envio', 'itens_status']
+
+class MailingListSerializer(serializers.ModelSerializer):
+    """
+    Serializer para listar e criar Mailing Lists.
+    """
+    total_municipes = serializers.IntegerField(source='municipes.count', read_only=True)
+
+    class Meta:
+        model = MailingList
+        fields = ['id', 'nome', 'criado_em', 'total_municipes']
+        read_only_fields = ['conta']

@@ -172,34 +172,40 @@ class AtendimentoSerializer(serializers.ModelSerializer):
     tramitacoes = TramitacaoSerializer(many=True, read_only=True)
     categorias = CategoriaAtendimentoSerializer(many=True, read_only=True)
     anexos = AnexoSerializer(many=True, read_only=True)
+    responsavel_obj = UserSerializer(source='responsavel', read_only=True)
+
+    responsavel = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(), write_only=True, required=False, allow_null=True
+    )
 
     # Seu campo de escrita, que também estava correto
     categorias_ids = serializers.PrimaryKeyRelatedField(
         many=True, queryset=CategoriaAtendimento.objects.all(), source='categorias', write_only=True, required=False
     )
 
+    responsavel_nome = serializers.SerializerMethodField()
+
     class Meta:
         model = Atendimento
         fields = [
             'id', 'protocolo', 'titulo', 'descricao', 'status', 'conta', 'nome_conta',
-            'municipe', 'nome_municipe', 'responsavel', 'data_criacao',
+            'municipe', 'nome_municipe',
+            'responsavel', 'responsavel_obj', 'responsavel_nome', 'data_criacao',
             'data_atualizacao', 'tramitacoes', 'categorias', 'categorias_ids', 'anexos'
         ]
         read_only_fields = ('protocolo', 'data_criacao', 'data_atualizacao')
 
-    # --- A LÓGICA DE UPDATE QUE FALTAVA ---
+    def get_responsavel_nome(self, obj):
+        # Retorna o nome completo se existir, senão o username
+        if obj.responsavel:
+            return obj.responsavel.get_full_name() or obj.responsavel.username
+        return None
+
     def update(self, instance, validated_data):
-        # Pega os dados das categorias do campo de escrita (que tem source='categorias')
         categorias_data = validated_data.pop('categorias', None)
-
-        # Deixa o DRF fazer a atualização dos campos simples (como o status)
         instance = super().update(instance, validated_data)
-
-        # Se o frontend enviou uma nova lista de categorias...
         if categorias_data is not None:
-            # ...define essa nova lista para o atendimento.
             instance.categorias.set(categorias_data)
-
         return instance
 
 class SolicitacaoAgendaSerializer(serializers.ModelSerializer):

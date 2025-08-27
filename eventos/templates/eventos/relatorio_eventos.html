@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório de Eventos</title>
+    <style>
+        @page {
+            size: A4 landscape;
+            margin: 1cm;
+        }
+        body {
+            font-family: 'Helvetica', sans-serif;
+            color: #333;
+        }
+        .header {
+            display: flex;
+            align-items: flex-start;
+            border-bottom: 2px solid #ddd;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .header img {
+            height: 40px;
+        }
+        .header .title-section {
+            text-align: center;
+            flex-grow: 1;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .header p {
+            margin: 5px 0 0;
+            font-size: 12px;
+        }
+        .footer {
+            position: fixed;
+            bottom: -0.5cm;
+            left: 0;
+            right: 0;
+            text-align: right;
+            font-size: 10px;
+            color: #777;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            text-align: left;
+            word-wrap: break-word;
+            font-size: 12px;
+        }
+        thead {
+            background-color: #4A90E2;
+            color: white;
+        }
+        tbody tr:nth-child(even) {
+            background-color: #f7f7f7;
+        }
+        .status-cancelado {
+            background-color: #FFCDD2 !important; /* Vermelho claro */
+        }
+        .evento-passado {
+            background-color: #E0E0E0 !important; /* Cinza */
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <img src="{{ logo_url }}" alt="Logo SIGA">
+        <div class="title-section">
+            <h1>Relatório de Eventos</h1>
+            <p>Período de {{ data_inicio|date:"d/m/Y" }} a {{ data_fim|date:"d/m/Y" }}</p>
+        </div>
+    </div>
+
+    <div class="footer">
+        Relatório emitido em {{ data_emissao|date:"d/m/Y H:i" }}
+    </div>
+
+    <main>
+        {% if eventos %}
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 10%;">Data</th>
+                        <th style="width: 8%;">Hora</th>
+                        <th style="width: 32%;">Evento</th>
+                        <th style="width: 30%;">Local</th>
+                        <th style="width: 20%;">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for evento in eventos %}
+                        <tr class="
+                            {% if evento.status == 'cancelado' %}
+                                status-cancelado
+                            {% elif evento.data_evento < hoje %}
+                                evento-passado
+                            {% endif %}
+                        ">
+                            <td>{{ evento.data_evento|date:"d/m/Y" }}</td>
+                            <td>{{ evento.data_evento|date:"H:i" }}</td>
+                            <td>{{ evento.nome }}</td>
+                            <td>{{ evento.local }}</td>
+                            <td>{{ evento.get_status_display }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>Nenhum evento encontrado para o período selecionado.</p>
+        {% endif %}
+    </main>
+
+</body>
+</html>

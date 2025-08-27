@@ -3,8 +3,22 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from atendimentos.models import Conta, Municipe
 
-class Evento(models.Model):
-    # Definindo as opções para o campo de status
+class UppercaseFieldsMixin:
+    """
+    Mixin para converter automaticamente os campos CharField e TextField para
+    letras maiúsculas ao salvar o objeto.
+    """
+    UPPERCASE_EXCEPTIONS = ('emails', 'endereco', 'descricao', 'status')
+
+    def save(self, *args, **kwargs):
+
+        for field in self._meta.fields:
+            field_value = getattr(self, field.name)
+            if isinstance(field, (models.CharField, models.TextField)) and field_value and field.name not in self.UPPERCASE_EXCEPTIONS:
+                setattr(self, field.name, field_value.upper())
+        super().save(*args, **kwargs)
+
+class Evento(UppercaseFieldsMixin, models.Model):
     STATUS_CHOICES = [
         ('agendado', 'Agendado'),
         ('cancelado', 'Cancelado'),
@@ -31,19 +45,12 @@ class Evento(models.Model):
         Sobrescreve o método de salvar com a lógica "inteligente":
         Ao ativar este evento, desativa automaticamente qualquer outro evento ativo da mesma conta.
         """
-        # 1. A lógica só é acionada se este evento estiver sendo marcado como ATIVO.
         if self.ativo:
-            # 2. Encontra todos os outros eventos da MESMA conta que estão ativos
-            #    e, em uma única e eficiente query no banco de dados, os desativa.
-            #    O .exclude(pk=self.pk) garante que não estamos desativando o evento
-            #    que estamos prestes a salvar como ativo.
             Evento.objects.filter(
                 conta=self.conta, 
                 ativo=True
             ).exclude(pk=self.pk).update(ativo=False)
 
-        # 3. Após garantir que nenhum outro evento está ativo,
-        #    salva o estado atual deste evento (seja ele ativo ou inativo).
         super().save(*args, **kwargs)
 
     class Meta:
@@ -73,17 +80,18 @@ class Convidado(models.Model):
     )
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='convidado')
     data_checkin = models.DateTimeField(null=True, blank=True, verbose_name="Data do Check-in")
+    ordem = models.PositiveIntegerField(default=0, help_text="Campo para ordenação manual.")
 
     class Meta:
-        # Garante que um munícipe só pode ser convidado uma vez para o mesmo evento
         unique_together = ('evento', 'municipe')
         verbose_name = "Convidado"
         verbose_name_plural = "Convidados"
+        ordering = ['ordem']
 
     def __str__(self):
         return f"{self.municipe.nome_completo} no evento {self.evento.nome}"
 
-class ListaPresenca(models.Model):
+class ListaPresenca(UppercaseFieldsMixin, models.Model):
     evento = models.ForeignKey(Evento, on_delete=models.CASCADE, related_name='presentes')
     municipe = models.ForeignKey(Municipe, on_delete=models.PROTECT, related_name='presencas')
     nome_completo = models.CharField(max_length=255)
@@ -93,7 +101,6 @@ class ListaPresenca(models.Model):
     data_registro = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        # Garante que uma pessoa só pode se registrar uma vez no mesmo evento
         unique_together = ('evento', 'municipe')
         verbose_name = "Lista de Presença"
         verbose_name_plural = "Listas de Presença"
@@ -101,7 +108,7 @@ class ListaPresenca(models.Model):
     def __str__(self):
         return f"Presença de {self.nome_completo} no evento {self.evento.nome}"
 
-class ChecklistItem(models.Model):
+class ChecklistItem(UppercaseFieldsMixin, models.Model):
     nome = models.CharField(max_length=255, help_text="Nome do serviço ou material a ser verificado.")
     
     class Meta:
@@ -113,11 +120,10 @@ class ChecklistItem(models.Model):
         return self.nome
 
 
-class EventoChecklist(models.Model):
+class EventoChecklist(UppercaseFieldsMixin, models.Model):
     evento = models.OneToOneField(Evento, on_delete=models.CASCADE, related_name='checklist')
     token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     
-    # Campos que serão preenchidos pelo responsável via formulário público
     nome_responsavel = models.CharField(max_length=255, blank=True, null=True, verbose_name="Nome do Responsável que preencheu")
     token_usado = models.BooleanField(default=False, verbose_name="Link de preenchimento já foi usado?")
     data_envio = models.DateTimeField(null=True, blank=True, verbose_name="Data de Envio do Checklist")
@@ -130,7 +136,7 @@ class EventoChecklist(models.Model):
         return f"Checklist para {self.evento.nome}"
 
 
-class EventoChecklistItemStatus(models.Model):
+class EventoChecklistItemStatus(UppercaseFieldsMixin, models.Model):
     evento_checklist = models.ForeignKey(EventoChecklist, on_delete=models.CASCADE, related_name='itens_status')
     item_mestre = models.ForeignKey(ChecklistItem, on_delete=models.PROTECT, verbose_name="Item")
     concluido = models.BooleanField(default=False, verbose_name="Concluído")
@@ -177,7 +183,6 @@ class Destinatario(models.Model):
     municipe = models.ForeignKey(Municipe, on_delete=models.PROTECT, related_name='destinos_comunicacao')
 
     class Meta:
-        # Garante que um munícipe só pode ser adicionado uma vez à lista de destinatários do mesmo evento
         unique_together = ('comunicacao', 'municipe')
         verbose_name = "Destinatário"
         verbose_name_plural = "Destinatários"
@@ -198,3 +203,29 @@ class LogDeEnvio(models.Model):
 
     def __str__(self):
         return f"Log para {self.comunicacao.titulo} -> {self.destinatario.municipe.nome_completo}"
+
+class MailingList(UppercaseFieldsMixin, models.Model):
+    conta = models.ForeignKey(
+        Conta,
+        on_delete=models.PROTECT,
+        related_name='mailing_lists',
+        help_text="Conta à qual esta lista de mailing pertence."
+    )
+    nome = models.CharField(max_length=200, help_text="Nome da lista de mailing (ex: Imprensa, Vereadores).")
+    municipes = models.ManyToManyField(
+        Municipe,
+        related_name='mailing_lists',
+        blank=True,
+        help_text="Contatos incluídos nesta lista."
+    )
+    criado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Garante que o nome da lista seja único por conta
+        unique_together = ('conta', 'nome')
+        ordering = ['nome']
+        verbose_name = "Lista de Mailing"
+        verbose_name_plural = "Listas de Mailing"
+
+    def __str__(self):
+        return self.nome

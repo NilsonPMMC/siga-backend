@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Prismas de Mesa</title>
+    <style>
+        @page {
+            size: A4 landscape;
+            margin: 1cm;
+        }
+        body {
+            font-family: 'Helvetica', sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        .prisma-container {
+            width: 195mm;
+            height: 190mm;
+            margin: auto;
+            display: flex;
+            flex-direction: column;
+            border: 1px dashed #4b4b4b; /* Linha de corte */
+            page-break-after: always; /* Um prisma por página */
+            overflow: hidden;
+        }
+        .face {
+            width: 195mm;
+            height: 95mm;
+            box-sizing: border-box;
+            padding: 1cm;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        .face.top {
+            /* Face de cima, normal */
+        }
+        .face.bottom {
+            /* Face de baixo, espelhada */
+            transform: rotate(180deg);
+        }
+        .name {
+            font-size: 48px; /* Nome bem grande */
+            font-weight: bold;
+            text-transform: uppercase;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+        .details {
+            margin-top: 8mm;
+            font-size: 20px;
+            line-height: 1.4;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+    {% for convidado in convidados %}
+        <div class="prisma-container">
+            <!-- Face de Cima -->
+            <div class="face top">
+                <div class="name">{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
+                <div class="details">
+                    {% if convidado.municipe.cargo %}
+                        <strong>{{ convidado.municipe.cargo }}</strong><br>
+                    {% endif %}
+                    {% if convidado.municipe.orgao %}
+                        <span>{{ convidado.municipe.orgao }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            <!-- Face de Baixo (Espelhada) -->
+            <div class="face bottom">
+                <div class="name">{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
+                <div class="details">
+                    {% if convidado.municipe.cargo %}
+                        <strong>{{ convidado.municipe.cargo }}</strong><br>
+                    {% endif %}
+                    {% if convidado.municipe.orgao %}
+                        <span>{{ convidado.municipe.orgao }}</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    {% endfor %}
+</body>
+</html>

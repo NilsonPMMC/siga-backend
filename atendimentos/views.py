@@ -1228,7 +1228,7 @@ class BuscaGlobalView(APIView):
         query_cpf = Q(cpf__icontains=termo_busca)
         
         # A consulta final une as duas buscas com um "OU"
-        municipes_encontrados = municipe_qs.filter(query_palavras | query_cpf).distinct()[:5]
+        municipes_encontrados = municipe_qs.filter(query_palavras | query_cpf).distinct()[:100]
         # --- FIM DA CORREÇÃO ---
 
         for municipe in municipes_encontrados:
