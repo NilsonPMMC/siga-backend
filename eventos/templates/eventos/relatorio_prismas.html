@@ -36,10 +36,10 @@
         }
         .face.top {
             /* Face de cima, normal */
+            transform: rotate(180deg);
         }
         .face.bottom {
             /* Face de baixo, espelhada */
-            transform: rotate(180deg);
         }
         .name {
             font-size: 48px; /* Nome bem grande */
@@ -61,7 +61,7 @@
         <div class="prisma-container">
             <!-- Face de Cima -->
             <div class="face top">
-                <div class="name">{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
+                <div class="name">{% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
                 <div class="details">
                     {% if convidado.municipe.cargo %}
                         <strong>{{ convidado.municipe.cargo }}</strong><br>
@@ -73,7 +73,7 @@
             </div>
             <!-- Face de Baixo (Espelhada) -->
             <div class="face bottom">
-                <div class="name">{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
+                <div class="name">{% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
                 <div class="details">
                     {% if convidado.municipe.cargo %}
                         <strong>{{ convidado.municipe.cargo }}</strong><br>

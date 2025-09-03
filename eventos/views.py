@@ -22,6 +22,7 @@ from .serializers import EventoSerializer, ConvidadoSerializer, ComunicacaoSeria
 from .utils import gerar_e_enviar_certificado
 from .permissions import PodeGerenciarEventos
 from eventos.tasks import enviar_comunicacao_em_massa, gerar_e_enviar_certificado
+from atendimentos.management.commands.verificar_duplicatas import normalizar_nome_para_conjunto
 
 class EventoViewSet(viewsets.ModelViewSet):
     serializer_class = EventoSerializer
@@ -641,7 +642,7 @@ class PublicCheckInView(APIView):
     View pública para o formulário de check-in via QR Code.
     Não exige autenticação.
     """
-    permission_classes = [permissions.AllowAny] # Permite acesso anônimo
+    permission_classes = [permissions.AllowAny]
 
     def get(self, request, conta_id, *args, **kwargs):
         """
@@ -665,7 +666,7 @@ class PublicCheckInView(APIView):
 
     def post(self, request, conta_id, *args, **kwargs):
         """
-        Processa o formulário de check-in.
+        Processa o formulário de check-in com lógica inteligente de duplicatas.
         """
         try:
             evento_ativo = Evento.objects.get(conta_id=conta_id, ativo=True)
@@ -674,71 +675,86 @@ class PublicCheckInView(APIView):
             return Response({'error': 'Nenhum evento ativo para fazer check-in.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Dados do formulário
-        nome_completo = request.data.get('nome_completo')
-        telefone = request.data.get('telefone')
-        email = request.data.get('email')
+        nome_completo = request.data.get('nome_completo', '').strip()
+        telefone = request.data.get('telefone', '').strip()
+        email = request.data.get('email', '').strip().lower()
         data_nascimento_str = request.data.get('data_nascimento') 
         orgao = request.data.get('orgao')
         
         if not nome_completo or not telefone:
              return Response({'error': 'Nome e telefone são obrigatórios.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        municipe = Municipe.objects.filter(
-            nome_completo=nome_completo,
+        municipe_encontrado = None
+        
+        # --- LÓGICA DE BUSCA INTELIGENTE ---
+        # 1. Busca por contatos que compartilham o mesmo telefone ou e-mail na mesma conta
+        candidatos = Municipe.objects.filter(
+            Q(telefones__contains=[{'numero': telefone}]) | Q(emails__contains=[{'email': email}]),
             contas=conta
-        ).first()
+        ).distinct()
 
-        municipe_existente = Municipe.objects.filter(nome_completo=nome_completo, contas=conta).first()
+        if candidatos.exists():
+            nome_form_normalizado = normalizar_nome_para_conjunto(nome_completo)
+            for candidato in candidatos:
+                nome_candidato_normalizado = normalizar_nome_para_conjunto(candidato.nome_completo)
+                # 2. Compara os nomes usando a lógica de subconjunto
+                if nome_form_normalizado.issubset(nome_candidato_normalizado) or nome_candidato_normalizado.issubset(nome_form_normalizado):
+                    municipe_encontrado = candidato
+                    break # Para no primeiro candidato compatível encontrado
 
-        # 2. Prepara o dicionário de dados para atualizar ou criar o munícipe
-        defaults = {
-            'telefones': [{'tipo': 'principal', 'numero': telefone}],
-            'emails': [{'tipo': 'principal', 'email': email}] if email else None,
-            'orgao': orgao,
-        }
-        if data_nascimento_str and '/' in data_nascimento_str:
-            try:
-                dia, mes = data_nascimento_str.split('/')
-                data_valida = datetime.date(2000, int(mes), int(dia))
-                defaults['data_nascimento'] = data_valida.strftime('%Y-%m-%d')
-            except (ValueError, TypeError):
-                pass
+        with transaction.atomic():
+            if municipe_encontrado:
+                # --- LÓGICA DE ATUALIZAÇÃO (COMPLEMENTAR DADOS) ---
+                municipe = municipe_encontrado
+                dados_atualizados = False
 
-        # Lógica para encontrar ou criar o munícipe (agora com os novos campos)
-        if municipe_existente:
-            for key, value in defaults.items():
-                setattr(municipe_existente, key, value)
-            municipe_existente.save()
-            municipe = municipe_existente
-        else:
-            categoria_municipe, _ = CategoriaContato.objects.get_or_create(nome="Munícipe")
-            defaults['categoria'] = categoria_municipe
+                # Complementa o telefone se for novo
+                telefones_existentes = {t.get('numero') for t in (municipe.telefones or []) if isinstance(t, dict)}
+                if telefone and telefone not in telefones_existentes:
+                    municipe.telefones.append({'tipo': 'celular', 'numero': telefone})
+                    dados_atualizados = True
+
+                # Complementa o e-mail se for novo
+                emails_existentes = {e.get('email', '').lower() for e in (municipe.emails or []) if isinstance(e, dict)}
+                if email and email not in emails_existentes:
+                    municipe.emails.append({'tipo': 'principal', 'email': email})
+                    dados_atualizados = True
+                
+                if dados_atualizados:
+                    municipe.save()
             
-            municipe = Municipe.objects.create(
-                nome_completo=nome_completo,
-                **defaults
+            else:
+                # --- LÓGICA DE CRIAÇÃO (SE NENHUM CONTATO FOR ENCONTRADO) ---
+                categoria_municipe, _ = CategoriaContato.objects.get_or_create(nome="MUNÍCIPE")
+                
+                municipe = Municipe.objects.create(
+                    nome_completo=nome_completo.upper(),
+                    telefones=[{'tipo': 'principal', 'numero': telefone}],
+                    emails=[{'tipo': 'principal', 'email': email}] if email else [],
+                    orgao=orgao.upper() if orgao else None,
+                    categoria=categoria_municipe
+                )
+                municipe.contas.add(conta)
+
+            # Registra a presença
+            presenca, presenca_criada = ListaPresenca.objects.get_or_create(
+                evento=evento_ativo,
+                municipe=municipe,
+                defaults={
+                    'nome_completo': municipe.nome_completo,
+                    'telefone': telefone,
+                    'email': email,
+                    'instituicao_orgao': orgao
+                }
             )
-            municipe.contas.add(conta)
 
-        # Registra a presença
-        presenca, presenca_criada = ListaPresenca.objects.get_or_create(
-            evento=evento_ativo,
-            municipe=municipe,
-            defaults={
-                'nome_completo': municipe.nome_completo,
-                'telefone': telefone,
-                'email': email,
-                'instituicao_orgao': orgao
-            }
-        )
+            if not presenca_criada:
+                return Response({'status': 'Sua presença neste evento já foi registrada.'}, status=status.HTTP_200_OK)
 
-        if not presenca_criada:
-            return Response({'status': 'Sua presença neste evento já foi registrada.'})
+            if presenca.email:
+                gerar_e_enviar_certificado.delay(presenca.id)
 
-        if presenca.email:
-            gerar_e_enviar_certificado.delay(presenca.id)
-
-        return Response({'status': 'Presença registrada com sucesso!'})
+        return Response({'status': 'Presença registrada com sucesso!'}, status=status.HTTP_201_CREATED)
 
 class ListaPresencaViewSet(viewsets.ReadOnlyModelViewSet):
     """

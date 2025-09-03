@@ -1,73 +1,124 @@
 import uuid
+import re
+import itertools
 from collections import defaultdict
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count
 from atendimentos.models import Municipe
 
-# Importamos a unidecode, que usaremos na busca por nome
 try:
     from unidecode import unidecode
 except ImportError:
     raise CommandError("A biblioteca 'unidecode' não está instalada. Por favor, rode 'pip install unidecode'.")
 
+def normalizar_nome_para_conjunto(nome):
+    """
+    Função aprimorada que transforma um nome em um conjunto de palavras-chave.
+    Ex: "Glaucia Cristina M. Coutinho" -> {'glaucia', 'cristina', 'm', 'coutinho'}
+    """
+    if not nome:
+        return set()
+    
+    # Remove acentos e converte para minúsculas
+    nome_sem_acentos = unidecode(nome).lower()
+    
+    # Remove caracteres que não sejam letras, números ou espaços
+    nome_limpo = re.sub(r'[^a-z0-9\s]', '', nome_sem_acentos)
+    
+    # Palavras a serem ignoradas (artigos, preposições, etc.)
+    palavras_ignoradas = {'de', 'da', 'do', 'dos', 'das', 'e'}
+    
+    # Divide o nome em palavras e remove as ignoradas
+    palavras = {palavra for palavra in nome_limpo.split() if palavra not in palavras_ignoradas}
+    
+    return palavras
+
 class Command(BaseCommand):
-    help = 'Verifica e agrupa contatos com possíveis duplicatas.'
+    help = 'Verifica duplicatas com lógica de subconjunto de nomes e agrupamento inteligente.'
 
     def handle(self, *args, **options):
-        self.stdout.write(self.style.SUCCESS('Iniciando verificação de duplicatas...'))
+        self.stdout.write(self.style.SUCCESS('Iniciando verificação avançada de duplicatas...'))
 
         Municipe.objects.update(grupo_duplicado=None)
         self.stdout.write('Etiquetas de duplicatas antigas foram limpas.')
         
         total_grupos_encontrados = 0
 
-        # --- Verificação por CPF e Email ---
-        for campo in ['cpf', 'email']:
-            self.stdout.write(f"Verificando duplicatas por: {campo}...")
-            # Encontra valores que aparecem mais de uma vez, ignorando nulos/vazios
-            duplicatas = Municipe.objects.exclude(**{f'{campo}__isnull': True}).exclude(**{f'{campo}__exact': ''})\
-                .values(campo).annotate(total=Count('id')).filter(total__gt=1)
+        # --- ETAPA 1: Verificação por CPF (Alta Confiança) ---
+        self.stdout.write("Verificando duplicatas por CPF...")
+        cpfs_duplicados = Municipe.objects.exclude(cpf__isnull=True).exclude(cpf__exact='') \
+            .values('cpf').annotate(total=Count('id')).filter(total__gt=1)
 
-            for duplicata in duplicatas:
-                valor_duplicado = duplicata[campo]
-                contatos_para_agrupar = Municipe.objects.filter(**{campo: valor_duplicado}, grupo_duplicado__isnull=True)
-                
-                if contatos_para_agrupar.count() > 1:
-                    novo_grupo_id = uuid.uuid4()
-                    contatos_para_agrupar.update(grupo_duplicado=novo_grupo_id)
-                    total_grupos_encontrados += 1
+        ids_ja_agrupados = set()
+        for item in cpfs_duplicados:
+            cpf = item['cpf']
+            contatos_para_agrupar = Municipe.objects.filter(cpf=cpf)
+            if contatos_para_agrupar.count() > 1:
+                novo_grupo_id = uuid.uuid4()
+                contatos_para_agrupar.update(grupo_duplicado=novo_grupo_id)
+                ids_ja_agrupados.update(contatos_para_agrupar.values_list('id', flat=True))
+                total_grupos_encontrados += 1
         
-        # --- Verificação por Nome Completo Normalizado ---
-        self.stdout.write(f"Verificando duplicatas por: nome...")
-        nomes_map = defaultdict(list)
-        for municipe in Municipe.objects.exclude(nome_completo__exact='').iterator():
-            nome_normalizado = unidecode(municipe.nome_completo).strip().lower()
-            nomes_map[nome_normalizado].append(municipe.id)
+        self.stdout.write(f"{total_grupos_encontrados} grupos encontrados por CPF.")
 
-        ids_duplicados_por_nome = [ids for nome, ids in nomes_map.items() if len(ids) > 1]
-        for ids_para_agrupar in ids_duplicados_por_nome:
-            contatos = Municipe.objects.filter(id__in=ids_para_agrupar, grupo_duplicado__isnull=True)
-            if contatos.count() > 1:
-                novo_grupo_id = uuid.uuid4()
-                contatos.update(grupo_duplicado=novo_grupo_id)
-                total_grupos_encontrados += 1
+        # --- ETAPA 2: Lógica de Subconjunto de Nomes ---
+        self.stdout.write("Verificando duplicatas por combinação de Nome e Contato...")
 
-        # --- Verificação por Telefone ---
-        self.stdout.write(f"Verificando duplicatas por: telefones...")
-        numeros_map = defaultdict(list)
-        municipes_com_telefone = Municipe.objects.exclude(telefones__isnull=True).exclude(telefones__exact=[]).filter(grupo_duplicado__isnull=True)
+        telefone_map = defaultdict(list)
+        email_map = defaultdict(list)
+        
+        municipes_restantes = Municipe.objects.exclude(id__in=ids_ja_agrupados)
+        
+        id_para_nome_conjunto = {m.id: normalizar_nome_para_conjunto(m.nome_completo) for m in municipes_restantes}
 
-        for m in municipes_com_telefone:
-            for tel_info in m.telefones:
-                if isinstance(tel_info, dict) and tel_info.get('numero'):
-                    numeros_map[tel_info['numero']].append(m.id)
+        for municipe in municipes_restantes:
+            if municipe.telefones and isinstance(municipe.telefones, list):
+                for tel in municipe.telefones:
+                    if isinstance(tel, dict) and tel.get('numero'):
+                        telefone_map[tel['numero']].append(municipe.id)
+            
+            if municipe.emails and isinstance(municipe.emails, list):
+                for email_item in municipe.emails:
+                    if isinstance(email_item, dict) and email_item.get('email'):
+                        email_map[email_item['email'].lower()].append(municipe.id)
 
-        ids_para_agrupar_flat = [ids for numero, ids in numeros_map.items() if len(ids) > 1]
-        for ids_para_agrupar in ids_para_agrupar_flat:
-            contatos = Municipe.objects.filter(id__in=ids_para_agrupar, grupo_duplicado__isnull=True)
-            if contatos.count() > 1:
-                novo_grupo_id = uuid.uuid4()
-                contatos.update(grupo_duplicado=novo_grupo_id)
-                total_grupos_encontrados += 1
+        adjacencia = defaultdict(set)
+        grupos_de_contato = list(telefone_map.values()) + list(email_map.values())
 
-        self.stdout.write(self.style.SUCCESS(f'Verificação concluída! {total_grupos_encontrados} grupos de possíveis duplicatas foram encontrados e etiquetados.'))
+        for grupo_ids in grupos_de_contato:
+            if len(grupo_ids) < 2:
+                continue
+            
+            for id1, id2 in itertools.combinations(grupo_ids, 2):
+                conjunto1 = id_para_nome_conjunto.get(id1)
+                conjunto2 = id_para_nome_conjunto.get(id2)
+
+                if not conjunto1 or not conjunto2:
+                    continue
+
+                # A lógica de subconjunto!
+                if conjunto1.issubset(conjunto2) or conjunto2.issubset(conjunto1):
+                    adjacencia[id1].add(id2)
+                    adjacencia[id2].add(id1)
+
+        visitados = set(ids_ja_agrupados)
+        for municipe_id in list(adjacencia.keys()):
+            if municipe_id not in visitados:
+                componente_atual = []
+                pilha = [municipe_id]
+                visitados.add(municipe_id)
+
+                while pilha:
+                    no_atual = pilha.pop()
+                    componente_atual.append(no_atual)
+                    for vizinho in adjacencia[no_atual]:
+                        if vizinho not in visitados:
+                            visitados.add(vizinho)
+                            pilha.append(vizinho)
+                
+                if len(componente_atual) > 1:
+                    novo_grupo_id = uuid.uuid4()
+                    Municipe.objects.filter(id__in=componente_atual).update(grupo_duplicado=novo_grupo_id)
+                    total_grupos_encontrados += 1
+
+        self.stdout.write(self.style.SUCCESS(f'Verificação concluída! Total de {total_grupos_encontrados} grupos de duplicatas foram encontrados.'))

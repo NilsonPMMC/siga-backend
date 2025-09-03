@@ -88,10 +88,10 @@ class MunicipeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Municipe
         fields = [
-            'id', 'nome_completo', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
+            'id', 'nome_completo', 'tratamento', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
             'telefones', 'endereco', 'observacoes', 'cargo', 'orgao',
             'contas',
-            'categoria', 'categoria_nome', 'data_atualizacao',
+            'categoria', 'categoria_nome', 'data_cadastro', 'data_atualizacao',
             'qualidade_dados', 'alerta_atualizacao',
             'pode_editar', 'grupo_duplicado'
         ]
@@ -109,7 +109,6 @@ class MunicipeSerializer(serializers.ModelSerializer):
                 
         return value
     
-    # --- MÉTODO PARA CUSTOMIZAR A SAÍDA (GET) ---
     def to_representation(self, instance):
         """
         Este método controla como os dados são MOSTRADOS.
@@ -130,7 +129,21 @@ class MunicipeSerializer(serializers.ModelSerializer):
             return True
 
         if is_in_group(user, 'Recepção'):
-            return obj.categoria is not None and obj.categoria.nome == 'Munícipe'
+            # Regra 1: O contato DEVE ser da categoria 'Munícipe'.
+            if not (obj.categoria is not None and obj.categoria.nome == 'Munícipe'):
+                return False
+            
+            # Regra 2: Pode editar se o munícipe for público (sem conta vinculada).
+            if not obj.contas.exists():
+                return True
+            
+            # Regra 3: Se tiver conta, pode editar se houver uma conta em comum.
+            if hasattr(user, 'perfil'):
+                user_contas = set(user.perfil.contas.all())
+                municipe_contas = set(obj.contas.all())
+                return not user_contas.isdisjoint(municipe_contas)
+            
+            return False
 
         if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
             if not obj.contas.exists():
@@ -143,11 +156,10 @@ class MunicipeSerializer(serializers.ModelSerializer):
         
         return False
 
-    # O resto dos métodos (get_qualidade_dados, etc.) permanece igual
     def get_qualidade_dados(self, obj):
         score = 0
         if obj.cpf and obj.cpf.strip(): score += 1
-        if obj.emails and obj.emails[0].get('email'): score += 1
+        if obj.emails and any(e.get('email') for e in obj.emails if isinstance(e, dict)): score += 1
         if obj.telefones: score += 1
         if obj.endereco and obj.endereco.get('cep'): score += 1
         if score == 4: return "Completo"
@@ -336,9 +348,22 @@ class MunicipeLookupSerializer(serializers.ModelSerializer):
         if user.is_superuser:
             return True
 
-        # Recepção pode editar contatos sem conta (públicos)
         if is_in_group(user, 'Recepção'):
-            return obj.categoria is not None and obj.categoria.nome == 'Munícipe'
+            # Regra 1: O contato DEVE ser da categoria 'Munícipe'.
+            if not (obj.categoria is not None and obj.categoria.nome == 'Munícipe'):
+                return False
+            
+            # Regra 2: Pode editar se o munícipe for público (sem conta vinculada).
+            if not obj.contas.exists():
+                return True
+            
+            # Regra 3: Se tiver conta, pode editar se houver uma conta em comum.
+            if hasattr(user, 'perfil'):
+                user_contas = set(user.perfil.contas.all())
+                municipe_contas = set(obj.contas.all())
+                return not user_contas.isdisjoint(municipe_contas)
+            
+            return False
 
         if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
             # Pode editar se for público

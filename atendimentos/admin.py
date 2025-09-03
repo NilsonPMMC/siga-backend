@@ -183,7 +183,7 @@ class MunicipeResource(resources.ModelResource):
 @admin.register(Municipe)
 class MunicipeAdmin(ImportExportModelAdmin):
     resource_class = MunicipeResource
-    list_display = ('nome_completo', 'cpf', 'get_email_principal', 'get_telefone_principal', 'categoria', 'listar_contas')
+    list_display = ('nome_completo', 'tratamento', 'cpf', 'get_email_principal', 'get_telefone_principal', 'categoria', 'listar_contas')
     search_fields = ('nome_completo', 'cpf', 'emails__email')
     list_filter = ('categoria', 'contas')
     filter_horizontal = ('contas',)

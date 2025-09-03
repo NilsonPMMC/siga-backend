@@ -87,7 +87,7 @@
             <div class="card">
                 <div class="card-content">
                     <div class="name">
-                        {{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}
+                        {% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}
                     </div>
                     <div class="details">
                         {% if convidado.municipe.cargo %}

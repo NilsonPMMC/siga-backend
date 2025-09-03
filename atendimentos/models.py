@@ -61,6 +61,13 @@ class CategoriaContato(UppercaseFieldsMixin, models.Model):
 
 class Municipe(UppercaseFieldsMixin, models.Model):
     nome_completo = models.CharField(max_length=255, verbose_name="Nome Completo")
+    tratamento = models.CharField(
+        max_length=50, 
+        blank=True, 
+        null=True, 
+        verbose_name="Pronome de Tratamento",
+        help_text="Ex: Senhor, Senhora, Dr., Dra., Vossa Excelência"
+    )
     nome_de_guerra = models.CharField(
         max_length=100, 
         blank=True, 

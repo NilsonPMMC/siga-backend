@@ -35,6 +35,8 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from django.db import transaction, models
+from django.apps import apps
 from itertools import chain
 
 # Imports do Django REST Framework
@@ -259,8 +261,6 @@ class CategoriaContatoListView(generics.ListAPIView):
 # -----------------------------------------------------------------------------
 
 class MunicipeListCreateView(generics.ListCreateAPIView):
-    # A permissão de criar (POST) agora é livre para qualquer autenticado.
-    # A permissão de ver (GET) será tratada no get_queryset e no frontend.
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = MunicipeSerializer
 
@@ -269,53 +269,53 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
         termo_busca = self.request.query_params.get('q', None)
         letra_inicial = self.request.query_params.get('letra', None)
         grupo_id = self.request.query_params.get('grupo', None)
-        mostrar_duplicatas = self.request.query_params.get('duplicatas', None)
+        tem_grupo_duplicado = self.request.query_params.get('tem_grupo_duplicado', None)
 
         base_queryset = Municipe.objects.prefetch_related('contas', 'categoria')
 
-        # Se um grupo for solicitado, ele tem prioridade máxima.
         if grupo_id:
             return base_queryset.filter(grupo_duplicado=grupo_id).order_by('nome_completo')
 
-        # --- LÓGICA DE PERMISSÃO DE VISUALIZAÇÃO REFINADA ---
+        if tem_grupo_duplicado == 'true':
+            return base_queryset.exclude(grupo_duplicado__isnull=True).order_by('grupo_duplicado', 'nome_completo')
 
-        # Superusuário e Recepção veem TODOS os contatos.
-        #if user.is_superuser or is_in_group(user, 'Recepção'):
-        #    pass
-
-        # Membro/Secretária continuam com a regra de contas.
-        elif hasattr(user, 'perfil'):
+        if hasattr(user, 'perfil'):
             contas_usuario = user.perfil.contas.all()
-            base_queryset = base_queryset.filter(contas__in=contas_usuario).distinct()
+            # Mostra contatos que são públicos (sem conta) OU que pertencem a uma das contas do usuário.
+            base_queryset = base_queryset.filter(
+                Q(contas__isnull=True) | Q(contas__in=contas_usuario)
+            ).distinct()
             
-            # Se for da Recepção, aplica o filtro adicional de categoria
             if is_in_group(user, 'Recepção'):
                 base_queryset = base_queryset.filter(categoria__nome='Munícipe')
-        
-        # Outros perfis (se existirem) não veem nada.
-        else:
+        elif not user.is_superuser:
             return Municipe.objects.none()
-        
-        # Aplica os filtros de tela sobre a lista já permitida
-        if mostrar_duplicatas == 'true':
-            base_queryset = base_queryset.exclude(grupo_duplicado__isnull=True)
-        
+
         if termo_busca:
-            return base_queryset.filter(
-                Q(nome_completo__icontains=termo_busca) |
-                Q(nome_de_guerra__icontains=termo_busca) |
+            # --- INÍCIO DA LÓGICA DE BUSCA INTELIGENTE ---
+            
+            # 1. Lógica para buscar por cada palavra no nome
+            query_palavras_nome = Q()
+            for palavra in termo_busca.split():
+                query_palavras_nome &= (Q(nome_completo__icontains=palavra) | Q(nome_de_guerra__icontains=palavra))
+
+            # 2. Lógica para buscar o termo completo em outros campos
+            query_outros_campos = (
                 Q(cpf__icontains=termo_busca) |
                 Q(emails__contains=[{'email': termo_busca}]) |
                 Q(cargo__icontains=termo_busca) |
                 Q(orgao__icontains=termo_busca) |
                 Q(categoria__nome__icontains=termo_busca)
-            ).order_by('nome_completo')
+            )
+
+            # 3. Combina as duas lógicas com "OU"
+            final_query = query_palavras_nome | query_outros_campos
+            
+            return base_queryset.filter(final_query).distinct().order_by('nome_completo')
+            # --- FIM DA LÓGICA DE BUSCA INTELIGENTE ---
         
         if letra_inicial:
             return base_queryset.filter(nome_completo__istartswith=letra_inicial).order_by('nome_completo')
-        
-        if mostrar_duplicatas == 'true':
-            return base_queryset.order_by('grupo_duplicado', 'nome_completo')
         
         return base_queryset.order_by('-data_cadastro')[:100]
 
@@ -341,7 +341,11 @@ class MunicipeLookupView(generics.ListAPIView):
 
         if not user.is_superuser:
             if hasattr(user, 'perfil'):
-                queryset = queryset.filter(contas__in=user.perfil.contas.all())
+                contas_usuario = user.perfil.contas.all()
+                # Mostra contatos que são públicos (sem conta) OU que pertencem a uma das contas do usuário.
+                queryset = queryset.filter(
+                    Q(contas__isnull=True) | Q(contas__in=contas_usuario)
+                ).distinct()
             else:
                 return Municipe.objects.none()
 
@@ -366,6 +370,98 @@ class MunicipeLookupView(generics.ListAPIView):
             
         return resultados.order_by('nome_completo')[:20]
 
+class MesclarDuplicatasView(APIView):
+    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+
+    def post(self, request, *args, **kwargs):
+        id_principal = request.data.get('id_principal')
+        id_duplicado = request.data.get('id_duplicado')
+
+        if not id_principal or not id_duplicado:
+            return Response({'error': 'Os IDs do registro principal e do duplicado são obrigatórios.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if id_principal == id_duplicado:
+            return Response({'error': 'O ID principal e o duplicado não podem ser iguais.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            municipe_principal = Municipe.objects.get(pk=id_principal)
+            municipe_duplicado = Municipe.objects.get(pk=id_duplicado)
+        except Municipe.DoesNotExist:
+            return Response({'error': 'Um ou ambos os IDs de Munícipe não foram encontrados.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            with transaction.atomic():
+                # --- LÓGICA DE TRANSFERÊNCIA DE VÍNCULOS ROBUSTA ---
+
+                # 1. Transfere relações ManyToMany que estão NO PRÓPRIO modelo Municipe (ex: municipe.contas)
+                for field in Municipe._meta.many_to_many:
+                    manager_duplicado = getattr(municipe_duplicado, field.name)
+                    manager_principal = getattr(municipe_principal, field.name)
+                    related_objs = manager_duplicado.all()
+                    if related_objs.exists():
+                        manager_principal.add(*related_objs)
+                
+                # 2. Transfere todas as relações de outros modelos que apontam PARA Municipe
+                all_related_objects = [
+                    f for f in Municipe._meta.get_fields(include_hidden=True)
+                    if (f.one_to_many or f.one_to_one or f.many_to_many) and f.auto_created and not f.concrete
+                ]
+
+                for rel in all_related_objects:
+                    # Se a relação M2M é definida no próprio Municipe, ela já foi tratada no loop anterior.
+                    # Isso evita o erro '...+' em relações reversas de M2M.
+                    if rel.many_to_many and rel.field.model == Municipe:
+                        continue
+
+                    try:
+                        accessor_name = rel.get_accessor_name()
+                        if not hasattr(municipe_duplicado, accessor_name):
+                            continue
+                    except AttributeError:
+                        continue
+
+                    # Caso de ForeignKey e OneToOne (ex: Atendimento -> Municipe)
+                    if rel.one_to_many or rel.one_to_one:
+                        related_queryset = getattr(municipe_duplicado, accessor_name).all()
+                        related_queryset.update(**{rel.field.name: municipe_principal})
+                    
+                    # Caso de ManyToMany (ex: MailingList -> Municipe)
+                    elif rel.many_to_many:
+                        related_queryset = getattr(municipe_duplicado, accessor_name).all()
+                        for related_obj in related_queryset:
+                            m2m_field_on_related = getattr(related_obj, rel.field.name)
+                            m2m_field_on_related.add(municipe_principal)
+                            m2m_field_on_related.remove(municipe_duplicado)
+
+                # 3. Consolida dados de contato (com tratamento para campos nulos)
+                # Garante que as listas existam antes de tentar adicionar itens a elas.
+                if municipe_principal.emails is None:
+                    municipe_principal.emails = []
+                if municipe_principal.telefones is None:
+                    municipe_principal.telefones = []
+
+                emails_principais = {e['email'].lower() for e in municipe_principal.emails if isinstance(e, dict) and e.get('email')}
+                for email_info in (municipe_duplicado.emails or []): # Usa 'or []' para tratar o caso de ser None
+                    if isinstance(email_info, dict) and email_info.get('email') and email_info['email'].lower() not in emails_principais:
+                        municipe_principal.emails.append(email_info)
+
+                telefones_principais = {t['numero'] for t in municipe_principal.telefones if isinstance(t, dict) and t.get('numero')}
+                for tel_info in (municipe_duplicado.telefones or []): # Usa 'or []' para tratar o caso de ser None
+                    if isinstance(tel_info, dict) and tel_info.get('numero') and tel_info['numero'] not in telefones_principais:
+                        municipe_principal.telefones.append(tel_info)
+                
+                municipe_principal.save()
+                
+                # 4. Remove o registro duplicado
+                municipe_duplicado.delete()
+
+            return Response({'status': 'Registros mesclados com sucesso!'}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response(
+                {'error': f'Ocorreu um erro durante a fusão: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 # -----------------------------------------------------------------------------
 # Views de Tramitação e Anexos
@@ -850,11 +946,8 @@ class ExportMunicipesExcelView(APIView):
     def get(self, request, *args, **kwargs):
         user = request.user
         
-        # 1. A busca inicial agora usa prefetch_related para otimizar a busca das múltiplas contas
         queryset = Municipe.objects.prefetch_related('categoria', 'contas').all()
 
-        # 2. A lógica de filtragem da lista de contatos é aplicada primeiro
-        #    (espelhando a lógica da sua tela de Contatos)
         if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
             if hasattr(user, 'perfil'):
                 contas_usuario = user.perfil.contas.all()
@@ -864,56 +957,53 @@ class ExportMunicipesExcelView(APIView):
             else:
                 queryset = queryset.filter(contas__isnull=True)
 
-        # 3. O filtro de busca por texto é aplicado sobre a lista já filtrada
         termo_busca = self.request.query_params.get('q', None)
         if termo_busca:
-            queryset = queryset.filter(
-                Q(nome_completo__icontains=termo_busca) |
+            palavras = termo_busca.split()
+            query_palavras_nome = reduce(operator.and_, [
+                (Q(nome_completo__icontains=p) | Q(nome_de_guerra__icontains=p)) for p in palavras
+            ])
+            query_outros_campos = (
                 Q(cpf__icontains=termo_busca) |
-                Q(email__icontains=termo_busca) |
+                Q(emails__contains=[{'email': termo_busca}]) |
                 Q(cargo__icontains=termo_busca) |
                 Q(orgao__icontains=termo_busca) |
                 Q(categoria__nome__icontains=termo_busca)
             )
+            queryset = queryset.filter(query_palavras_nome | query_outros_campos).distinct()
 
-        # --- PREPARAÇÃO DO ARQUIVO EXCEL ---
         workbook = openpyxl.Workbook()
         sheet = workbook.active
         sheet.title = 'Contatos'
 
-        # Adicionamos a coluna "Contas Vinculadas"
-        headers = ['Nome Completo', 'CPF', 'Data de Nascimento', 'Email', 'Telefone Principal', 'Cargo', 'Órgão', 'Categoria', 'Contas Vinculadas']
+        headers = ['Nome Completo', 'CPF', 'Data de Nascimento', 'Email Principal', 'Telefone Principal', 'Cargo', 'Órgão', 'Categoria', 'Contas Vinculadas']
         sheet.append(headers)
 
-        # --- LOOP PARA PREENCHER AS LINHAS ---
         for municipe in queryset:
-            # Formata o telefone principal
-            telefone = municipe.telefones[0].get('numero', '') if municipe.telefones else ''
-            
-            # Formata a data de nascimento
-            data_nasc_formatada = municipe.data_nascimento.strftime('%d/%m/%Y') if municipe.data_nascimento else ''
-            
-            # Formata a categoria
-            categoria_nome = municipe.categoria.nome if municipe.categoria else ''
+            # --- INÍCIO DA CORREÇÃO ---
+            # Pega o primeiro e-mail da lista JSON, com segurança.
+            email_principal = ''
+            if municipe.emails and isinstance(municipe.emails, list) and len(municipe.emails) > 0:
+                email_principal = municipe.emails[0].get('email', '')
+            # --- FIM DA CORREÇÃO ---
 
-            # --- A MÁGICA PARA AS MÚLTIPLAS CONTAS ---
-            # Pega o nome de cada conta e os une em uma única string, separados por vírgula
+            telefone = municipe.telefones[0].get('numero', '') if municipe.telefones else ''
+            data_nasc_formatada = municipe.data_nascimento.strftime('%d/%m/%Y') if municipe.data_nascimento else ''
+            categoria_nome = municipe.categoria.nome if municipe.categoria else ''
             contas_vinculadas = ", ".join([conta.nome for conta in municipe.contas.all()])
 
-            # Adiciona a linha completa à planilha
             sheet.append([
                 municipe.nome_completo,
                 municipe.cpf,
                 data_nasc_formatada,
-                municipe.email,
+                email_principal, # <-- Usa a variável corrigida
                 telefone,
                 municipe.cargo,
                 municipe.orgao,
                 categoria_nome,
-                contas_vinculadas # <<< Usa a string formatada
+                contas_vinculadas
             ])
 
-        # --- GERA A RESPOSTA HTTP COM O ARQUIVO ---
         response = HttpResponse(
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )

@@ -8,7 +8,7 @@ class UppercaseFieldsMixin:
     Mixin para converter automaticamente os campos CharField e TextField para
     letras maiúsculas ao salvar o objeto.
     """
-    UPPERCASE_EXCEPTIONS = ('emails', 'endereco', 'descricao', 'status')
+    UPPERCASE_EXCEPTIONS = ('emails', 'email', 'endereco', 'descricao', 'status')
 
     def save(self, *args, **kwargs):
 
@@ -23,6 +23,7 @@ class Evento(UppercaseFieldsMixin, models.Model):
         ('agendado', 'Agendado'),
         ('cancelado', 'Cancelado'),
         ('concluido', 'Concluído'),
+        ('standby', 'Stand-by'),
     ]
 
     conta = models.ForeignKey(

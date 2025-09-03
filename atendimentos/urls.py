@@ -30,6 +30,7 @@ from .views import (
     GoogleAuthInitiateView,
     ListarEventosGoogleView,
     MarcarNotificacaoComoLidaView,
+    MesclarDuplicatasView,
     MunicipeCheckDuplicatesView,
     MunicipeDetailDataView,
     MunicipeDetailView,
@@ -68,6 +69,7 @@ urlpatterns = [
     path('municipes/<int:pk>/', MunicipeDetailView.as_view(), name='municipe-detail'),
     path('municipes/<int:pk>/historico/', MunicipeDetailDataView.as_view(), name='municipe-historico'),
     path('municipes/check-duplicates/', MunicipeCheckDuplicatesView.as_view(), name='municipe-check-duplicates'),
+    path('municipes/mesclar-duplicatas/', MesclarDuplicatasView.as_view(), name='municipe-mesclar-duplicatas'), 
     
     # --- Atendimentos e sub-recursos (tramitações, anexos) ---
     path('atendimentos/', AtendimentoListCreateView.as_view(), name='atendimento-list-create'),
