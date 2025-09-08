@@ -2,7 +2,7 @@ from .models import *
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.models import User
-from .permissions import is_in_group
+from .permissions import is_in_group, CanEditMunicipeDetails
 from datetime import date
 from django.utils import timezone
 

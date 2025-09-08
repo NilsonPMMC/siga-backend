@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:ital,wght@0,400;0,700;0,800;1,400;1,700;1,800&display=swap" rel="stylesheet">
     <meta charset="UTF-8">
     <title>Certificado de Presença</title>
     <style>
@@ -9,27 +12,36 @@
             margin: 1cm;
         }
         body {
-            font-family: sans-serif;
+            font-family: "Barlow Semi Condensed", sans-serif;
             text-align: center;
-            border: 10px solid #0bbbef;
+            border: 3px solid #c6c6c6;
+            border-radius: 50px;
             padding: 2cm;
             height: 100%;
             box-sizing: border-box;
         }
         h1 {
             font-size: 48px;
-            color: #213A8F;
-            margin-bottom: 50px;
+            color: #1f3d8c;
+            margin-bottom: 40px;
+            font-weight: 800;
         }
         p {
             font-size: 20px;
-            line-height: 1.6;
+            line-height: 1.25;
+            font-style: italic;
+        }
+        p.small{
+            font-size: 14px;
+            line-height: 1;
+            font-style: italic;
         }
         .nome-participante {
             font-size: 32px;
-            font-weight: bold;
+            font-weight: 700;
+            font-style: italic;
             color: #213a8f;
-            margin: 40px 0;
+            margin: 30px 0;
             border-bottom: 2px solid #ccc;
             display: inline-block;
             padding-bottom: 10px;
@@ -54,10 +66,10 @@
         <img src="{{ brasao_url }}" alt="Brasão">
     </div>
     
-    <h1>CERTIFICADO DE PRESENÇA</h1>
+    <h1>DECLARAÇÃO DE PRESENÇA</h1>
     
     <p>
-        Certificamos que
+        Declaramos que
     </p>
 
     <p class="nome-participante">
@@ -65,8 +77,12 @@
     </p>
     
     <p>
-        participou do evento <strong class="nome-evento">"{{ nome_evento }}"</strong>,
-        realizado em {{ data_evento }}.
+        registrou sua presença no evento <strong class="nome-evento">"{{ nome_evento }}"</strong>,
+        realizado em {{ data_evento }}, através do nosso Sistema de Lista de Presença.
+    </p>
+    
+    <p class="small">
+        * Esta declaração se destina apenas a confirmar o registro de sua presença e não substitui um certificado oficial de participação.
     </p>
 
 </body>

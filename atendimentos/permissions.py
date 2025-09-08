@@ -100,8 +100,6 @@ class CanAccessContacts(BasePermission):
         # Nega o acesso se o usuário estiver no grupo 'Recepção'.
         return not is_in_group(user, 'Recepção')
     
-# Em permissions.py, substitua a classe inteira por esta:
-
 class CanEditMunicipeDetails(BasePermission):
     """
     REGRA DE EDIÇÃO para um contato específico (botão de lápis).

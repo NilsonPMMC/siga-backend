@@ -93,14 +93,9 @@ def gerar_e_enviar_certificado(presenca_id):
 
     conta = presenca.evento.conta
     
-    # --- CORREÇÃO 1: Caminho dos Logotipos ---
-    # Usamos o caminho do sistema de arquivos em vez de uma URL.
-    # O 'base_url' no renderizador do PDF cuidará do resto.
     logo_path = conta.logo_conta.path if conta.logo_conta else ''
     brasao_path = conta.brasao_instituicao.path if conta.brasao_instituicao else ''
 
-    # --- CORREÇÃO 2: Data em Português ---
-    # Criamos a data em português manualmente para garantir a tradução.
     meses_pt_br = [
         'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
         'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
@@ -111,20 +106,17 @@ def gerar_e_enviar_certificado(presenca_id):
     ano = data_evento.year
     data_formatada_pt_br = f'{dia} de {mes} de {ano}'
 
-    # --- LÓGICA DE GERAÇÃO DO PDF ---
-    contexto_pdf = {
-        'nome_completo': presenca.nome_completo,
-        'nome_evento': presenca.evento.nome,
-        'data_evento': data_formatada_pt_br, # Usamos a data já formatada
-        'logo_url': f'file://{logo_path}', # Passamos o caminho do arquivo
-        'brasao_url': f'file://{brasao_path}', # Passamos o caminho do arquivo
-    }
-    html_string_pdf = render_to_string('eventos/certificados/template_certificado.html', contexto_pdf)
-    
-    # WeasyPrint precisa do base_url para encontrar os arquivos de imagem locais
-    pdf_file = HTML(string=html_string_pdf, base_url=settings.BASE_DIR).write_pdf()
+    #contexto_pdf = {
+    #    'nome_completo': presenca.nome_completo,
+    #   'nome_evento': presenca.evento.nome,
+    #    'data_evento': data_formatada_pt_br,
+    #    'logo_url': f'file://{logo_path}',
+    #    'brasao_url': f'file://{brasao_path}',
+    #}
+    #html_string_pdf = render_to_string('eventos/certificados/template_certificado.html', contexto_pdf)
 
-    # --- LÓGICA DE GERAÇÃO DO E-MAIL (sem alterações) ---
+    #pdf_file = HTML(string=html_string_pdf, base_url=settings.BASE_DIR).write_pdf()
+
     contexto_email = {
         'nome_completo': presenca.nome_completo,
         'nome_evento': presenca.evento.nome,
@@ -135,16 +127,16 @@ def gerar_e_enviar_certificado(presenca_id):
 
     try:
         email = EmailMessage(
-            subject=f"Seu certificado do evento: {presenca.evento.nome}",
+            subject=f"Agradecemos sua participação no evento: {presenca.evento.nome}",
             body=corpo_html_email,
             to=[presenca.email]
         )
         email.content_subtype = "html" 
-        email.attach(
-            f'Certificado - {presenca.evento.nome}.pdf',
-            pdf_file,
-            'application/pdf'
-        )
+        #email.attach(
+        #    f'Certificado - {presenca.evento.nome}.pdf',
+        #    pdf_file,
+        #    'application/pdf'
+        #)
         email.send()
         return f"Certificado enviado com sucesso para {presenca.email}."
     except Exception as e:
