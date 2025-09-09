@@ -122,7 +122,7 @@ class CanEditMunicipeDetails(BasePermission):
             # 2. CONDIÇÃO ESPECÍFICA PARA RECEPÇÃO:
             # Se já passou na condição 1, agora verifica a categoria.
             if is_in_group(user, 'Recepção'):
-                return obj.categoria is not None and obj.categoria.nome == 'Munícipe'
+                return obj.categoria is not None and obj.categoria.nome == 'MUNÍCIPE'
 
             # 3. PERMISSÃO PARA OUTROS PERFIS:
             # Se for Membro ou Secretária e passou na condição 1, a permissão é concedida.
@@ -200,3 +200,12 @@ class CanAccessEspaco(BasePermission):
             return not user_contas.isdisjoint(espaco_contas)
 
         return False
+
+class CanManageLembretes(BasePermission):
+    """
+    Permissão para gerenciar Lembretes.
+    Apenas Secretárias e Superusuários.
+    """
+    def has_permission(self, request, view):
+        user = request.user
+        return user.is_superuser or is_in_group(user, 'Secretária')

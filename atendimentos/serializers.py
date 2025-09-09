@@ -81,7 +81,7 @@ class MunicipeSerializer(serializers.ModelSerializer):
         queryset=Conta.objects.all(),
         required=False
     )
-    categoria_nome = serializers.CharField(source='categoria.nome', read_only=True, default='Munícipe')
+    categoria_nome = serializers.CharField(source='categoria.nome', read_only=True, default='MUNÍCIPE')
     qualidade_dados = serializers.SerializerMethodField()
     alerta_atualizacao = serializers.SerializerMethodField()
 
@@ -130,7 +130,7 @@ class MunicipeSerializer(serializers.ModelSerializer):
 
         if is_in_group(user, 'Recepção'):
             # Regra 1: O contato DEVE ser da categoria 'Munícipe'.
-            if not (obj.categoria is not None and obj.categoria.nome == 'Munícipe'):
+            if not (obj.categoria is not None and obj.categoria.nome == 'MUNÍCIPE'):
                 return False
             
             # Regra 2: Pode editar se o munícipe for público (sem conta vinculada).
@@ -350,7 +350,7 @@ class MunicipeLookupSerializer(serializers.ModelSerializer):
 
         if is_in_group(user, 'Recepção'):
             # Regra 1: O contato DEVE ser da categoria 'Munícipe'.
-            if not (obj.categoria is not None and obj.categoria.nome == 'Munícipe'):
+            if not (obj.categoria is not None and obj.categoria.nome == 'MUNÍCIPE'):
                 return False
             
             # Regra 2: Pode editar se o munícipe for público (sem conta vinculada).
@@ -453,3 +453,23 @@ class ReservaEspacoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"Conflito de agendamento. O espaço '{espaco.nome}' já está reservado neste horário.")
         
         return data
+
+class LembreteSerializer(serializers.ModelSerializer):
+    # Campos adicionais para facilitar a exibição no frontend
+    usuario_nome = serializers.CharField(source='usuario.get_full_name', read_only=True)
+    conta_nome = serializers.CharField(source='conta.nome', read_only=True)
+
+    class Meta:
+        model = Lembrete
+        fields = [
+            'id', 
+            'conta', 
+            'conta_nome',
+            'usuario', 
+            'usuario_nome',
+            'titulo', 
+            'conteudo', 
+            'data_criacao', 
+            'data_atualizacao'
+        ]
+        read_only_fields = ['usuario']

@@ -53,20 +53,26 @@
         <tbody>
             {% for solicitacao in solicitacoes %}
             <tr>
-                <td>{{ solicitacao.data_criacao|date:"d/m/Y" }}</td>
-                <td>{{ solicitacao.solicitante.nome_completo|default:"" }}</td>
-                <td>{{ solicitacao.solicitante.cargo_orgao|default:"" }}</td>
-                <td>{{ solicitacao.assunto }}</td>
+                <td>{{ solicitacao.data_criacao|date:"d/m/Y H:i" }}</td>
+                <td>{{ solicitacao.solicitante.nome_completo }}</td>
                 <td>
-                    {% if solicitacao.solicitante.telefones %}
-                        {{ solicitacao.solicitante.telefones.0.numero|default:"" }}
+                    {{ solicitacao.solicitante.cargo|default_if_none:"" }}
+                    {% if solicitacao.solicitante.orgao %}
+                        <br><small><b>Órgão:</b> {{ solicitacao.solicitante.orgao }}</small>
                     {% endif %}
                 </td>
+                <td>
+                    <strong>{{ solicitacao.assunto }}</strong>
+                    {% if solicitacao.detalhes %}
+                        <p style="margin: 5px 0 0; font-size: 0.9em; color: #555;">{{ solicitacao.detalhes|linebreaksbr }}</p>
+                    {% endif %}
+                </td>
+                <td>{{ solicitacao.conta.nome }}</td>
                 <td>{{ solicitacao.get_status_display }}</td>
             </tr>
             {% empty %}
             <tr>
-                <td colspan="6" style="text-align:center;">Nenhuma solicitação encontrada para os filtros aplicados.</td>
+                <td colspan="7" style="text-align: center;">Nenhuma solicitação encontrada para os filtros selecionados.</td>
             </tr>
             {% endfor %}
         </tbody>

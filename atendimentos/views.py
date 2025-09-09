@@ -4,6 +4,7 @@ import openpyxl
 import calendar
 import operator
 import traceback
+import logging
 
 # Imports de bibliotecas padrão
 from datetime import datetime, time, timedelta
@@ -55,7 +56,7 @@ from rest_framework.generics import ListAPIView
 from .models import *
 from .permissions import (CanAccessContacts, CanAccessObjectByConta, CanViewSharedAgenda, CanAccessEspaco,
                           CanInteractWithAtendimento, CanManageAgendas, CanCreateGoogleEvent, CanManageReservas,
-                          CanViewAgendaReports, CanViewAtendimentoReports, CanEditMunicipeDetails, CanManageCheckIn,
+                          CanViewAgendaReports, CanViewAtendimentoReports, CanEditMunicipeDetails, CanManageCheckIn, CanManageLembretes,
                           is_in_group)
 from .serializers import *
 
@@ -287,7 +288,7 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
             ).distinct()
             
             if is_in_group(user, 'Recepção'):
-                base_queryset = base_queryset.filter(categoria__nome='Munícipe')
+                base_queryset = base_queryset.filter(categoria__nome='MUNÍCIPE')
         elif not user.is_superuser:
             return Municipe.objects.none()
 
@@ -368,7 +369,7 @@ class MunicipeLookupView(generics.ListAPIView):
         
         resultados = queryset.filter(final_query)
             
-        return resultados.order_by('nome_completo')[:20]
+        return resultados.order_by('nome_completo')[:100]
 
 class MesclarDuplicatasView(APIView):
     permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
@@ -1299,7 +1300,7 @@ class BuscaGlobalView(APIView):
             
             # Se for da Recepção, aplica o filtro adicional de categoria
             if is_in_group(user, 'Recepção'):
-                municipe_qs = municipe_qs.filter(categoria__nome='Munícipe')
+                municipe_qs = municipe_qs.filter(categoria__nome='MUNÍCIPE')
         elif hasattr(user, 'perfil'):
             contas_usuario = user.perfil.contas.all()
             municipe_qs = Municipe.objects.filter(
@@ -1331,6 +1332,73 @@ class BuscaGlobalView(APIView):
 
         serializer = BuscaGlobalSerializer(resultados, many=True)
         return Response(serializer.data)
+
+
+# -----------------------------------------------------------------------------
+# Views de Lembretes
+# -----------------------------------------------------------------------------
+
+class LembreteListCreateView(generics.ListCreateAPIView):
+    serializer_class = LembreteSerializer
+    permission_classes = [permissions.IsAuthenticated, CanManageLembretes]
+    pagination_class = None
+
+    def get_queryset(self):
+        user = self.request.user
+        
+        # --- LOG DE DIAGNÓSTICO ---
+        # Veremos isso no console do Django ao acessar a página
+        print(f"--- INICIANDO BUSCA DE LEMBRETES PARA O USUÁRIO: {user.username} ---")
+
+        # 1. Busca inicial baseada na permissão
+        if user.is_superuser:
+            queryset = Lembrete.objects.all()
+            print(f"[DIAGNÓSTICO] Usuário é superuser. Total de lembretes no sistema: {queryset.count()}")
+        elif hasattr(user, 'perfil'):
+            user_contas = user.perfil.contas.all()
+            contas_ids = list(user_contas.values_list('id', flat=True))
+            print(f"[DIAGNÓSTICO] Usuário tem perfil vinculado às contas IDs: {contas_ids}")
+            
+            queryset = Lembrete.objects.filter(conta__in=user_contas)
+            print(f"[DIAGNÓSTICO] Lembretes encontrados para estas contas: {queryset.count()}")
+        else:
+            print("[DIAGNÓSTICO] Usuário não é superuser e não tem perfil. Nenhum lembrete será retornado.")
+            return Lembrete.objects.none()
+
+        # 2. Lógica de filtro por data
+        data_inicio = self.request.query_params.get('data_inicio', None)
+        data_fim = self.request.query_params.get('data_fim', None)
+        
+        print(f"[DIAGNÓSTICO] Filtros de data recebidos: Início='{data_inicio}', Fim='{data_fim}'")
+
+        if data_inicio:
+            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
+        if data_fim:
+            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+        
+        print(f"[DIAGNÓSTICO] Total de lembretes após o filtro de data: {queryset.count()}")
+        print("--- FIM DA BUSCA DE LEMBRETES ---")
+
+        return queryset.order_by('-data_criacao')
+
+    def perform_create(self, serializer):
+        serializer.save(usuario=self.request.user)
+
+
+class LembreteDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = LembreteSerializer
+    permission_classes = [permissions.IsAuthenticated, CanManageLembretes]
+
+    def get_queryset(self):
+        user = self.request.user
+        
+        if user.is_superuser:
+            return Lembrete.objects.all()
+
+        if hasattr(user, 'perfil'):
+            return Lembrete.objects.filter(conta__in=user.perfil.contas.all())
+            
+        return Lembrete.objects.none()
 
 
 # -----------------------------------------------------------------------------

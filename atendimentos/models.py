@@ -300,3 +300,35 @@ class ReservaEspaco(UppercaseFieldsMixin, models.Model):
 
     def __str__(self):
         return f"{self.espaco.nome} - {self.titulo} em {self.data_inicio.strftime('%d/%m/%Y %H:%M')}"
+
+class Lembrete(UppercaseFieldsMixin, models.Model):
+    """
+    Modelo para registrar lembretes rápidos para gestores de conta.
+    Destinado principalmente ao perfil de Secretária.
+    """
+    UPPERCASE_EXCEPTIONS = ('conteudo',) # Adicionamos 'conteudo' para não ser convertido para maiúsculas
+
+    conta = models.ForeignKey(
+        Conta, 
+        on_delete=models.PROTECT, 
+        related_name="lembretes",
+        verbose_name="Conta do Lembrete"
+    )
+    usuario = models.ForeignKey(
+        User, 
+        on_delete=models.PROTECT, 
+        related_name="lembretes_criados",
+        verbose_name="Criado por"
+    )
+    titulo = models.CharField(max_length=255, verbose_name="Título do Lembrete")
+    conteudo = models.TextField(verbose_name="Conteúdo Detalhado")
+    data_criacao = models.DateTimeField(auto_now_add=True, verbose_name="Data de Criação")
+    data_atualizacao = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")
+
+    def __str__(self):
+        return f"Lembrete '{self.titulo}' para {self.conta.nome} em {self.data_criacao.strftime('%d/%m/%Y')}"
+
+    class Meta:
+        ordering = ['-data_criacao']
+        verbose_name = "Lembrete"
+        verbose_name_plural = "Lembretes"

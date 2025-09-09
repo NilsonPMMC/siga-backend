@@ -28,6 +28,8 @@ from .views import (
     GerarPdfAtendimentosView,
     GoogleAuthCallbackView,
     GoogleAuthInitiateView,
+    LembreteListCreateView,
+    LembreteDetailView,
     ListarEventosGoogleView,
     MarcarNotificacaoComoLidaView,
     MesclarDuplicatasView,
@@ -112,6 +114,10 @@ urlpatterns = [
     path('notificacoes/', NotificacaoListView.as_view(), name='notificacao-list'),
     path('notificacoes/<int:pk>/marcar-lida/', MarcarNotificacaoComoLidaView.as_view(), name='notificacao-marcar-lida'),
     path('busca/', BuscaGlobalView.as_view(), name='busca-global'),
+
+    # --- Lembretes ---
+    path('lembretes/', LembreteListCreateView.as_view(), name='lembrete-list-create'),
+    path('lembretes/<int:pk>/', LembreteDetailView.as_view(), name='lembrete-detail'),
 
     # --- Integração Google ---
     path('google/auth/initiate/', GoogleAuthInitiateView.as_view(), name='google-auth-initiate'),

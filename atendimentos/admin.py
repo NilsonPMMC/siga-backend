@@ -13,7 +13,7 @@ from import_export.admin import ImportExportModelAdmin
 from datetime import datetime
 from .models import (
     Conta, Municipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
-    SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato, Espaco, RegistroVisita
+    SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato, Espaco, RegistroVisita, Lembrete
 )
 
 def enviar_email_de_acesso(modeladmin, request, queryset):
@@ -261,3 +261,35 @@ class ReservaEspacoAdmin(admin.ModelAdmin):
     list_display = ('titulo', 'espaco', 'data_inicio', 'data_fim', 'responsavel')
     list_filter = ('espaco', 'responsavel')
     search_fields = ('titulo', 'observacoes')
+
+@admin.register(Lembrete)
+class LembreteAdmin(admin.ModelAdmin):
+    list_display = ('titulo', 'conta', 'usuario', 'data_criacao', 'data_atualizacao')
+    list_filter = ('conta', 'usuario', 'data_criacao')
+    search_fields = ('titulo', 'conteudo')
+    list_per_page = 20
+    
+    # Define os campos que serão exibidos no formulário de edição
+    fields = ('conta', 'titulo', 'conteudo')
+
+    def save_model(self, request, obj, form, change):
+        """
+        Ao salvar um lembrete pelo admin, define o usuário logado como o criador,
+        caso seja uma nova criação.
+        """
+        if not obj.pk: # Verifica se é um novo objeto
+            obj.usuario = request.user
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        """
+        Filtra os lembretes que o usuário pode ver. Superusuários veem todos,
+        outros usuários (como Secretárias com acesso ao admin) veem apenas
+        os lembretes das suas contas.
+        """
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        if hasattr(request.user, 'perfil'):
+            return qs.filter(conta__in=request.user.perfil.contas.all())
+        return qs.none()

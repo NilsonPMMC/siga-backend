@@ -45,9 +45,9 @@
                 <th>Data</th>
                 <th>Protocolo</th>
                 <th>Munícipe</th>
+                <th>Cargo/Órgão</th>
                 <th>Assunto</th>
                 <th>Destino (Responsável)</th>
-                <th>Categorias</th>
                 <th>Status</th>
             </tr>
         </thead>
@@ -57,13 +57,19 @@
                 <td>{{ atendimento.data_criacao|date:"d/m/Y" }}</td>
                 <td>{{ atendimento.protocolo }}</td>
                 <td>{{ atendimento.municipe.nome_completo }}</td>
-                <td>{{ atendimento.titulo }}</td>
-                <td>{% if atendimento.responsavel %}{{ atendimento.responsavel.get_full_name|default:atendimento.responsavel.username }}{% else %}N/A{% endif %}</td>
                 <td>
-                    {% for categoria in atendimento.categorias.all %}
-                        {{ categoria.nome }}{% if not forloop.last %}, {% endif %}
-                    {% endfor %}
+                    {{ atendimento.municipe.cargo|default_if_none:"" }}
+                    {% if atendimento.municipe.orgao %}
+                        <br><small><b>Órgão:</b> {{ atendimento.municipe.orgao }}</small>
+                    {% endif %}
                 </td>
+                <td>
+                    <strong>{{ atendimento.titulo }}</strong>
+                    {% if atendimento.descricao %}
+                        <p style="margin: 5px 0 0; font-size: 0.9em; color: #555;">{{ atendimento.descricao|linebreaksbr }}</p>
+                    {% endif %}
+                </td>
+                <td>{% if atendimento.responsavel %}{{ atendimento.responsavel.get_full_name|default:atendimento.responsavel.username }}{% else %}N/A{% endif %}</td>
                 <td>{{ atendimento.get_status_display }}</td>
             </tr>
             {% empty %}
