@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>DEBUG - Ofício {{ oficio.numero }}</title>
+</head>
+<body>
+    <h1>Teste de Geração de PDF</h1>
+    
+    <h2>Ofício Número: {{ oficio.numero }}</h2>
+    
+    <h3>Assunto: {{ oficio.assunto }}</h3>
+    
+    <hr>
+    
+    <div>
+        <strong>Destinatário:</strong> {{ oficio.destinatario_nome }}
+    </div>
+    
+    <hr>
+
+    <div>
+        <strong>Corpo do Ofício:</strong>
+        {{ oficio.corpo|safe }}
+    </div>
+
+    <hr>
+    
+    <p>Se você está vendo este PDF, a biblioteca xhtml2pdf está funcionando corretamente.</p>
+</body>
+</html>

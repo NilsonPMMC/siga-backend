@@ -26,6 +26,7 @@ from .views import (
     GerarPdfGoogleAgendaView,
     GerarPdfAtendimentoDetailView,
     GerarPdfAtendimentosView,
+    GerarPdfLembretesView,
     GoogleAuthCallbackView,
     GoogleAuthInitiateView,
     LembreteListCreateView,
@@ -118,6 +119,7 @@ urlpatterns = [
     # --- Lembretes ---
     path('lembretes/', LembreteListCreateView.as_view(), name='lembrete-list-create'),
     path('lembretes/<int:pk>/', LembreteDetailView.as_view(), name='lembrete-detail'),
+    path('relatorios/lembretes/pdf/', GerarPdfLembretesView.as_view(), name='relatorio-lembretes-pdf'),
 
     # --- Integração Google ---
     path('google/auth/initiate/', GoogleAuthInitiateView.as_view(), name='google-auth-initiate'),

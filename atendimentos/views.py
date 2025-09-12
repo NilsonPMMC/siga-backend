@@ -31,7 +31,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.db.models import Count, Q, Value
 from django.http import HttpResponse
-from django.shortcuts import redirect
+from django.shortcuts import redirect, get_object_or_404
 from django.template.loader import render_to_string
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
@@ -53,6 +53,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView
 
 # Imports locais (do seu projeto)
+from oficios.models import Oficio
 from .models import *
 from .permissions import (CanAccessContacts, CanAccessObjectByConta, CanViewSharedAgenda, CanAccessEspaco,
                           CanInteractWithAtendimento, CanManageAgendas, CanCreateGoogleEvent, CanManageReservas,
@@ -1346,35 +1347,37 @@ class LembreteListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         
-        # --- LOG DE DIAGNÓSTICO ---
-        # Veremos isso no console do Django ao acessar a página
         print(f"--- INICIANDO BUSCA DE LEMBRETES PARA O USUÁRIO: {user.username} ---")
 
-        # 1. Busca inicial baseada na permissão
         if user.is_superuser:
             queryset = Lembrete.objects.all()
-            print(f"[DIAGNÓSTICO] Usuário é superuser. Total de lembretes no sistema: {queryset.count()}")
         elif hasattr(user, 'perfil'):
             user_contas = user.perfil.contas.all()
-            contas_ids = list(user_contas.values_list('id', flat=True))
-            print(f"[DIAGNÓSTICO] Usuário tem perfil vinculado às contas IDs: {contas_ids}")
-            
             queryset = Lembrete.objects.filter(conta__in=user_contas)
-            print(f"[DIAGNÓSTICO] Lembretes encontrados para estas contas: {queryset.count()}")
         else:
-            print("[DIAGNÓSTICO] Usuário não é superuser e não tem perfil. Nenhum lembrete será retornado.")
             return Lembrete.objects.none()
 
-        # 2. Lógica de filtro por data
-        data_inicio = self.request.query_params.get('data_inicio', None)
-        data_fim = self.request.query_params.get('data_fim', None)
+        data_inicio_str = self.request.query_params.get('data_inicio', None)
+        data_fim_str = self.request.query_params.get('data_fim', None)
         
-        print(f"[DIAGNÓSTICO] Filtros de data recebidos: Início='{data_inicio}', Fim='{data_fim}'")
+        print(f"[DIAGNÓSTICO] Filtros de data recebidos: Início='{data_inicio_str}', Fim='{data_fim_str}'")
 
-        if data_inicio:
-            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
-        if data_fim:
-            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+        if data_inicio_str and data_fim_str:
+            try:
+                # Converte as strings de data em objetos de data do Python
+                inicio_date = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+                fim_date = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+
+                # Cria datetimes completos, do primeiro segundo do dia de início
+                # até o último segundo do dia de fim.
+                inicio_datetime = timezone.make_aware(datetime.combine(inicio_date, time.min))
+                fim_datetime = timezone.make_aware(datetime.combine(fim_date, time.max))
+                
+                # Usa o filtro __range, que é mais confiável para datetime
+                queryset = queryset.filter(data_criacao__range=(inicio_datetime, fim_datetime))
+            except (ValueError, TypeError):
+                # Se as datas forem inválidas, não faz nada e retorna a lista completa
+                pass
         
         print(f"[DIAGNÓSTICO] Total de lembretes após o filtro de data: {queryset.count()}")
         print("--- FIM DA BUSCA DE LEMBRETES ---")
@@ -1384,6 +1387,65 @@ class LembreteListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         serializer.save(usuario=self.request.user)
 
+class GerarPdfLembretesView(APIView):
+    permission_classes = [permissions.IsAuthenticated, CanManageLembretes]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        
+        # Inicia a queryset com a mesma lógica de permissão da listagem
+        if user.is_superuser:
+            queryset = Lembrete.objects.all()
+        elif hasattr(user, 'perfil'):
+            queryset = Lembrete.objects.filter(conta__in=user.perfil.contas.all())
+        else:
+            queryset = Lembrete.objects.none()
+
+        # Reaproveita a mesma lógica de filtro de data que já validamos
+        data_inicio_str = self.request.query_params.get('data_inicio', None)
+        data_fim_str = self.request.query_params.get('data_fim', None)
+
+        if data_inicio_str and data_fim_str:
+            try:
+                inicio_date = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+                fim_date = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+                inicio_datetime = timezone.make_aware(datetime.combine(inicio_date, time.min))
+                fim_datetime = timezone.make_aware(datetime.combine(fim_date, time.max))
+                queryset = queryset.filter(data_criacao__range=(inicio_datetime, fim_datetime))
+            except (ValueError, TypeError):
+                queryset = Lembrete.objects.none()
+
+        # Preparação do contexto para o template
+        conta_contexto = request.user.perfil.contas.first() if hasattr(request.user, 'perfil') else None
+        nome_instituicao = "Prefeitura Municipal" # Valor padrão
+        brasao_url = ''
+        logo_conta_url = ''
+
+        if conta_contexto:
+            nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
+            if conta_contexto.brasao_instituicao:
+                brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+            if conta_contexto.logo_conta:
+                logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
+        
+        context = {
+            'lembretes': queryset.select_related('conta', 'usuario').order_by('-data_criacao'),
+            'data_inicio': datetime.strptime(data_inicio_str, '%Y-%m-%d') if data_inicio_str else None,
+            'data_fim': datetime.strptime(data_fim_str, '%Y-%m-%d') if data_fim_str else None,
+            'nome_instituicao': nome_instituicao,
+            'brasao_url': brasao_url,
+            'logo_conta_url': logo_conta_url,
+            'data_emissao': timezone.now(),
+            'usuario_emissao': request.user.get_full_name() or request.user.username,
+            'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+        }
+
+        html_string = render_to_string('relatorios/relatorio_lembretes.html', context)
+        pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+
+        response = HttpResponse(pdf_file, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="relatorio_lembretes_{timezone.now().strftime("%Y%m%d")}.pdf"'
+        return response
 
 class LembreteDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = LembreteSerializer
@@ -1970,3 +2032,39 @@ class RemoverLinkGoogleView(APIView):
             return Response({'detail': 'Solicitação não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'detail': f'Ocorreu um erro: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# --- NOVA VIEW PARA GERAR PDF DE OFÍCIO ---
+# (Colada do arquivo oficios/views.py)
+class GerarPdfOficioView(APIView):
+    permission_classes = [permissions.IsAuthenticated] # Usaremos a permissão genérica por enquanto
+
+    def get(self, request, pk, *args, **kwargs):
+        try:
+            # Usamos .select_related para otimizar a busca
+            oficio = get_object_or_404(Oficio.objects.select_related('conta', 'criado_por'), pk=pk)
+
+            user = request.user
+            if not user.is_superuser:
+                if not hasattr(user, 'perfil') or oficio.conta not in user.perfil.contas.all():
+                    return Response({"detail": "Você não tem permissão para acessar este ofício."}, status=403)
+            
+            context = {
+                'oficio': oficio,
+                'conta': oficio.conta,
+                'brasao_url': request.build_absolute_uri('/static/images/brasao_prefeitura.jpg'),
+            }
+
+            html_string = render_to_string('oficios/oficio_template.html', context)
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+
+            response = HttpResponse(pdf_file, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="oficio_{oficio.numero.replace("/", "-")}.pdf"'
+            
+            return response
+
+        except Exception as e:
+            traceback.print_exc()
+            return Response(
+                {"detail": f"Ocorreu um erro interno ao gerar o PDF: {e}"},
+                status=500
+            )

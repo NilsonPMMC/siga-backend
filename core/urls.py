@@ -16,6 +16,7 @@ urlpatterns = [
     # Esta é a única linha necessária para direcionar para nosso app
     path('api/', include('eventos.urls')),
     path('api/', include('atendimentos.urls')),
+    path('api/', include('oficios.urls')),
    
     # Esta linha é necessária para o fluxo de redefinição de senha do Django
     path('accounts/', include('django.contrib.auth.urls')),

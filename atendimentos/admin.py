@@ -87,11 +87,14 @@ admin.site.register(User, UserAdmin)
 # --- Admin para o modelo Conta ---
 @admin.register(Conta)
 class ContaAdmin(admin.ModelAdmin):
-    list_display = ('id', 'nome', 'nome_instituicao')
+    list_display = ('id', 'nome', 'nome_sigla', 'nome_titular', 'nome_instituicao')
     search_fields = ['nome', 'nome_instituicao']
     fieldsets = (
         (None, {
-            'fields': ('nome_instituicao', 'nome')
+            'fields': ('nome_instituicao', 'nome', 'nome_sigla', 'nome_titular')
+        }),
+        ('Dados Ofício', {
+            'fields': ('ultimo_numero_oficio', 'ano_corrente_oficio')
         }),
         ('Personalização e Integrações', {
             'fields': ('brasao_instituicao', 'logo_conta', 'google_calendar_id')

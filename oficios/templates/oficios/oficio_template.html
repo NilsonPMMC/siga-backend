@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Ofício {{ oficio.numero }}</title>
+    <style>
+        /* --- CSS OTIMIZADO PARA WEASYPRINT --- */
+        @page {
+            size: A4;
+            margin-left: 3cm;
+            margin-right: 1.5cm;
+            margin-bottom: .5cm;
+            margin-top: 3cm; 
+        }
+
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            font-size: 12pt;
+            line-height: 1.25;
+            color: black;
+        }
+        
+        p {
+            text-indent: 2.5cm; /* Recuo do parágrafo */
+            text-align: justify;
+        }
+
+        .sem-recuo {
+            text-indent: 0;
+        }
+
+        .date-line {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 16pt;
+        }
+
+        .document-header, .recipient, .subject, .body-text {
+            margin: 0;
+            margin-bottom: 8pt;
+        }
+
+        .recipient p{
+            margin: 0;
+        }
+
+        .signature {
+            display: flex;
+            justify-content: center;
+            margin-top: 24pt;
+        }
+        .signature p{
+            text-align: center;
+        }
+        
+        #header, #footer {
+            position: fixed;
+            width: 100%;
+            text-align: center;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 9pt;
+        }
+
+        #header {
+            top: -2.5cm;
+            left: 0;
+            right: 0;
+        }
+        
+        #header table {
+            width: 100%;
+            border: none;
+        }
+        
+        #header td {
+            vertical-align: middle;
+            text-align: center;
+            border-bottom: 0.5px solid #000000;
+        }
+
+        #header .brasao img {
+            max-width: 100%;
+            max-height: 1.5cm;
+        }
+
+        #footer {
+            bottom: 0;
+            left: 0;
+            right: 0;
+            border-top: 0.5px solid #000000;
+            padding-top: 5px;
+            font-size: 8pt;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <table>
+            <tr>
+                <td style="text-align: right; font-weight: bold; border-right: 0.5px solid #000000;">
+                    {{ conta.nome_instituicao|default:"PREFEITURA MUNICIPAL DE MOGI DAS CRUZES"|upper }}
+                </td>
+                
+                <td class="brasao">
+                    {% if brasao_url %}
+                        <img src="{{ brasao_url }}">
+                    {% endif %}
+                </td>
+
+                <td style="text-align: left; border-left: 0.5px solid #000000;">
+                    {{ conta.nome|upper }}
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <div id="footer">
+        Av. Ver. Narciso Yague Guimarães, 277 - 3º andar - Centro Cívico - Mogi das Cruzes/SP - CEP 08780-900<br>
+        Telefone: (11)4798-5000  |  Email: gabinete@mogidascruzes.sp.gov.br  |  www.mogidascruzes.sp.gov.br
+    </div>
+
+    <div class="document-header">
+        <p class="sem-recuo"><b>OFÍCIO Nº {{ oficio.numero }}</b></p>
+    </div>
+
+    <div class="date-line">
+        <p class="sem-recuo">Mogi das Cruzes, {{ oficio.data_documento|date:"d \d\e F \d\e Y" }}.</p>
+    </div>
+
+    <div class="recipient">
+        {% if oficio.destinatario_tratamento %}
+            <p class="sem-recuo">{{ oficio.destinatario_tratamento }}</p>
+        {% endif %}
+        <p class="sem-recuo"><b>{{ oficio.destinatario_nome|upper }}</b></p>
+        <p class="sem-recuo">{{ oficio.destinatario_cargo }}</p>
+        <p class="sem-recuo">{{ oficio.destinatario_orgao }}</p>
+    </div>
+
+    <div class="subject">
+        <p class="sem-recuo"><b>Assunto: {{ oficio.assunto }}</b></p>
+    </div>
+
+    <div class="body-text">
+        {{ oficio.corpo|safe }}
+    </div>
+
+    <div class="signature">
+        <p class="sem-recuo">
+            <b>{{ oficio.conta.nome_titular|default:oficio.criado_por.get_full_name|upper }}</b>
+            <br>
+            {{ oficio.conta.nome|upper }}
+        </p>
+    </div>
+</body>
+</html>

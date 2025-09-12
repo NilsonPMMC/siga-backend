@@ -22,6 +22,18 @@ class Conta(UppercaseFieldsMixin, models.Model):
         verbose_name="Nome da Instituição (Ex: Prefeitura de Mogi das Cruzes)"
     )
     nome = models.CharField(max_length=100, unique=True, verbose_name="Nome da Conta/Gabinete")
+    nome_sigla = models.CharField(
+        max_length=20,
+        unique=True,
+        verbose_name="Sigla da Conta/Gabinete",
+        null=True   # Permite ser nulo no banco de dados
+    )
+    nome_titular = models.CharField(
+        max_length=100, 
+        verbose_name="Nome do Gestor Titular",
+        blank=True,
+        null=True
+    )
     brasao_instituicao = models.ImageField(
         upload_to='logos/',
         blank=True, null=True,
@@ -31,6 +43,15 @@ class Conta(UppercaseFieldsMixin, models.Model):
         upload_to='logos/',
         blank=True, null=True,
         verbose_name="Logo da Conta/Secretaria (opcional)"
+    )
+    ultimo_numero_oficio = models.IntegerField(
+        default=0,
+        verbose_name="Último Nº de Ofício Usado",
+        help_text="Controla a sequência numérica dos ofícios gerados para esta conta."
+    )
+    ano_corrente_oficio = models.IntegerField(
+        default=2025, # Defina o ano corrente
+        verbose_name="Ano de Controle dos Ofícios"
     )
     google_calendar_id = models.EmailField(
         max_length=255,

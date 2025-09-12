@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'import_export',
     'atendimentos',
     'eventos',
+    'oficios',
 ]
 
 MIDDLEWARE = [
@@ -249,3 +250,5 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 # Serializador dos resultados.
 CELERY_RESULT_SERIALIZER = 'json'
+
+GEMINI_API_KEY = "AIzaSyA2truqQXMGO-nnLenO7Thtz49e1mTThgo"
