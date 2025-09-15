@@ -1069,6 +1069,14 @@ class GerarPdfGoogleAgendaView(APIView):
             for event in events:
                 if 'dateTime' not in event['start']:
                     continue
+
+                if 'location' in event:
+                    location_completa = event.get('location', '')
+                    # Divide a string pela vírgula e pega a primeira parte
+                    nome_local = location_completa.split(',')[0].strip()
+                    # Substitui o valor original pelo valor processado
+                    event['location'] = nome_local
+                    
                 start_str = event['start'].get('dateTime')
                 start_obj = parse_datetime(start_str)
                 dia = start_obj.date()

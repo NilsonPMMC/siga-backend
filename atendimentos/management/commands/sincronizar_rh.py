@@ -74,10 +74,10 @@ class Command(BaseCommand):
         # --- O resto do script permanece exatamente o mesmo, pois a lógica está correta ---
         
         # --- 2. Preparação dos Dados do SIGA ---
-        categoria_servidor, _ = CategoriaContato.objects.get_or_create(nome="Servidor(a)")
-        categoria_secretario, _ = CategoriaContato.objects.get_or_create(nome="Secretário(a) Municipal")
-        gabinete_prefeita, _ = Conta.objects.get_or_create(nome="Gabinete Prefeita")
-        gabinete_vice, _ = Conta.objects.get_or_create(nome="Gabinete Vice-Prefeito")
+        categoria_servidor, _ = CategoriaContato.objects.get_or_create(nome="SERVIDOR(A)")
+        categoria_secretario, _ = CategoriaContato.objects.get_or_create(nome="SECRETÁRIO(A) MUNICIPAL")
+        gabinete_prefeita, _ = Conta.objects.get_or_create(nome="GABINETE DA PREFEITA")
+        gabinete_vice, _ = Conta.objects.get_or_create(nome="GABINETE DO VICE-PREFEITO")
         contas_para_vincular = [gabinete_prefeita, gabinete_vice]
 
         cont_criados, cont_atualizados, erros = 0, 0, []

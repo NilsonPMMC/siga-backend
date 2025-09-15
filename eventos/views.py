@@ -974,12 +974,12 @@ class PublicChecklistView(APIView):
 
 
 
-class ChecklistItemViewSet(viewsets.ReadOnlyModelViewSet):
+class ChecklistItemViewSet(viewsets.ModelViewSet):
     """
     API para listar e gerenciar (CRUD) os Itens Mestres de Checklist.
     """
     serializer_class = ChecklistItemSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [PodeGerenciarEventos]
     queryset = ChecklistItem.objects.all()
 
 class EventoChecklistItemStatusViewSet(viewsets.ModelViewSet):

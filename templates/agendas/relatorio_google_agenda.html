@@ -7,6 +7,18 @@
         @page {
             size: A4 landscape;
             margin: 20px;
+
+            @bottom-right {
+                content: "Página " counter(page) " de " counter(pages);
+                font-size: 8pt;
+                color: #555;
+            }
+
+            @bottom-left {
+                content: "Gerado em: {{ hoje|date:'d/m/Y' }}";
+                font-size: 8pt;
+                color: #555;
+            }
         }
         body {
             font-family: sans-serif;
@@ -75,12 +87,9 @@
             margin-bottom: 15px;
             word-wrap: break-word;
         }
-        
         /* Esta regra SOBRESCREVE o estilo itálico/cinza APENAS para eventos futuros "A definir" */
         .evento-item.futuro-a-definir {
             color: #cc0000;
-            font-weight: bold;
-            font-style: normal; /* Garante que não fique em itálico */
         }
         .page-break { page-break-before: always; }
 
@@ -124,6 +133,11 @@
                                             {% endif %}
                                         ">
                                             <b><u>{{ evento_item.start.dateTime|date:"H:i" }}</u> - {{ evento_item.summary }}</b>
+                                            {% if evento_item.location %}
+                                                <div class="evento-local">
+                                                    <b>Local:</b> {{ evento_item.location }}
+                                                </div>
+                                            {% endif %}
                                         </div>
                                     {% endfor %}
                                 </td>
