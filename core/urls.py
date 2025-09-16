@@ -17,6 +17,7 @@ urlpatterns = [
     path('api/', include('eventos.urls')),
     path('api/', include('atendimentos.urls')),
     path('api/', include('oficios.urls')),
+    path('api/', include('etiquetas.urls')),
    
     # Esta linha é necessária para o fluxo de redefinição de senha do Django
     path('accounts/', include('django.contrib.auth.urls')),

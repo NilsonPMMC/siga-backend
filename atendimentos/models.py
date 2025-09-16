@@ -6,7 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 
 class UppercaseFieldsMixin:
-    UPPERCASE_EXCEPTIONS = ('emails', 'endereco')
+    UPPERCASE_EXCEPTIONS = ('emails', 'endereco', 'dados_etiqueta')
 
     def save(self, *args, **kwargs):
         for field in self._meta.fields:
@@ -115,6 +115,11 @@ class Municipe(UppercaseFieldsMixin, models.Model):
     orgao = models.CharField(max_length=150, blank=True, null=True, verbose_name="Órgão/Empresa")
     telefones = models.JSONField(default=list, blank=True, null=True, verbose_name="Telefones")
     endereco = models.JSONField(default=dict, blank=True, null=True, verbose_name="Endereço")
+    dados_etiqueta = models.TextField(
+        blank=True, null=True, 
+        verbose_name="Texto para Etiqueta",
+        help_text="Formato livre para a impressão de etiquetas. Ex: A/C Dr. Fulano de Tal e Família."
+    )
     observacoes = models.TextField(blank=True, null=True, verbose_name="Observações")
     data_cadastro = models.DateTimeField(auto_now_add=True, verbose_name="Data de Cadastro")
     data_atualizacao = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")

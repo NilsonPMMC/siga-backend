@@ -93,7 +93,7 @@ class MunicipeSerializer(serializers.ModelSerializer):
             'contas',
             'categoria', 'categoria_nome', 'data_cadastro', 'data_atualizacao',
             'qualidade_dados', 'alerta_atualizacao',
-            'pode_editar', 'grupo_duplicado'
+            'pode_editar', 'grupo_duplicado', 'dados_etiqueta'
         ]
         extra_kwargs = {
             'categoria': {'required': False, 'allow_null': True}

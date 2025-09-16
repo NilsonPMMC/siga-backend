@@ -972,14 +972,12 @@ class PublicChecklistView(APIView):
         except Exception as e:
             return Response({'error': f'Ocorreu um erro interno: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-
 class ChecklistItemViewSet(viewsets.ModelViewSet):
     """
     API para listar e gerenciar (CRUD) os Itens Mestres de Checklist.
     """
     serializer_class = ChecklistItemSerializer
-    permission_classes = [PodeGerenciarEventos]
+    permission_classes = [permissions.AllowAny]
     queryset = ChecklistItem.objects.all()
 
 class EventoChecklistItemStatusViewSet(viewsets.ModelViewSet):

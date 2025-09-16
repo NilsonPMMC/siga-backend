@@ -54,7 +54,12 @@
             {% for solicitacao in solicitacoes %}
             <tr>
                 <td>{{ solicitacao.data_criacao|date:"d/m/Y H:i" }}</td>
-                <td>{{ solicitacao.solicitante.nome_completo }}</td>
+                <td>
+                    {{ solicitacao.solicitante.nome_completo }}
+                    {% if solicitacao.solicitante.nome_de_guerra %}
+                        <br><small><b>{{ solicitacao.solicitante.nome_de_guerra }}</b></small>
+                    {% endif %}
+                </td>
                 <td>
                     {{ solicitacao.solicitante.cargo|default_if_none:"" }}
                     {% if solicitacao.solicitante.orgao %}
