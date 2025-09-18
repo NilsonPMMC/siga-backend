@@ -220,10 +220,28 @@ class AtendimentoSerializer(serializers.ModelSerializer):
             instance.categorias.set(categorias_data)
         return instance
 
+class TramitacaoAgendaSerializer(serializers.ModelSerializer):
+    """
+    Serializer para o histórico (tramitação) de uma solicitação de agenda.
+    """
+    usuario_nome = serializers.CharField(source='usuario.get_full_name', read_only=True)
+    
+    class Meta:
+        model = TramitacaoAgenda
+        fields = [
+            'id', 
+            'solicitacao', 
+            'despacho', 
+            'usuario', 
+            'usuario_nome', 
+            'data_tramitacao'
+        ]
+        read_only_fields = ('usuario',)
+
 class SolicitacaoAgendaSerializer(serializers.ModelSerializer):
+    tramitacoes = TramitacaoAgendaSerializer(many=True, read_only=True)
     solicitante_nome = serializers.CharField(source='solicitante.nome_completo', read_only=True)
     conta_nome = serializers.CharField(source='conta.nome', read_only=True)
-    # Adicionamos um campo para mostrar os detalhes do espaço na leitura
     espaco_detalhes = EspacoSerializer(source='espaco', read_only=True)
 
     class Meta:
@@ -234,21 +252,15 @@ class SolicitacaoAgendaSerializer(serializers.ModelSerializer):
         """
         Validação customizada para verificar conflitos de agendamento.
         """
-        # Só precisamos validar se a agenda está sendo confirmada ("AGENDADO")
-        # e se todos os dados necessários (espaço, início e fim) foram fornecidos.
         status = data.get('status')
         espaco = data.get('espaco')
         inicio = data.get('data_agendada')
         fim = data.get('data_agendada_fim')
 
         if status == 'AGENDADO' and espaco and inicio and fim:
-            # Garante que a data de término não seja anterior à data de início
             if fim <= inicio:
                 raise serializers.ValidationError("O horário de término deve ser posterior ao horário de início.")
 
-            # Busca por agendamentos conflitantes no mesmo espaço e com status 'AGENDADO'
-            # A lógica de sobreposição é:
-            # (Início da outra < Fim da minha) E (Fim da outra > Início da minha)
             agendas_conflitantes = SolicitacaoAgenda.objects.filter(
                 espaco=espaco,
                 status='AGENDADO',
@@ -256,7 +268,6 @@ class SolicitacaoAgendaSerializer(serializers.ModelSerializer):
                 data_agendada_fim__gt=inicio
             )
 
-            # Se estivermos atualizando uma agenda existente, devemos excluí-la da verificação
             if self.instance:
                 agendas_conflitantes = agendas_conflitantes.exclude(pk=self.instance.pk)
 

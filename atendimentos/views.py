@@ -258,6 +258,14 @@ class CategoriaContatoListView(generics.ListAPIView):
     serializer_class = CategoriaContatoSerializer
     permission_classes = [IsAuthenticated]
 
+class CategoriaContatoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gerenciar (CRUD) as Categorias de Contato.
+    """
+    queryset = CategoriaContato.objects.all().order_by('nome')
+    serializer_class = CategoriaContatoSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
 # -----------------------------------------------------------------------------
 # Views de Munícipe
 # -----------------------------------------------------------------------------
@@ -876,7 +884,11 @@ class GerarPdfAgendasReportView(APIView):
 
     def get(self, request, *args, **kwargs):
         user = request.user
-        queryset = SolicitacaoAgenda.objects.select_related('solicitante', 'conta').order_by('data_criacao')
+        queryset = SolicitacaoAgenda.objects.select_related(
+            'solicitante', 'conta'
+        ).prefetch_related(
+            'tramitacoes__usuario'  # Busca o histórico e o usuário de cada entrada
+        ).order_by('data_criacao')
 
         if not user.is_superuser:
             if hasattr(user, 'perfil'):
@@ -2076,3 +2088,34 @@ class GerarPdfOficioView(APIView):
                 {"detail": f"Ocorreu um erro interno ao gerar o PDF: {e}"},
                 status=500
             )
+
+class TramitacaoAgendaViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gerenciar as tramitações de uma Solicitação de Agenda.
+    """
+    serializer_class = TramitacaoAgendaSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        Filtra as tramitações com base na solicitação de agenda 
+        fornecida como parâmetro na URL (ex: /api/tramitacoes-agenda/?solicitacao=1)
+        """
+        queryset = TramitacaoAgenda.objects.all().order_by('-data_tramitacao')
+        solicitacao_id = self.request.query_params.get('solicitacao')
+        if solicitacao_id:
+            queryset = queryset.filter(solicitacao_id=solicitacao_id)
+        # Garante que o usuário só veja tramitações das suas contas
+        elif not self.request.user.is_superuser and hasattr(self.request.user, 'perfil'):
+             contas_usuario = self.request.user.perfil.contas.all()
+             queryset = queryset.filter(solicitacao__conta__in=contas_usuario)
+        elif not self.request.user.is_superuser:
+            return queryset.none() # Retorna nada se não for superuser e não tiver perfil
+            
+        return queryset
+
+    def perform_create(self, serializer):
+        """
+        Associa automaticamente o usuário logado à tramitação criada.
+        """
+        serializer.save(usuario=self.request.user)

@@ -115,7 +115,7 @@ class ListaPresencaSerializer(serializers.ModelSerializer):
     class Meta:
         model = ListaPresenca
         # Traz todos os campos que a tabela do frontend vai precisar
-        fields = ['id', 'nome_completo', 'telefone', 'email', 'instituicao_orgao', 'data_registro']
+        fields = ['id', 'nome_completo', 'telefone', 'email', 'instituicao_orgao', 'data_registro', 'municipe_id']
 
 class ChecklistItemSerializer(serializers.ModelSerializer):
     class Meta:

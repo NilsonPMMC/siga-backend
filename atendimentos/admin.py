@@ -13,7 +13,8 @@ from import_export.admin import ImportExportModelAdmin
 from datetime import datetime
 from .models import (
     Conta, Municipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
-    SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato, Espaco, RegistroVisita, Lembrete
+    SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato,
+    Espaco, RegistroVisita, Lembrete, TramitacaoAgenda
 )
 
 def enviar_email_de_acesso(modeladmin, request, queryset):
@@ -178,7 +179,7 @@ class MunicipeResource(resources.ModelResource):
         skip_unchanged = True
         report_skipped = True
         # Removemos 'import_id_fields' para dar controle total ao 'get_instance'
-        fields = ('id', 'nome_completo', 'cpf', 'data_nascimento', 'email', 'telefones', 'cargo', 'orgao', 'categoria', 'contas')
+        fields = ('id', 'nome_completo', 'cpf', 'data_nascimento', 'emails', 'telefones', 'cargo', 'orgao', 'categoria', 'contas')
         export_order = fields
 
 
@@ -226,7 +227,6 @@ class LogDeAtividadeAdmin(admin.ModelAdmin):
     list_filter = ('acao', 'timestamp', 'usuario')
     search_fields = ('detalhes', 'usuario__username')
 
-admin.site.register(SolicitacaoAgenda)
 admin.site.register(Anexo)
 admin.site.register(CategoriaAtendimento)
 
@@ -296,3 +296,22 @@ class LembreteAdmin(admin.ModelAdmin):
         if hasattr(request.user, 'perfil'):
             return qs.filter(conta__in=request.user.perfil.contas.all())
         return qs.none()
+
+class TramitacaoAgendaInline(admin.TabularInline):
+    model = TramitacaoAgenda
+    fields = ('despacho', 'usuario', 'data_tramitacao')
+    readonly_fields = ('usuario', 'data_tramitacao',)
+    extra = 0
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+@admin.register(SolicitacaoAgenda)
+class SolicitacaoAgendaAdmin(ImportExportModelAdmin):
+    list_display = ('assunto', 'solicitante', 'conta', 'status', 'data_agendada', 'data_criacao')
+    list_filter = ('status', 'conta', 'data_criacao')
+    search_fields = ('assunto', 'solicitante__nome_completo', 'conta__nome')
+    autocomplete_fields = ['solicitante', 'conta', 'responsavel_analise', 'espaco']
+
+    inlines = [TramitacaoAgendaInline]

@@ -11,6 +11,7 @@ from .views import (
     BuscaGlobalView,
     CategoriaAtendimentoListView,
     CategoriaContatoListView,
+    CategoriaContatoViewSet,
     ContaListView,
     CriarEventoGoogleView,
     CustomPasswordResetView,
@@ -52,6 +53,7 @@ from .views import (
     SharedGoogleAgendaView,
     SolicitacaoAgendaDetailView,
     SolicitacaoAgendaListCreateView,
+    TramitacaoAgendaViewSet,
     TramitacaoDetailView,
     TramitacaoListCreateView,
     UserListView,
@@ -85,10 +87,10 @@ urlpatterns = [
     path('checkins/<int:pk>/', RegistroVisitaDetailView.as_view(), name='registro-visita-detail'),
 
     # --- Agendas ---
-    path('agendas/', SolicitacaoAgendaListCreateView.as_view(), name='agenda-list-create'),
-    path('agendas/<int:pk>/', SolicitacaoAgendaDetailView.as_view(), name='agenda-detail'),
-    path('agendas/<int:pk>/criar-evento-google/', CriarEventoGoogleView.as_view(), name='agenda-criar-evento-google'),
-    path('agendas/<int:pk>/remover-link-google/', RemoverLinkGoogleView.as_view(), name='agenda-remover-link-google'),
+    path('solicitacoes-agenda/', SolicitacaoAgendaListCreateView.as_view(), name='agenda-list-create'),
+    path('solicitacoes-agenda/<int:pk>/', SolicitacaoAgendaDetailView.as_view(), name='agenda-detail'),
+    path('solicitacoes-agenda/<int:pk>/criar-evento-google/', CriarEventoGoogleView.as_view(), name='agenda-criar-evento-google'),
+    path('solicitacoes-agenda/<int:pk>/remover-link-google/', RemoverLinkGoogleView.as_view(), name='agenda-remover-link-google'),
     path('agendas-compartilhadas/', AgendasCompartilhadasListView.as_view(), name='shared-agendas-list'),
     path('agendas-compartilhadas/<int:conta_id>/', SharedGoogleAgendaView.as_view(), name='shared-google-agenda'),
     path('espacos/<int:espaco_id>/agenda/', EspacoAgendaView.as_view(), name='espaco-agenda-list'),
@@ -96,6 +98,8 @@ urlpatterns = [
     path('espacos/<int:pk>/', EspacoDetailView.as_view(), name='espaco-detail'),
     path('reservas-espaco/', ReservaEspacoListCreateView.as_view(), name='reserva-espaco-list-create'),
     path('reservas-espaco/<int:pk>/', ReservaEspacoDetailView.as_view(), name='reserva-espaco-detail'),
+    path('tramitacoes-agenda/', TramitacaoAgendaViewSet.as_view({ 'get': 'list', 'post': 'create' }), name='tramitacaoagenda-list'),
+    path('tramitacoes-agenda/<int:pk>/', TramitacaoAgendaViewSet.as_view({ 'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy' }), name='tramitacaoagenda-detail'),
 
     # --- Relatórios e Dashboards ---
     path('relatorios/atendimentos-por-status/', RelatorioAtendimentosPorStatusView.as_view(), name='relatorio-atendimentos-por-status'),
@@ -106,12 +110,14 @@ urlpatterns = [
     path('relatorios/agendas/pdf/', GerarPdfAgendasReportView.as_view(), name='relatorio-agendas-pdf'),
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
     path('relatorios/google-agenda/pdf/', GerarPdfGoogleAgendaView.as_view(), name='relatorio-google-agenda-pdf'),
+    
 
     # --- Listas Gerais e Utilitários ---
     path('usuarios/', UserListView.as_view(), name='usuario-list'),
     path('contas/', ContaListView.as_view(), name='conta-list'),
     path('categorias/', CategoriaAtendimentoListView.as_view(), name='categoria-list'),
-    path('contatos/categorias/', CategoriaContatoListView.as_view(), name='categoriacontato-list'),
+    path('contatos/categorias/', CategoriaContatoViewSet.as_view({ 'get': 'list', 'post': 'create' }), name='categoriacontato-list-create'),
+    path('contatos/categorias/<int:pk>/', CategoriaContatoViewSet.as_view({ 'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy' }), name='categoriacontato-detail'),
     path('notificacoes/', NotificacaoListView.as_view(), name='notificacao-list'),
     path('notificacoes/<int:pk>/marcar-lida/', MarcarNotificacaoComoLidaView.as_view(), name='notificacao-marcar-lida'),
     path('busca/', BuscaGlobalView.as_view(), name='busca-global'),

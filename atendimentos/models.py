@@ -204,7 +204,7 @@ class Espaco(UppercaseFieldsMixin, models.Model):
         return self.nome
 
 class SolicitacaoAgenda(UppercaseFieldsMixin, models.Model):
-    STATUS_AGENDA_CHOICES = [('SOLICITADO', 'Solicitado'), ('EM_ANALISE', 'Em Análise'), ('AGENDADO', 'Agendado'), ('NEGADO', 'Negado'), ('CANCELADO', 'Cancelado')]
+    STATUS_AGENDA_CHOICES = [('SOLICITADO', 'Solicitado'), ('EM_ANALISE', 'Em Análise'), ('AGENDADO', 'Agendado'), ('NEGADO', 'Negado'), ('CANCELADO', 'Cancelado'), ('REAGENDAR', 'Reagendar')]
     solicitante = models.ForeignKey(Municipe, on_delete=models.PROTECT, related_name='solicitacoes_agenda', verbose_name="Solicitante")
     conta = models.ForeignKey(Conta, on_delete=models.PROTECT, verbose_name="Conta/Gabinete Solicitado")
     assunto = models.CharField(max_length=255, verbose_name="Assunto da Reunião")
@@ -358,3 +358,32 @@ class Lembrete(UppercaseFieldsMixin, models.Model):
         ordering = ['-data_criacao']
         verbose_name = "Lembrete"
         verbose_name_plural = "Lembretes"
+
+class TramitacaoAgenda(UppercaseFieldsMixin, models.Model):
+    """
+    Registra o histórico de interações e despachos de uma solicitação de agenda.
+    """
+    solicitacao = models.ForeignKey(
+        SolicitacaoAgenda, 
+        on_delete=models.CASCADE, 
+        related_name='tramitacoes', 
+        verbose_name="Solicitação de Agenda"
+    )
+    despacho = models.TextField(verbose_name="Despacho / Nota de Progresso")
+    usuario = models.ForeignKey(
+        User, 
+        on_delete=models.PROTECT, 
+        verbose_name="Usuário Responsável"
+    )
+    data_tramitacao = models.DateTimeField(
+        auto_now_add=True, 
+        verbose_name="Data"
+    )
+
+    class Meta:
+        verbose_name = "Tramitação de Agenda"
+        verbose_name_plural = "Tramitações de Agenda"
+        ordering = ['-data_tramitacao']
+
+    def __str__(self):
+        return f"Tramitação em {self.data_tramitacao.strftime('%d/%m/%Y %H:%M')} por {self.usuario.username}"
