@@ -7,9 +7,16 @@
         @page {
             size: A4 landscape; /* Orientação paisagem */
             margin: 1cm;
-            @bottom-center {
+            @bottom-right {
                 content: "Página " counter(page) " de " counter(pages);
-                font-family: 'Helvetica', 'Arial', sans-serif; font-size: 8pt; color: #888;
+                font-size: 8pt;
+                color: #555;
+            }
+
+            @bottom-left {
+                content: "Gerado em: {{ hoje|date:'d/m/Y H:i' }}";
+                font-size: 8pt;
+                color: #555;
             }
         }
         body { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 10pt; }
@@ -19,6 +26,9 @@
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
         th { background-color: #f2f2f2; }
+        tr {
+            page-break-inside: avoid !important;
+        }
         .historico-tramitacao {
             margin-top: 10px;
             padding-left: 15px;

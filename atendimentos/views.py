@@ -931,6 +931,7 @@ class GerarPdfAgendasReportView(APIView):
                 logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
 
         context = {
+            'hoje': datetime.now(),
             'solicitacoes': queryset,
             'data_emissao': datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
             'usuario_emissao': request.user.get_full_name() or request.user.username,
