@@ -5,6 +5,7 @@ import calendar
 import operator
 import traceback
 import logging
+import uuid
 
 # Imports de bibliotecas padrão
 from datetime import datetime, time, timedelta
@@ -433,7 +434,34 @@ class MesclarDuplicatasView(APIView):
                     # Caso de ForeignKey e OneToOne (ex: Atendimento -> Municipe)
                     if rel.one_to_many or rel.one_to_one:
                         related_queryset = getattr(municipe_duplicado, accessor_name).all()
-                        related_queryset.update(**{rel.field.name: municipe_principal})
+                        unique_constraints = getattr(rel.related_model._meta, 'unique_together', [])
+                        constraint_fields_to_check = []
+                        
+                        # Verifica se alguma das constraints de unicidade envolve a relação com Municipe
+                        for constraint in unique_constraints:
+                            if rel.field.name in constraint:
+                                # Pega os outros campos da constraint (ex: 'comunicacao' ou 'evento')
+                                constraint_fields_to_check = [f for f in constraint if f != rel.field.name]
+                                break
+
+                        # Se encontrou uma constraint, faz o tratamento individual para evitar erros
+                        if constraint_fields_to_check:
+                            for obj_duplicado in related_queryset:
+                                # Monta um filtro para checar se o munícipe principal já tem um vínculo "igual"
+                                lookup_filter = {rel.field.name: municipe_principal}
+                                for field_name in constraint_fields_to_check:
+                                    lookup_filter[field_name] = getattr(obj_duplicado, field_name)
+                                
+                                # Se o vínculo já existe para o principal, apenas deletamos o do duplicado.
+                                if rel.related_model.objects.filter(**lookup_filter).exists():
+                                    obj_duplicado.delete()
+                                # Senão, o vínculo é transferido para o principal.
+                                else:
+                                    setattr(obj_duplicado, rel.field.name, municipe_principal)
+                                    obj_duplicado.save()
+                        else:
+                            # Se não há constraints de unicidade, pode fazer o update em massa, que é mais rápido.
+                            related_queryset.update(**{rel.field.name: municipe_principal})
                     
                     # Caso de ManyToMany (ex: MailingList -> Municipe)
                     elif rel.many_to_many:
@@ -2024,12 +2052,92 @@ class ReservaEspacoListCreateView(generics.ListCreateAPIView):
         return queryset
 
     def perform_create(self, serializer):
-        serializer.save(responsavel=self.request.user)
+        is_recorrente = self.request.data.get('is_recorrente', False)
+        
+        if not is_recorrente:
+            serializer.save(responsavel=self.request.user)
+            return
+
+        frequencia = self.request.data.get('frequencia')
+        data_fim_recorrencia_str = self.request.data.get('data_fim_recorrencia')
+        start_date_str = self.request.data.get('data_inicio')
+        end_date_str = self.request.data.get('data_fim')
+
+        start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+        end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
+        recurrence_end_date = datetime.strptime(data_fim_recorrencia_str, '%Y-%m-%d').date()
+        
+        duracao_evento = end_date - start_date
+        grupo_id = uuid.uuid4()
+        
+        datas_para_criar = []
+        data_corrente = start_date
+        
+        if frequencia == 'SEMANAL':
+            while data_corrente.date() <= recurrence_end_date:
+                datas_para_criar.append(data_corrente)
+                data_corrente += timedelta(weeks=1)
+
+        if not datas_para_criar:
+             serializer.save(responsavel=self.request.user)
+             return
+
+        reservas_conflitantes = ReservaEspaco.objects.filter(
+            espaco_id=self.request.data.get('espaco'),
+            data_inicio__lt=datas_para_criar[-1] + duracao_evento,
+            data_fim__gt=datas_para_criar[0]
+        )
+
+        for data_inicio_recorrencia in datas_para_criar:
+            data_fim_recorrencia = data_inicio_recorrencia + duracao_evento
+            if reservas_conflitantes.filter(data_inicio__lt=data_fim_recorrencia, data_fim__gt=data_inicio_recorrencia).exists():
+                raise serializers.ValidationError(
+                    f"Conflito de agendamento detectado para o dia {data_inicio_recorrencia.strftime('%d/%m/%Y')}. "
+                    "Uma ou mais datas no período recorrente já estão ocupadas."
+                )
+
+        # --- INÍCIO DA CORREÇÃO ---
+        # Copiamos os dados validados para um novo dicionário
+        dados_base = serializer.validated_data.copy()
+        # Removemos as chaves de data originais para evitar o conflito
+        dados_base.pop('data_inicio', None)
+        dados_base.pop('data_fim', None)
+        # --- FIM DA CORREÇÃO ---
+
+        for data_inicio_recorrencia in datas_para_criar:
+            data_fim_recorrencia = data_inicio_recorrencia + duracao_evento
+            ReservaEspaco.objects.create(
+                **dados_base, # Usamos o dicionário limpo
+                responsavel=self.request.user,
+                data_inicio=data_inicio_recorrencia,
+                data_fim=data_fim_recorrencia,
+                grupo_recorrencia=grupo_id
+            )
 
 class ReservaEspacoDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = ReservaEspaco.objects.all()
     serializer_class = ReservaEspacoSerializer
     permission_classes = [permissions.IsAuthenticated, CanManageReservas]
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        # Se o evento pertence a um grupo recorrente, replicamos a alteração de texto
+        if instance.grupo_recorrencia:
+            ReservaEspaco.objects.filter(grupo_recorrencia=instance.grupo_recorrencia).update(
+                titulo=instance.titulo,
+                observacoes=instance.observacoes
+            )
+
+    def perform_destroy(self, instance):
+        # O frontend agora envia 'unica' ou 'serie'
+        escopo = self.request.query_params.get('escopo', 'unica')
+
+        if escopo == 'serie' and instance.grupo_recorrencia:
+            # Exclui toda a série
+            ReservaEspaco.objects.filter(grupo_recorrencia=instance.grupo_recorrencia).delete()
+        else:
+            # Exclui apenas a instância única (comportamento padrão)
+            instance.delete()
 
 class RemoverLinkGoogleView(APIView):
     """

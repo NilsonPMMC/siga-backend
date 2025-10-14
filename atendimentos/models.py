@@ -318,6 +318,7 @@ class ReservaEspaco(UppercaseFieldsMixin, models.Model):
     responsavel = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="reservas_feitas")
     observacoes = models.TextField(blank=True, null=True, verbose_name="Observações")
     data_criacao = models.DateTimeField(auto_now_add=True)
+    grupo_recorrencia = models.UUIDField(null=True, blank=True, editable=False, help_text="Agrupa eventos recorrentes.")
 
     class Meta:
         verbose_name = "Reserva de Espaço"
