@@ -204,7 +204,7 @@ class Espaco(UppercaseFieldsMixin, models.Model):
         return self.nome
 
 class SolicitacaoAgenda(UppercaseFieldsMixin, models.Model):
-    STATUS_AGENDA_CHOICES = [('SOLICITADO', 'Solicitado'), ('EM_ANALISE', 'Em Análise'), ('AGENDADO', 'Agendado'), ('NEGADO', 'Negado'), ('CANCELADO', 'Cancelado'), ('REAGENDAR', 'Reagendar')]
+    STATUS_AGENDA_CHOICES = [('SOLICITADO', 'Solicitado'), ('EM_ANALISE', 'Em Análise'), ('AGENDADO', 'Agendado'), ('AGENDAR', 'Agendar'), ('NEGADO', 'Negado'), ('CANCELADO', 'Cancelado'), ('REAGENDAR', 'Reagendar'), ('ENCAMINHADO', 'Encaminhado')]
     solicitante = models.ForeignKey(Municipe, on_delete=models.PROTECT, related_name='solicitacoes_agenda', verbose_name="Solicitante")
     conta = models.ForeignKey(Conta, on_delete=models.PROTECT, verbose_name="Conta/Gabinete Solicitado")
     assunto = models.CharField(max_length=255, verbose_name="Assunto da Reunião")

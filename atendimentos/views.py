@@ -173,14 +173,14 @@ class SolicitacaoAgendaListCreateView(generics.ListCreateAPIView):
         data_inicio = self.request.query_params.get('data_inicio', None)
         data_fim = self.request.query_params.get('data_fim', None)
         conta_id = self.request.query_params.get('conta_id', None)
-        status = self.request.query_params.get('status', None)
+        status_list = self.request.query_params.getlist('status', None)
 
         if data_inicio and data_fim:
             queryset = queryset.filter(data_criacao__date__range=[data_inicio, data_fim])
         if conta_id:
             queryset = queryset.filter(conta_id=conta_id)
-        if status:
-            queryset = queryset.filter(status=status)
+        if status_list:
+            queryset = queryset.filter(status__in=status_list)
 
         # Sua lógica de permissão por usuário também continua perfeita
         user = self.request.user
@@ -281,6 +281,7 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
         letra_inicial = self.request.query_params.get('letra', None)
         grupo_id = self.request.query_params.get('grupo', None)
         tem_grupo_duplicado = self.request.query_params.get('tem_grupo_duplicado', None)
+        categoria_ids = self.request.query_params.getlist('categoria_id')
 
         base_queryset = Municipe.objects.prefetch_related('contas', 'categoria')
 
@@ -301,6 +302,9 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
                 base_queryset = base_queryset.filter(categoria__nome='MUNÍCIPE')
         elif not user.is_superuser:
             return Municipe.objects.none()
+        
+        if categoria_ids:
+            base_queryset = base_queryset.filter(categoria__id__in=categoria_ids)
 
         if termo_busca:
             # --- INÍCIO DA LÓGICA DE BUSCA INTELIGENTE ---
@@ -498,6 +502,76 @@ class MesclarDuplicatasView(APIView):
         except Exception as e:
             return Response(
                 {'error': f'Ocorreu um erro durante a fusão: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+class AtualizarCategoriaEmLoteView(APIView):
+    """
+    View para atualizar a categoria de múltiplos Munícipes de uma só vez.
+    """
+    # Use uma permissão que permita editar munícipes
+    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+
+    def post(self, request, *args, **kwargs):
+        # 1. Obter dados da requisição
+        municipe_ids = request.data.get('municipe_ids', [])
+        nova_categoria_id = request.data.get('nova_categoria_id', None)
+
+        # 2. Validações básicas
+        if not isinstance(municipe_ids, list) or not municipe_ids:
+            return Response(
+                {'error': 'Lista de IDs de munícipes inválida ou vazia.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if nova_categoria_id is None:
+            return Response(
+                {'error': 'ID da nova categoria é obrigatório.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Valida se a categoria existe
+        try:
+            nova_categoria = CategoriaContato.objects.get(pk=nova_categoria_id)
+        except CategoriaContato.DoesNotExist:
+            return Response(
+                {'error': f'Categoria com ID {nova_categoria_id} não encontrada.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # 3. Executar a atualização em lote
+        try:
+            # Filtra apenas os munícipes que o usuário tem permissão para ver/editar
+            # (Reutiliza parte da lógica de queryset da sua MunicipeListCreateView)
+            user = request.user
+            queryset_base = Municipe.objects.all()
+            if hasattr(user, 'perfil'):
+                 contas_usuario = user.perfil.contas.all()
+                 queryset_base = queryset_base.filter(
+                     Q(contas__isnull=True) | Q(contas__in=contas_usuario)
+                 ).distinct()
+            elif not user.is_superuser:
+                 # Se não tem perfil e não é superuser, não pode alterar nada
+                 return Response(
+                    {'error': 'Você não tem permissão para alterar estes contatos.'},
+                    status=status.HTTP_403_FORBIDDEN
+                 )
+
+            # Filtra pelos IDs recebidos DENTRO do queryset permitido
+            municipes_para_atualizar = queryset_base.filter(id__in=municipe_ids)
+            
+            # Conta quantos serão realmente atualizados
+            num_atualizados = municipes_para_atualizar.update(categoria=nova_categoria)
+
+            return Response(
+                {'message': f'{num_atualizados} contato(s) atualizado(s) com sucesso para a categoria "{nova_categoria.nome}".'},
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            # Captura qualquer erro inesperado durante o update
+            return Response(
+                {'error': f'Ocorreu um erro ao atualizar os contatos: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -929,14 +1003,14 @@ class GerarPdfAgendasReportView(APIView):
         data_inicio = request.query_params.get('data_inicio')
         data_fim = request.query_params.get('data_fim')
         conta_id = request.query_params.get('conta_id')
-        status_param = request.query_params.get('status')
+        status_list = request.query_params.getlist('status')
 
         if data_inicio and data_fim:
-            queryset = queryset.filter(data_criacao__range=[data_inicio, data_fim])
+            queryset = queryset.filter(data_criacao__date__range=[data_inicio, data_fim])
         if conta_id:
             queryset = queryset.filter(conta_id=conta_id)
-        if status_param:
-            queryset = queryset.filter(status=status_param)
+        if status_list:
+            queryset = queryset.filter(status__in=status_list)
 
         conta_id = request.query_params.get('conta_id', None)
         conta_contexto = None
@@ -989,7 +1063,14 @@ class ExportMunicipesExcelView(APIView):
     def get(self, request, *args, **kwargs):
         user = request.user
         
-        queryset = Municipe.objects.prefetch_related('categoria', 'contas').all()
+        ordenar_por = request.query_params.get('ordenar_por', 'nome') # Default é 'nome'
+        
+        if ordenar_por == 'orgao':
+            order_fields = ['orgao', 'nome_completo'] # Ordena por Órgão, depois por Nome
+        else:
+            order_fields = ['nome_completo'] # Default: ordena por Nome
+        
+        queryset = Municipe.objects.prefetch_related('categoria', 'contas').all().order_by(*order_fields)
 
         if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
             if hasattr(user, 'perfil'):
@@ -1054,6 +1135,108 @@ class ExportMunicipesExcelView(APIView):
         workbook.save(response)
 
         return response
+    
+class GerarPdfMunicipesReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated] # Mude se precisar de outra permissão
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        
+        ordenar_por = request.query_params.get('ordenar_por', 'nome') # Default 'nome'
+        
+        if ordenar_por == 'orgao':
+            order_fields = ['orgao', 'nome_completo']
+        else:
+            order_fields = ['nome_completo']
+        
+        queryset = Municipe.objects.prefetch_related('categoria', 'contas').all().order_by(*order_fields)
+
+        if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
+            if hasattr(user, 'perfil'):
+                contas_usuario = user.perfil.contas.all()
+                queryset = queryset.filter(
+                    Q(contas__isnull=True) | Q(contas__in=contas_usuario)
+                ).distinct()
+            else:
+                queryset = queryset.filter(contas__isnull=True)
+
+        # Corrigido para usar 'request.query_params' (baseado no nosso traceback anterior)
+        termo_busca = request.query_params.get('q', None)
+        if termo_busca:
+            palavras = termo_busca.split()
+            query_palavras_nome = reduce(operator.and_, [
+                (Q(nome_completo__icontains=p) | Q(nome_de_guerra__icontains=p)) for p in palavras
+            ])
+            query_outros_campos = (
+                Q(cpf__icontains=termo_busca) |
+                Q(emails__contains=[{'email': termo_busca}]) |
+                Q(cargo__icontains=termo_busca) |
+                Q(orgao__icontains=termo_busca) |
+                Q(categoria__nome__icontains=termo_busca)
+            )
+            queryset = queryset.filter(query_palavras_nome | query_outros_campos).distinct()
+
+        
+        # 2. --- PREPARAÇÃO DOS DADOS PARA O TEMPLATE ---
+        # (Em vez de criar um Excel, preparamos os dados para o HTML)
+        
+        municipes_data = []
+        for municipe in queryset:
+            # Lógica para pegar o telefone principal (igual a do Excel)
+            telefone_principal = ''
+            if municipe.telefones and isinstance(municipe.telefones, list) and len(municipe.telefones) > 0:
+                telefone_principal = municipe.telefones[0].get('numero', '')
+
+            municipes_data.append({
+                'nome': municipe.nome_completo,
+                'telefone': telefone_principal,
+                'cargo': municipe.cargo,
+                'orgao': municipe.orgao,
+            })
+            
+        # 3. --- PREPARAÇÃO DO CONTEXTO DO CABEÇALHO (similar ao seu PDF de agendas) ---
+        conta_id = request.query_params.get('conta_id', None)
+        conta_contexto = None
+        
+        if conta_id:
+            conta_contexto = Conta.objects.filter(id=conta_id).first()
+        elif not request.user.is_superuser and hasattr(request.user, 'perfil'):
+            conta_contexto = request.user.perfil.contas.first()
+        
+        nome_instituicao = "Prefeitura Municipal"
+        brasao_url = ''
+        logo_conta_url = ''
+
+        if conta_contexto:
+            nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
+            if conta_contexto.brasao_instituicao:
+                brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+            if conta_contexto.logo_conta:
+                logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
+
+        context = {
+            'municipes': municipes_data,
+            'data_emissao': datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
+            'usuario_emissao': request.user.get_full_name() or request.user.username,
+            'brasao_url': brasao_url,
+            'logo_conta_url': logo_conta_url,
+            'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+        }
+
+        # 4. --- GERAÇÃO DO PDF ---
+        try:
+            html_string = render_to_string('relatorios/relatorio_municipes.html', context)
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            
+            response = HttpResponse(pdf_file, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="relatorio_contatos_{datetime.now().strftime("%Y%m%d")}.pdf"'
+            return response
+        except Exception as e:
+            print(f"ERRO INESPERADO AO GERAR PDF DE MUNICIPES: {e}")
+            return Response(
+                {'detail': f'Ocorreu um erro interno ao gerar o PDF: {e}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class GerarPdfGoogleAgendaView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -1285,27 +1468,28 @@ class AniversariantesDoDiaView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        
-        # --- AQUI ESTÁ A NOVA LÓGICA DE PERMISSÃO ---
-        
-        # 1. Começa com uma base de contatos permitidos para o usuário
+
         if user.is_superuser:
             base_queryset = Municipe.objects.all()
         elif hasattr(user, 'perfil'):
-            # Filtra apenas os contatos das contas vinculadas ao usuário
             base_queryset = Municipe.objects.filter(contas__in=user.perfil.contas.all()).distinct()
         else:
-            # Se não for superusuário e não tiver perfil, não vê nenhum contato
             return Municipe.objects.none()
 
-        # 2. Agora, filtra os aniversariantes APENAS da lista de contatos permitidos
-        hoje = timezone.now()
-        return base_queryset.filter(
-            data_nascimento__day=hoje.day,
-            data_nascimento__month=hoje.month
-        )
-        # --- FIM DA CORREÇÃO ---
+        data_param = self.request.query_params.get('data', None) 
 
+        if data_param:
+            try:
+                data_selecionada = datetime.strptime(data_param, '%Y-%m-%d').date()
+            except ValueError:
+                return Municipe.objects.none()
+        else:
+            data_selecionada = timezone.localdate() 
+
+        return base_queryset.filter(
+            data_nascimento__day=data_selecionada.day,
+            data_nascimento__month=data_selecionada.month
+        )
 
 class BuscaGlobalView(APIView):
     permission_classes = [permissions.IsAuthenticated]

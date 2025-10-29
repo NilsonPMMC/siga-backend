@@ -28,7 +28,7 @@ dotenv.load_dotenv(os.path.join(BASE_DIR, '.env'))
 SECRET_KEY = 'django-insecure--7hk=jn*vw$wm*sd*6t=l0tkh(k5brj)_+un79yc)e9(805k4l'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ['gabinete.mogidascruzes.sp.gov.br', '192.168.10.50', 'localhost', '127.0.0.1']
 
@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'eventos',
     'oficios',
     'etiquetas',
+    'core',
 ]
 
 MIDDLEWARE = [
@@ -159,8 +160,10 @@ REST_FRAMEWORK = {
 }
 
 # --- CONFIGURAÇÃO DE E-MAIL SMTP (MAILGRID - TI) ---
+#EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'cloud77.mailgrid.net.br'
+#EMAIL_HOST = 'cloud77.mailgrid.net.br'
+EMAIL_HOST = os.environ.get('EMAIL_HOST')
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False

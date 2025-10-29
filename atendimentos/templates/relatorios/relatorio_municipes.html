@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório de Contatos</title>
+    <style>
+        @page {
+            size: A4 landscape;
+            margin: 1.5cm;
+            @bottom-center {
+                content: "Página " counter(page) " de " counter(pages);
+                font-family: 'Helvetica', 'Arial', sans-serif; font-size: 9pt; color: #888;
+            }
+        }
+        body { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 9pt; }
+        .header { text-align: center; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .logo { max-height: 50px; max-width: 150px; }
+        h1 { text-align: center; margin-bottom: 20px; font-size: 16pt; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ccc; padding: 6px; text-align: left; word-break: break-word; }
+        th { background-color: #f2f2f2; }
+        .footer { position: absolute; bottom: -0.5cm; left: 0; }
+        .footer-logo { height: 20px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        {% if brasao_url %}
+            <img src="{{ brasao_url }}" alt="Brasão da Instituição" class="logo">
+        {% else %}
+            <div></div> {% endif %}
+    
+        {% if logo_conta_url %}
+            <img src="{{ logo_conta_url }}" alt="Logo da Conta" class="logo">
+        {% endif %}
+    </div>
+
+    <h1>Relatório de Contatos</h1>
+    <p style="text-align: center; margin-top: -15px; font-size: 8pt;">
+        Emitido por: {{ usuario_emissao }} em {{ data_emissao }}
+    </p>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 30%;">Nome Completo</th>
+                <th style="width: 30%;">Órgão/Empresa</th>
+                <th style="width: 25%;">Cargo</th>
+                <th style="width: 15%;">Telefone Principal</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in municipes %}
+            <tr>
+                <td>{{ m.nome }}</td>
+                <td>{{ m.orgao|default:"" }}</td>
+                <td>{{ m.cargo|default:"" }}</td>
+                <td>{{ m.telefone|default:"" }}</td>                
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="4" style="text-align:center;">Nenhum contato encontrado para os filtros aplicados.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="footer">
+        <img src="{{ logo_siga_url }}" alt="Logo SIGA" class="footer-logo">
+    </div>
+
+</body>
+</html>

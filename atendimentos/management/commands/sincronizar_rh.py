@@ -74,7 +74,7 @@ class Command(BaseCommand):
         categoria_servidor, _ = CategoriaContato.objects.get_or_create(nome="SERVIDOR(A)")
         categoria_secretario, _ = CategoriaContato.objects.get_or_create(nome="SECRETÁRIO(A) MUNICIPAL")
         gabinete_prefeita, _ = Conta.objects.get_or_create(nome="GABINETE DA PREFEITA")
-        gabinete_vice, _ = Conta.objects.get_or_create(nome="GABINETE DO VICE-PREFEITO")
+        gabinete_vice, _ = Conta.objects.get_or_create(nome="VICE-PREFEITO")
         contas_para_vincular = [gabinete_prefeita, gabinete_vice]
 
         cont_criados, cont_atualizados, erros = 0, 0, []
