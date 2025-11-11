@@ -283,6 +283,8 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
         tem_grupo_duplicado = self.request.query_params.get('tem_grupo_duplicado', None)
         categoria_ids = self.request.query_params.getlist('categoria_id')
 
+        filtro_aplicado = bool(termo_busca or letra_inicial or categoria_ids)
+
         base_queryset = Municipe.objects.prefetch_related('contas', 'categoria')
 
         if grupo_id:
@@ -293,7 +295,6 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
 
         if hasattr(user, 'perfil'):
             contas_usuario = user.perfil.contas.all()
-            # Mostra contatos que são públicos (sem conta) OU que pertencem a uma das contas do usuário.
             base_queryset = base_queryset.filter(
                 Q(contas__isnull=True) | Q(contas__in=contas_usuario)
             ).distinct()
@@ -307,14 +308,11 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
             base_queryset = base_queryset.filter(categoria__id__in=categoria_ids)
 
         if termo_busca:
-            # --- INÍCIO DA LÓGICA DE BUSCA INTELIGENTE ---
-            
-            # 1. Lógica para buscar por cada palavra no nome
+
             query_palavras_nome = Q()
             for palavra in termo_busca.split():
                 query_palavras_nome &= (Q(nome_completo__icontains=palavra) | Q(nome_de_guerra__icontains=palavra))
 
-            # 2. Lógica para buscar o termo completo em outros campos
             query_outros_campos = (
                 Q(cpf__icontains=termo_busca) |
                 Q(emails__contains=[{'email': termo_busca}]) |
@@ -323,16 +321,17 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
                 Q(categoria__nome__icontains=termo_busca)
             )
 
-            # 3. Combina as duas lógicas com "OU"
             final_query = query_palavras_nome | query_outros_campos
             
-            return base_queryset.filter(final_query).distinct().order_by('nome_completo')
-            # --- FIM DA LÓGICA DE BUSCA INTELIGENTE ---
+            base_queryset = base_queryset.filter(final_query).distinct()
         
         if letra_inicial:
-            return base_queryset.filter(nome_completo__istartswith=letra_inicial).order_by('nome_completo')
+            base_queryset = base_queryset.filter(nome_completo__istartswith=letra_inicial)
         
-        return base_queryset.order_by('-data_cadastro')[:100]
+        if filtro_aplicado:
+            return base_queryset.order_by('nome_completo')
+        else:
+            return base_queryset.order_by('-data_cadastro')[:100]
 
 class MunicipeDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]

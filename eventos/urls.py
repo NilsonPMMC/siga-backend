@@ -22,6 +22,7 @@ public_urls = [
     path('public/presenca/sucesso/', views.presenca_sucesso, name='presenca_sucesso'),
     path('public/check-in/<int:conta_id>/', views.PublicCheckInView.as_view(), name='public-check-in'),
     path('public/checklist/<uuid:token>/', views.PublicChecklistView.as_view(), name='public-checklist-view'),
+    path('mailing-list/<int:pk>/export/csv/', views.ExportMailingListCSVView.as_view(), name='export-mailing-list-csv'),
 ]
 
 # As URLs da API são determinadas automaticamente pelo router.

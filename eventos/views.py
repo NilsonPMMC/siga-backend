@@ -1,5 +1,6 @@
 # eventos/views.py
 import uuid
+import csv
 from datetime import datetime, time
 from openpyxl import Workbook
 from weasyprint import HTML
@@ -1108,3 +1109,84 @@ class MailingListViewSet(viewsets.ModelViewSet):
 
         return Response({'status': f'{count} novo(s) contato(s) com e-mail foram adicionados da categoria.'}, status=status.HTTP_200_OK)
  
+class ExportMailingListCSVView(APIView):
+    """
+    Exporta os contatos (Nome e múltiplos Emails) de uma Mailing List
+    para um arquivo .csv compatível com o Outlook.
+    """
+    permission_classes = [permissions.IsAuthenticated, PodeGerenciarEventos] 
+
+    def get(self, request, pk, *args, **kwargs):
+        try:
+            mailing_list = MailingList.objects.get(pk=pk)
+        except MailingList.DoesNotExist:
+            return Response(
+                {'error': 'Mailing list não encontrada.'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        response = HttpResponse(
+            content_type='text/csv; charset=utf-8',
+            headers={
+                'Content-Disposition': f'attachment; filename="outlook_export_{mailing_list.nome.lower().replace(" ", "_")}.csv"'
+            },
+        )
+        
+        # BOM (Byte Order Mark) para UTF-8 (essencial para acentos)
+        response.write('\ufeff')
+        
+        # --- MUDANÇAS APLICADAS AQUI ---
+        # 1. Delimitador alterado para vírgula (,)
+        # 2. Adicionado quoting=csv.QUOTE_ALL para forçar aspas em todos os campos
+        writer = csv.writer(response, delimiter=',', quoting=csv.QUOTE_ALL) 
+        
+        # --- MUDANÇA NOS CABEÇALHOS ---
+        MAX_EMAILS = 3 
+        # 3. Cabeçalhos alterados para o padrão exato do Outlook
+        headers = ['First Name', 'Last Name'] 
+        for i in range(1, MAX_EMAILS + 1):
+            if i == 1:
+                headers.append('E-mail Address')
+            else:
+                headers.append(f'E-mail {i} Address')
+        
+        writer.writerow(headers)
+        # --- FIM DAS MUDANÇAS ---
+
+        municipes = mailing_list.municipes.all().order_by('nome_completo')
+        
+        for municipe in municipes:
+            
+            # --- LÓGICA PARA DIVIDIR O NOME ---
+            nome_completo = municipe.nome_completo.strip()
+            first_name = ""
+            last_name = ""
+            
+            if " " in nome_completo:
+                # Divide o nome apenas no primeiro espaço
+                parts = nome_completo.split(" ", 1)
+                first_name = parts[0]
+                last_name = parts[1]
+            else:
+                # Se não tiver sobrenome, coloca tudo em "First Name"
+                first_name = nome_completo
+            
+            row = [first_name, last_name]
+            # --- FIM DA LÓGICA DO NOME ---
+            
+            # Lógica de extração de e-mails (continua a mesma)
+            emails_do_contato = []
+            if municipe.emails and isinstance(municipe.emails, list):
+                for email_obj in municipe.emails:
+                    if email_obj and isinstance(email_obj, dict) and email_obj.get('email'):
+                        emails_do_contato.append(email_obj['email'])
+            
+            for i in range(MAX_EMAILS):
+                if i < len(emails_do_contato):
+                    row.append(emails_do_contato[i])
+                else:
+                    row.append('')
+
+            writer.writerow(row)
+
+        return response
