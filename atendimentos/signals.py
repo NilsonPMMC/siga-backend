@@ -1,14 +1,91 @@
+import os
+from django.conf import settings
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.contrib.auth.models import User
-from django.contrib.contenttypes.models import ContentType
-from django.conf import settings
-from .models import Atendimento, LogDeAtividade, Tramitacao, PerfilUsuario, SolicitacaoAgenda, Notificacao
-from .request_middleware import get_current_user
-from django.core.mail import send_mail
 from django.template.loader import render_to_string
-from django.contrib.sites.models import Site
+from django.core.mail import EmailMultiAlternatives
+from django.utils.html import strip_tags
+from email.mime.image import MIMEImage
 
+from .models import Atendimento, LogDeAtividade, Tramitacao, SolicitacaoAgenda, Notificacao
+from .request_middleware import get_current_user
+
+# --- FUNÇÃO AUXILIAR PARA ENVIAR E-MAIL COM IMAGENS EMBUTIDAS (CID) ---
+def enviar_email_com_cid(assunto, destinatarios, template, contexto, conta=None):
+    """
+    Função utilitária para preparar imagens (Brasão e Logo) como anexos inline (CID)
+    e enviar o e-mail HTML.
+    """
+    imagens_para_anexar = []
+    
+    # Valores padrão para o contexto
+    contexto['brasao_url'] = ""
+    contexto['logo_conta_url'] = ""
+    contexto['nome_instituicao'] = conta.nome_instituicao if conta and conta.nome_instituicao else "Prefeitura Municipal"
+
+    # 1. Processar Brasão
+    if conta and conta.brasao_instituicao:
+        try:
+            caminho_brasao = conta.brasao_instituicao.path
+            if os.path.exists(caminho_brasao):
+                imagens_para_anexar.append({
+                    'path': caminho_brasao,
+                    'cid': 'brasao_instituicao',
+                    'nome': 'brasao.png'
+                })
+                contexto['brasao_url'] = "cid:brasao_instituicao"
+        except Exception:
+            pass # Se der erro no arquivo, segue sem imagem
+
+    # 2. Processar Logo da Conta
+    if conta and conta.logo_conta:
+        try:
+            caminho_logo = conta.logo_conta.path
+            if os.path.exists(caminho_logo):
+                imagens_para_anexar.append({
+                    'path': caminho_logo,
+                    'cid': 'logo_conta',
+                    'nome': 'logo.png'
+                })
+                contexto['logo_conta_url'] = "cid:logo_conta"
+        except Exception:
+            pass
+
+    # 3. Renderizar Templates
+    html_content = render_to_string(template, contexto)
+    text_content = strip_tags(html_content)
+
+    # 4. Criar e-mail
+    msg = EmailMultiAlternatives(
+        subject=assunto,
+        body=text_content,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=destinatarios
+    )
+    msg.attach_alternative(html_content, "text/html")
+
+    # 5. Anexar imagens Inline
+    if imagens_para_anexar:
+        msg.mixed_subtype = 'related'
+        for img_data in imagens_para_anexar:
+            try:
+                with open(img_data['path'], 'rb') as f:
+                    img = MIMEImage(f.read())
+                    img.add_header('Content-ID', f"<{img_data['cid']}>")
+                    img.add_header('Content-Disposition', 'inline', filename=img_data['nome'])
+                    msg.attach(img)
+            except Exception as e:
+                print(f"Erro ao anexar imagem {img_data['nome']}: {e}")
+
+    # 6. Enviar
+    try:
+        msg.send()
+    except Exception as e:
+        print(f"ERRO ao enviar e-mail ({assunto}): {e}")
+
+
+# --- SIGNALS ---
 
 # Sinal para Atendimento (Criação e Edição)
 @receiver(post_save, sender=Atendimento)
@@ -16,7 +93,7 @@ def handle_atendimento_criacao(sender, instance, created, **kwargs):
     if created:
         user = get_current_user() or User.objects.filter(is_superuser=True).first()
 
-        # Notificação para o responsável INTERNO
+        # Notificação para o responsável INTERNO (Simples, sem imagens personalizadas)
         if instance.responsavel and instance.responsavel.email:
             context_interno = {
                 'nome_responsavel': instance.responsavel.first_name or instance.responsavel.username,
@@ -25,60 +102,38 @@ def handle_atendimento_criacao(sender, instance, created, **kwargs):
                 'nome_municipe': instance.municipe.nome_completo,
                 'link_atendimento': f"https://gabinete.mogidascruzes.sp.gov.br/atendimentos/{instance.id}"
             }
+            # Aqui pode manter o send_mail simples ou usar a função nova se quiser padronizar
             html_message = render_to_string('emails/notificacao_novo_atendimento.html', context_interno)
-            send_mail(
+            msg_interna = EmailMultiAlternatives(
                 f"[SIGA] Novo Atendimento: {instance.protocolo}",
-                "Um novo atendimento foi direcionado para sua responsabilidade.",
+                strip_tags(html_message),
                 'comunicacao.gabinete@mogidascruzes.sp.gov.br',
-                [instance.responsavel.email],
-                html_message=html_message
+                [instance.responsavel.email]
             )
+            msg_interna.attach_alternative(html_message, "text/html")
+            msg_interna.send()
 
-        # --- CORREÇÃO: Notificação para o MUNÍCIPE com todos os dados dinâmicos ---
-        
-        # 1. Pega o primeiro e-mail da nova lista de e-mails
+        # --- CORREÇÃO: Notificação para o MUNÍCIPE usando CID ---
         municipe_email_principal = instance.municipe.emails[0].get('email') if instance.municipe and instance.municipe.emails else None
         
         if municipe_email_principal:
-            # 2. Pega a conta e os dados de personalização
-            conta = instance.conta
-            site_domain = Site.objects.get_current().domain
-            protocol = 'https' # Use 'http' em ambiente de desenvolvimento se necessário
-
-            nome_instituicao = "Prefeitura Municipal" # Valor Padrão
-            brasao_url = ''
-            logo_conta_url = ''
-
-            if conta:
-                nome_instituicao = conta.nome_instituicao or nome_instituicao
-                if conta.brasao_instituicao:
-                    brasao_url = f"{protocol}://{site_domain}{conta.brasao_instituicao.url}"
-                if conta.logo_conta:
-                    logo_conta_url = f"{protocol}://{site_domain}{conta.logo_conta.url}"
-
-            # 3. Monta o contexto completo para o template do e-mail
             context_externo = {
                 'nome_municipe': instance.municipe.nome_completo,
                 'protocolo': instance.protocolo,
                 'titulo': instance.titulo,
                 'data_criacao': instance.data_criacao.strftime('%d/%m/%Y às %H:%M'),
-                'nome_instituicao': nome_instituicao,
-                'brasao_url': brasao_url,
-                'logo_conta_url': logo_conta_url,
             }
-            html_message = render_to_string('emails/confirmacao_protocolo.html', context_externo)
             
-            send_mail(
-                f"Atendimento Registrado - Protocolo: {instance.protocolo}",
-                f"Seu atendimento sobre '{instance.titulo}' foi registrado com o protocolo {instance.protocolo}.",
-                settings.DEFAULT_FROM_EMAIL,
-                [municipe_email_principal],
-                html_message=html_message
+            # Usando a função auxiliar que resolve os Logos
+            enviar_email_com_cid(
+                assunto=f"Atendimento Registrado - Protocolo: {instance.protocolo}",
+                destinatarios=[municipe_email_principal],
+                template='emails/confirmacao_protocolo.html',
+                contexto=context_externo,
+                conta=instance.conta
             )
         
-        # --- FIM DA CORREÇÃO ---
-
-        # Lógica de notificação no "sininho" e Log (sem alterações)
+        # Logs e Notificações (Mantidos)
         if instance.responsavel:
             Notificacao.objects.create(
                 usuario=instance.responsavel,
@@ -105,8 +160,6 @@ def handle_tramitacao_save(sender, instance, created, **kwargs):
     if created:
         user = get_current_user() or User.objects.filter(is_superuser=True).first()
         atendimento = instance.atendimento
-
-        # 2. Criar o log de atividade
         LogDeAtividade.objects.create(
             usuario=user,
             acao='TRAMITACAO',
@@ -122,90 +175,50 @@ def log_tramitacao_delete(sender, instance, **kwargs):
     LogDeAtividade.objects.create(usuario=user, acao='DELECAO_TRAMITACAO', detalhes=detalhes, content_object=instance.atendimento)
     
 
+# Sinal para Agenda Confirmada
 @receiver(post_save, sender=SolicitacaoAgenda)
 def notificar_agenda_confirmada(sender, instance, created, **kwargs):
     if not created and instance.status == 'AGENDADO':
         solicitante_email_principal = instance.solicitante.emails[0].get('email') if instance.solicitante and instance.solicitante.emails else None
         
         if solicitante_email_principal:
-            try:
-                # --- CORREÇÃO 2: Buscar os dados de personalização da Conta ---
-                conta = instance.conta
-                site_domain = Site.objects.get_current().domain
-                protocol = 'https' # Ou 'http' se necessário
+            context = {
+                'nome_municipe': instance.solicitante.nome_completo,
+                'assunto': instance.assunto,
+                'data_agendada': instance.data_agendada.strftime('%d/%m/%Y às %H:%M') if instance.data_agendada else "A ser confirmado",
+                'nome_gabinete': instance.conta.nome if instance.conta else "Não informado",
+            }
 
-                nome_instituicao = "Prefeitura Municipal" # Valor Padrão
-                brasao_url = ''
-                logo_conta_url = ''
+            # Usando a função auxiliar
+            enviar_email_com_cid(
+                assunto=f"Reunião Agendada: {instance.assunto}",
+                destinatarios=[solicitante_email_principal],
+                template='emails/confirmacao_agenda.html',
+                contexto=context,
+                conta=instance.conta
+            )
 
-                if conta:
-                    nome_instituicao = conta.nome_instituicao or nome_instituicao
-                    if conta.brasao_instituicao:
-                        brasao_url = f"{protocol}://{site_domain}{conta.brasao_instituicao.url}"
-                    if conta.logo_conta:
-                        logo_conta_url = f"{protocol}://{site_domain}{conta.logo_conta.url}"
-
-                # 3. Monta o contexto completo para o template do e-mail
-                context = {
-                    'nome_municipe': instance.solicitante.nome_completo,
-                    'assunto': instance.assunto,
-                    'data_agendada': instance.data_agendada.strftime('%d/%m/%Y às %H:%M') if instance.data_agendada else "A ser confirmado",
-                    'nome_gabinete': instance.conta.nome if instance.conta else "Não informado",
-                    'nome_instituicao': nome_instituicao,
-                    'brasao_url': brasao_url,
-                    'logo_conta_url': logo_conta_url,
-                }
-
-                # O resto da lógica de envio de e-mail continua a mesma
-                html_message = render_to_string('emails/confirmacao_agenda.html', context)
-                plain_message = f"Sua reunião sobre '{context['assunto']}' foi agendada para {context['data_agendada']} no gabinete {context['nome_gabinete']}."
-
-                send_mail(
-                    f"Reunião Agendada: {instance.assunto}",
-                    plain_message,
-                    settings.DEFAULT_FROM_EMAIL,
-                    [solicitante_email_principal],
-                    html_message=html_message
-                )
-            except Exception as e:
-                print(f"ERRO ao enviar e-mail de confirmação de agenda: {e}")
-
+# Sinal para Reserva de Espaço (Reserva Rápida)
 @receiver(post_save, sender=SolicitacaoAgenda)
 def enviar_email_confirmacao_reserva(sender, instance, created, **kwargs):
-    """
-    Envia um e-mail de confirmação quando uma 'Reserva Rápida' é criada.
-    Uma reserva rápida é identificada por ser criada já com o status 'AGENDADO'.
-    """
-    # A mágica acontece aqui: só dispara se for um registro NOVO (created=True)
-    # e se o status for 'AGENDADO'
     if created and instance.status == 'AGENDADO':
         solicitante = instance.solicitante
         
-        # Verifica se o solicitante tem um e-mail cadastrado
         if solicitante and solicitante.email:
-            try:
-                conta = instance.conta
-                brasao_url = request.build_absolute_uri(conta.brasao_instituicao.url) if conta and conta.brasao_instituicao else ''
-                logo_conta_url = request.build_absolute_uri(conta.logo_conta.url) if conta and conta.logo_conta else ''
-                contexto = {
-                    'nome_solicitante': solicitante.nome_completo,
-                    'assunto': instance.assunto,
-                    'nome_espaco': instance.espaco.nome if instance.espaco else 'Não especificado',
-                    'data_agendada': instance.data_agendada.strftime('%d/%m/%Y às %H:%M'),
-                    'data_agendada_fim': instance.data_agendada_fim.strftime('%H:%M'),
-                    'brasao_url': brasao_url,
-                    'logo_conta_url': logo_conta_url
-                }
+            # Correção: Removemos o request.build_absolute_uri que causava erro
+            contexto = {
+                'nome_solicitante': solicitante.nome_completo,
+                'assunto': instance.assunto,
+                'nome_espaco': instance.espaco.nome if instance.espaco else 'Não especificado',
+                'data_agendada': instance.data_agendada.strftime('%d/%m/%Y às %H:%M'),
+                'data_agendada_fim': instance.data_agendada_fim.strftime('%H:%M') if instance.data_agendada_fim else "",
+            }
 
-                html_message = render_to_string('emails/confirmacao_reserva_espaco.html', contexto)
-
-                send_mail(
-                    subject=f"Reserva Confirmada: {instance.assunto}",
-                    message=f"Sua reserva para '{instance.assunto}' no espaço '{contexto['nome_espaco']}' foi confirmada.",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[solicitante.email],
-                    html_message=html_message
-                )
-            except Exception as e:
-                # Em caso de falha, o sistema não quebra, apenas registra o erro (idealmente em um log)
-                print(f"ERRO ao enviar e-mail de confirmação de reserva para {solicitante.email}: {e}")
+            # Usando a função auxiliar
+            enviar_email_com_cid(
+                assunto=f"Reserva Confirmada: {instance.assunto}",
+                destinatarios=[solicitante.email],
+                template='emails/confirmacao_reserva_espaco.html',
+                contexto=contexto,
+                conta=instance.conta
+            )

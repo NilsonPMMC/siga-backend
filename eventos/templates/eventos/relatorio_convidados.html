@@ -49,8 +49,19 @@
             margin-top: 20px;
         }
         .guest-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
             padding: 8px 0;
             border-bottom: 1px solid #eee;
+        }
+        .guest-photo {
+            width: 60px;
+            text-align: center;
+        }
+        .guest_data{
+            display: flex;
+            flex-direction: row;
         }
         .guest-name {
             font-weight: bold;
@@ -89,15 +100,21 @@
             {% if convidados %}
                 {% for convidado in convidados %}
                     <div class="guest-item">
-                        <div class="guest-name">{% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
-                        {% if convidado.municipe.nome_de_guerra %}
-                            <div class="guest-nickname">({{ convidado.municipe.nome_de_guerra }})</div>
-                        {% endif %}
-                        <div class="guest-details">
-                            {% if convidado.municipe.cargo %}
-                                <strong>{{ convidado.municipe.cargo }}</strong><br>
-                                <span>{{ convidado.municipe.orgao }}</span>
+                        <div class="guest-photo">
+                            {% if convidado.foto_url_absoluta %}
+                                <img src="{{ convidado.foto_url_absoluta }}" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">
+                            {% else %}
+                                <div style="width: 60px; height: 60px; background: #eee; border-radius: 50%;"></div>
                             {% endif %}
+                        </div>
+                        <div class="guest-data">
+                            <div class="guest-name">{% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
+                            <div class="guest-details">
+                                {% if convidado.municipe.cargo %}
+                                    <strong>{{ convidado.municipe.cargo }}</strong><br>
+                                    <span>{{ convidado.municipe.orgao }}</span>
+                                {% endif %}
+                            </div>
                         </div>
                     </div>
                 {% endfor %}

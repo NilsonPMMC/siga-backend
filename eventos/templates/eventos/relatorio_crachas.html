@@ -29,54 +29,81 @@
             box-sizing: border-box;
             width: 120mm;
             height: 80mm;
-            border: 1px dashed #4b4b4b; /* Linha de corte */
-            padding: 5mm 10mm;
+            border: 1px dashed #999; /* Linha de corte mais suave */
+            padding: 4mm; /* Reduzi um pouco o padding geral para caber a foto */
             margin: 0;
             display: flex;
             flex-direction: column;
-            justify-content: space-between;
+            justify-content: center;
             text-align: center;
             overflow: hidden;
+            position: relative;
         }        
         .card-content {
             width: 100%;
-            flex-grow: 1;
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
+            align-items: center;
+            justify-content: space-between; /* Centraliza verticalmente o bloco de conteúdo */
+        }
+
+        /* --- NOVO CSS DA FOTO --- */
+        .foto-container {
+            width: 22mm;  /* Tamanho da foto */
+            height: 22mm;
+            border-radius: 50%; /* Faz ficar redonda */
+            overflow: hidden;
+            margin-bottom: 3mm; /* Espaço entre foto e nome */
+            border: 2px solid #4A90E2; /* Borda azul bonita */
+            background-color: #f0f0f0; /* Cor de fundo se imagem falhar */
+            display: flex;
             align-items: center;
             justify-content: center;
         }
-        .card-content .name {
-            font-size: 25px; /* Tamanho grande para o nome */
+        .foto-perfil {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Garante que a foto preencha o círculo sem distorcer o rosto */
+        }
+        .foto-placeholder {
+            font-size: 30px;
+            color: #ccc;
             font-weight: bold;
-            margin-bottom: 5mm;
+        }
+        /* ------------------------ */
+
+        .card-content .name {
+            font-size: 22px; /* Reduzi levemente (era 25px) para equilibrar com a foto */
+            font-weight: bold;
+            margin-bottom: 2mm;
             text-transform: uppercase;
             word-break: break-word;
             overflow-wrap: break-word;
+            line-height: 1.1;
         }
         .card-content .details {
-            font-size: 15px;
-            line-height: 1.4;
-            word-wrap: break-word; /* Também aplica quebra de linha aqui */
+            font-size: 14px;
+            line-height: 1.3;
+            word-wrap: break-word;
             text-transform: uppercase;
+            color: #333;
         }
         .card-footer {
+            position: absolute;
+            width: 112mm;
+            bottom: 4mm;
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            font-size: 11px;
+            align-items: flex-end; /* Alinha logo e texto pela base */
+            font-size: 10px;
             font-weight: bold;
             color: #4A90E2;
-            text-align: right; /* Alinha "PROTOCOLO" à direita */
-        }
-        .card-footer .protocolo{
-            font-size: 11px;
-            font-weight: bold;
-            color: #4A90E2;
+            padding-top: 2mm;
+            border-top: 1px solid #eee; /* Linha sutil separando rodapé */
         }
         .card-footer .logo img {
-            max-width: 100px;
-            max-height: 40px;
+            max-width: 80px; /* Ajustado para não brigar com espaço */
+            max-height: 35px;
         }
     </style>
 </head>
@@ -86,18 +113,33 @@
         {% for convidado in convidados %}
             <div class="card">
                 <div class="card-content">
-                    <div class="name">
-                        {% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}
+                    
+                    <div class="foto-container">
+                        {% if convidado.foto_url_absoluta %}
+                            <img src="{{ convidado.foto_url_absoluta }}" class="foto-perfil" alt="Foto">
+                        {% else %}
+                            <div class="foto-placeholder">
+                                {{ convidado.municipe.nome_completo|slice:":1" }}
+                            </div>
+                        {% endif %}
                     </div>
-                    <div class="details">
-                        {% if convidado.municipe.cargo %}
-                            <strong>{{ convidado.municipe.cargo }}</strong><br>
-                        {% endif %}
-                        {% if convidado.municipe.orgao %}
-                            <span>{{ convidado.municipe.orgao }}</span>
-                        {% endif %}
+                    <div>
+                        <div class="name">
+                            {% if convidado.municipe.tratamento %}<span style="font-size: 0.6em; display:block; margin-bottom:2px; font-weight:normal;">{{ convidado.municipe.tratamento }}</span>{% endif %}
+                            {{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}
+                        </div>
+
+                        <div class="details">
+                            {% if convidado.municipe.cargo %}
+                                <strong>{{ convidado.municipe.cargo }}</strong><br>
+                            {% endif %}
+                            {% if convidado.municipe.orgao %}
+                                <span>{{ convidado.municipe.orgao }}</span>
+                            {% endif %}
+                        </div>
                     </div>
                 </div>
+
                 <div class="card-footer">
                     <div class="logo">
                         {% if brasao_url %}<img src="{{ brasao_url }}" alt="Brasão">{% endif %}
@@ -107,6 +149,7 @@
                     </div>
                 </div>
             </div>
+
             {% if forloop.counter|divisibleby:4 and not forloop.last %}
                 </div><div class="page-break"></div><div class="card-container">
             {% endif %}

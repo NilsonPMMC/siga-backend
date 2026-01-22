@@ -27,6 +27,8 @@ public_urls = [
 
 # As URLs da API são determinadas automaticamente pelo router.
 urlpatterns = [
+    path('eventos/bi/analytics/', views.EventoAnalyticsView.as_view(), name='evento-bi-analytics'),
+    path('eventos/bi/analytics/pdf/', views.GerarPdfBiEventosView.as_view(), name='evento-bi-pdf'),
     path('', include(router.urls)),
     path('', include(public_urls)),
 ]

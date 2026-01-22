@@ -1,16 +1,19 @@
 # eventos/views.py
 import uuid
 import csv
+import os
 from datetime import datetime, time
 from openpyxl import Workbook
 from weasyprint import HTML
 from django.http import HttpResponse
-from django.db.models import Q
+from django.db.models import Count, Q, F
 from django.shortcuts import render, get_object_or_404, redirect
 from django.db import transaction, models
 from django.utils import timezone
 from django.contrib.staticfiles import finders
 from django.template.loader import render_to_string
+from django.conf import settings
+import weasyprint
 from rest_framework.views import APIView
 from rest_framework import viewsets, permissions, serializers, status
 from rest_framework.decorators import action
@@ -24,6 +27,19 @@ from .utils import gerar_e_enviar_certificado
 from .permissions import PodeGerenciarEventos
 from eventos.tasks import enviar_comunicacao_em_massa, gerar_e_enviar_certificado
 from atendimentos.management.commands.verificar_duplicatas import normalizar_nome_para_conjunto
+
+def get_image_path(image_field):
+    if not image_field:
+        return None
+    
+    try:
+        path = image_field.path 
+        if os.path.exists(path):
+            return f'file://{path}'
+    except Exception:
+        pass
+    
+    return None
 
 class EventoViewSet(viewsets.ModelViewSet):
     serializer_class = EventoSerializer
@@ -193,17 +209,19 @@ class EventoViewSet(viewsets.ModelViewSet):
         """
         try:
             evento = self.get_object()
-            
-            # CORREÇÃO: Remove o filtro de status='presente' para incluir todos os convidados.
-            todos_convidados = evento.convidados.filter(status='Presente').order_by('ordem')
-            
             conta = evento.conta
-            logo_url = request.build_absolute_uri(conta.logo_conta.url) if conta.logo_conta else ''
-            brasao_url = request.build_absolute_uri(conta.brasao_instituicao.url) if conta.brasao_instituicao else ''
+            todos_convidados = evento.convidados.all().order_by('ordem', 'municipe__nome_completo')            
+            logo_url = get_image_path(conta.logo_conta) or ''
+            brasao_url = get_image_path(conta.brasao_instituicao) or ''
+
+            convidados_com_foto = []
+            for convidado in todos_convidados:
+                convidado.foto_url_absoluta = get_image_path(convidado.municipe.foto)
+                convidados_com_foto.append(convidado)
 
             context = {
                 'evento': evento,
-                'convidados': todos_convidados,
+                'convidados': convidados_com_foto,
                 'logo_url': logo_url,
                 'brasao_url': brasao_url,
                 'data_emissao': timezone.now(),
@@ -213,12 +231,10 @@ class EventoViewSet(viewsets.ModelViewSet):
             pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
 
             response = HttpResponse(pdf_file, content_type='application/pdf')
-            # Ajuste no nome do arquivo para refletir o novo conteúdo
             response['Content-Disposition'] = f'attachment; filename="relatorio_convidados_{evento.nome}.pdf"'
             
             return response
         except Exception as e:
-            # Log do erro no servidor para facilitar a depuração
             print(f"Erro ao gerar relatório de convidados: {e}")
             return Response({'error': 'Ocorreu um erro interno ao gerar o relatório.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -228,26 +244,24 @@ class EventoViewSet(viewsets.ModelViewSet):
         Gera um PDF de crachás para uma lista de IDs de convidados selecionados.
         """
         convidado_ids = request.data.get('convidado_ids')
-
         if not convidado_ids or not isinstance(convidado_ids, list):
             return Response({'error': 'Uma lista de IDs de convidados é obrigatória.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             evento = self.get_object()
-            
-            # Busca os convidados selecionados, mantendo a ordem manual
-            convidados_selecionados = Convidado.objects.filter(id__in=convidado_ids, evento=evento).order_by('ordem')
+            convidados_selecionados = Convidado.objects.select_related('municipe').filter(id__in=convidado_ids, evento=evento).order_by('ordem')
             
             conta = evento.conta
-            logo_url = request.build_absolute_uri(conta.logo_conta.url) if conta.logo_conta else ''
-            brasao_url = request.build_absolute_uri(conta.brasao_instituicao.url) if conta.brasao_instituicao else ''
-            if request.is_secure():
-                logo_url = logo_url.replace('http://', 'https://')
-                brasao_url = brasao_url.replace('http://', 'https://')
+            logo_url = get_image_path(conta.logo_conta) or ''
+            brasao_url = get_image_path(conta.brasao_instituicao) or ''
+            convidados_com_foto = []
+            for convidado in convidados_selecionados:
+                convidado.foto_url_absoluta = get_image_path(convidado.municipe.foto)
+                convidados_com_foto.append(convidado)
 
             context = {
                 'evento': evento,
-                'convidados': convidados_selecionados,
+                'convidados': convidados_com_foto,
                 'logo_url': logo_url,
                 'brasao_url': brasao_url,
             }
@@ -394,15 +408,17 @@ class ConvidadoViewSet(viewsets.ModelViewSet):
         
         evento_id = self.request.query_params.get('evento')
         if evento_id:
-            return qs.filter(evento_id=evento_id)
-        return qs.select_related('municipe')
+            # Ordena acessando o nome dentro da relação com municipe
+            return qs.filter(evento_id=evento_id).order_by('municipe__nome_completo')
+            
+        return qs.select_related('municipe').order_by('municipe__nome_completo')
 
     def perform_create(self, serializer):
         # Define a ordem inicial do novo convidado
         # Esta função agora funcionará porque 'models' foi importado.
         evento_id = serializer.validated_data['evento'].id
         maior_ordem = Convidado.objects.filter(evento_id=evento_id).aggregate(models.Max('ordem'))['ordem__max'] or 0
-        serializer.save(ordem=maior_ordem + 1)
+        serializer.save(ordem=0)
 
     @action(detail=False, methods=['post'], url_path='reorder')
     def reorder(self, request):
@@ -1189,4 +1205,395 @@ class ExportMailingListCSVView(APIView):
 
             writer.writerow(row)
 
+        return response
+
+class EventoAnalyticsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        evento_id = request.query_params.get('evento_id')
+        data_inicio = request.query_params.get('data_inicio')
+        data_fim = request.query_params.get('data_fim')
+        categoria_id = request.query_params.get('categoria_id')
+        
+        user = request.user
+
+        # --- FILTRO BASE DE SEGURANÇA ---
+        eventos_qs = Evento.objects.all()
+        if not user.is_superuser and hasattr(user, 'perfil'):
+            eventos_qs = eventos_qs.filter(conta__in=user.perfil.contas.all())
+
+        # --- FILTRO DE DATA ---
+        current_tz = timezone.get_current_timezone()
+        if data_inicio:
+            try:
+                dt_start = datetime.strptime(data_inicio, '%Y-%m-%d')
+                start_aware = timezone.make_aware(datetime.combine(dt_start, time.min), current_tz)
+                eventos_qs = eventos_qs.filter(data_evento__gte=start_aware)
+            except ValueError: pass
+        if data_fim:
+            try:
+                dt_end = datetime.strptime(data_fim, '%Y-%m-%d')
+                end_aware = timezone.make_aware(datetime.combine(dt_end, time.max), current_tz)
+                eventos_qs = eventos_qs.filter(data_evento__lte=end_aware)
+            except ValueError: pass
+
+        # =================================================================
+        # MODO 1: DETALHE (UM EVENTO)
+        # =================================================================
+        if evento_id:
+            try:
+                evento = eventos_qs.get(id=evento_id)
+            except Evento.DoesNotExist:
+                return Response({'detail': 'Evento não encontrado.'}, status=404)
+
+            # KPIs SIMPLIFICADOS
+            # VIP: Conta registros na tabela Convidado (independente do status)
+            total_convidados_vip = evento.convidados.count() 
+            
+            # Público: Conta registros na ListaPresenca (QR Code)
+            total_publico_qr = evento.presentes.count()
+            
+            total_geral = total_convidados_vip + total_publico_qr
+
+            # Perfil (Mantido Unificado para análise qualitativa)
+            ids_vips = set(evento.convidados.values_list('municipe_id', flat=True))
+            ids_publico = set(evento.presentes.values_list('municipe_id', flat=True))
+            todos_ids = ids_vips | ids_publico
+            
+            lista_perfil = []
+            if todos_ids:
+                por_categoria = (
+                    Municipe.objects.filter(id__in=todos_ids)
+                    .values('categoria__nome')
+                    .annotate(qtd=Count('id'))
+                    .order_by('-qtd')
+                )
+                lista_perfil = [{'municipe__categoria__nome': x['categoria__nome'], 'qtd': x['qtd']} for x in por_categoria]
+
+            return Response({
+                'tipo': 'detalhe',
+                'evento': { 'nome': evento.nome, 'data': evento.data_evento, 'local': evento.local },
+                'kpis': {
+                    'vip': total_convidados_vip,
+                    'publico': total_publico_qr,
+                    'total': total_geral
+                },
+                'perfil': lista_perfil
+            })
+
+        # =================================================================
+        # MODO 2: GLOBAL (MACRO)
+        # =================================================================
+        
+        # 1. Total de Eventos no Período (NOVO)
+        qtd_eventos = eventos_qs.count()
+
+        # 2. QuerySets Base para Análise
+        # VIP: Todos os registros de convidados (sem filtrar status='presente')
+        all_convidados_qs = Convidado.objects.filter(evento__in=eventos_qs)
+        
+        # Público: Todos os registros de QR Code
+        all_publico_qs = ListaPresenca.objects.filter(evento__in=eventos_qs)
+
+        # Aplica Filtro de Categoria Global (se selecionado)
+        if categoria_id:
+            all_convidados_qs = all_convidados_qs.filter(municipe__categoria_id=categoria_id)
+            all_publico_qs = all_publico_qs.filter(municipe__categoria_id=categoria_id)
+
+        # 3. Totais Gerais
+        total_vip_geral = all_convidados_qs.count()
+        total_publico_geral = all_publico_qs.count()
+
+        # 4. Top 10 Eventos (Mais Movimentados: Soma de Convites VIP + QR Code)
+        top_eventos_qs = eventos_qs.annotate(
+            qtd_vip=Count('convidados', distinct=True), # Removemos o filtro de status aqui também
+            qtd_publico=Count('presentes', distinct=True)
+        ).annotate(
+            total_real=F('qtd_vip') + F('qtd_publico')
+        ).order_by('-total_real')[:10]
+
+        top_eventos = []
+        for ev in top_eventos_qs:
+            top_eventos.append({
+                'nome': ev.nome,
+                'data': ev.data_evento,
+                'total': ev.total_real
+            })
+
+        # 5. Top Convidados (VIP) - Mais Frequentes nas Listas
+        top_convidados = (
+            all_convidados_qs
+            .values('municipe__nome_completo', 'municipe__categoria__nome')
+            .annotate(frequencia=Count('id'))
+            .order_by('-frequencia')[:10]
+        )
+
+        # 6. Top Público (QR Code) - CORREÇÃO: Agora respeita filtro de categoria
+        top_publico = (
+            all_publico_qs
+            .values('municipe__nome_completo', 'municipe__categoria__nome')
+            .annotate(frequencia=Count('id'))
+            .order_by('-frequencia')[:10]
+        )
+
+        # 7. Perfil Unificado
+        perfis_vip = all_convidados_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+        perfis_publico = all_publico_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+        
+        mapa_perfis = {}
+        for item in perfis_vip:
+            cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+            mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
+        for item in perfis_publico:
+            cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+            mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
+            
+        lista_top_perfis = [{'municipe__categoria__nome': k, 'qtd': v} for k, v in mapa_perfis.items()]
+        lista_top_perfis = sorted(lista_top_perfis, key=lambda x: x['qtd'], reverse=True)[:5]
+
+        return Response({
+            'tipo': 'global',
+            'qtd_eventos': qtd_eventos, # Contador de eventos
+            'totais': {
+                'publico': total_publico_geral,
+                'vip': total_vip_geral,
+                'geral': total_publico_geral + total_vip_geral
+            },
+            'top_eventos': top_eventos,
+            'top_convidados': list(top_convidados),
+            'top_publico': list(top_publico),
+            'top_perfis': lista_top_perfis
+        })
+    
+def get_bi_eventos_data(user, params):
+    """
+    Função helper que calcula os dados do BI.
+    Usada tanto pela API JSON quanto pelo Gerador de PDF.
+    """
+    evento_id = params.get('evento_id')
+    data_inicio = params.get('data_inicio')
+    data_fim = params.get('data_fim')
+    categoria_id = params.get('categoria_id')
+    
+    # --- FILTRO BASE DE SEGURANÇA ---
+    eventos_qs = Evento.objects.all()
+    if not user.is_superuser and hasattr(user, 'perfil'):
+        eventos_qs = eventos_qs.filter(conta__in=user.perfil.contas.all())
+
+    # --- FILTRO DE DATA ---
+    current_tz = timezone.get_current_timezone()
+    if data_inicio:
+        try:
+            dt_start = datetime.strptime(data_inicio, '%Y-%m-%d')
+            start_aware = timezone.make_aware(datetime.combine(dt_start, time.min), current_tz)
+            eventos_qs = eventos_qs.filter(data_evento__gte=start_aware)
+        except ValueError: pass
+    if data_fim:
+        try:
+            dt_end = datetime.strptime(data_fim, '%Y-%m-%d')
+            end_aware = timezone.make_aware(datetime.combine(dt_end, time.max), current_tz)
+            eventos_qs = eventos_qs.filter(data_evento__lte=end_aware)
+        except ValueError: pass
+
+    # =================================================================
+    # MODO 1: DETALHE (UM EVENTO)
+    # =================================================================
+    if evento_id:
+        try:
+            evento = eventos_qs.get(id=evento_id)
+        except Evento.DoesNotExist:
+            return None # Sinal de erro
+
+        total_convidados_vip = evento.convidados.count() 
+        total_publico_qr = evento.presentes.count()
+        total_geral = total_convidados_vip + total_publico_qr
+
+        # Perfil Unificado
+        ids_vips = set(evento.convidados.values_list('municipe_id', flat=True))
+        ids_publico = set(evento.presentes.values_list('municipe_id', flat=True))
+        todos_ids = ids_vips | ids_publico
+        
+        lista_perfil = []
+        if todos_ids:
+            por_categoria = (
+                Municipe.objects.filter(id__in=todos_ids)
+                .values('categoria__nome')
+                .annotate(qtd=Count('id'))
+                .order_by('-qtd')
+            )
+            lista_perfil = [{'categoria': x['categoria__nome'], 'qtd': x['qtd']} for x in por_categoria]
+
+        return {
+            'tipo': 'detalhe',
+            'evento': evento,
+            'kpis': {
+                'vip': total_convidados_vip,
+                'publico': total_publico_qr,
+                'total': total_geral
+            },
+            'perfil': lista_perfil
+        }
+
+    # =================================================================
+    # MODO 2: GLOBAL (MACRO)
+    # =================================================================
+    qtd_eventos = eventos_qs.count()
+    all_convidados_qs = Convidado.objects.filter(evento__in=eventos_qs)
+    all_publico_qs = ListaPresenca.objects.filter(evento__in=eventos_qs)
+
+    if categoria_id:
+        all_convidados_qs = all_convidados_qs.filter(municipe__categoria_id=categoria_id)
+        all_publico_qs = all_publico_qs.filter(municipe__categoria_id=categoria_id)
+
+    total_vip_geral = all_convidados_qs.count()
+    total_publico_geral = all_publico_qs.count()
+
+    # Top 10 Eventos
+    top_eventos_qs = eventos_qs.annotate(
+        qtd_vip=Count('convidados', distinct=True),
+        qtd_publico=Count('presentes', distinct=True)
+    ).annotate(
+        total_real=F('qtd_vip') + F('qtd_publico')
+    ).order_by('-total_real')[:10]
+
+    # Top Convidados (VIP)
+    top_convidados = (
+        all_convidados_qs
+        .values('municipe__nome_completo', 'municipe__categoria__nome')
+        .annotate(frequencia=Count('id'))
+        .order_by('-frequencia')[:10]
+    )
+
+    # Top Público (QR Code)
+    top_publico = (
+        all_publico_qs
+        .values('municipe__nome_completo', 'municipe__categoria__nome')
+        .annotate(frequencia=Count('id'))
+        .order_by('-frequencia')[:10]
+    )
+    
+    # Perfil Unificado Global
+    perfis_vip = all_convidados_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+    perfis_publico = all_publico_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+    
+    mapa_perfis = {}
+    for item in perfis_vip:
+        cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+        mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
+    for item in perfis_publico:
+        cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+        mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
+        
+    lista_top_perfis = [{'categoria': k, 'qtd': v} for k, v in mapa_perfis.items()]
+    lista_top_perfis = sorted(lista_top_perfis, key=lambda x: x['qtd'], reverse=True)
+
+    return {
+        'tipo': 'global',
+        'qtd_eventos': qtd_eventos,
+        'totais': {
+            'publico': total_publico_geral,
+            'vip': total_vip_geral,
+            'geral': total_publico_geral + total_vip_geral
+        },
+        'top_eventos': top_eventos_qs, # Passando QuerySet/Lista Objetos para facilitar template
+        'top_convidados': top_convidados,
+        'top_publico': top_publico,
+        'top_perfis': lista_top_perfis
+    }
+
+
+# --- 2. VIEW DA API JSON (Refatorada para usar a função) ---
+class EventoAnalyticsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        data = get_bi_eventos_data(request.user, request.query_params)
+        if data is None:
+            return Response({'detail': 'Evento não encontrado.'}, status=404)
+        
+        # Serialização manual rápida para JSON (pois o helper retorna objetos/querysets)
+        if data['tipo'] == 'detalhe':
+            return Response({
+                'tipo': 'detalhe',
+                'evento': { 'nome': data['evento'].nome, 'data': data['evento'].data_evento, 'local': data['evento'].local },
+                'kpis': data['kpis'],
+                'perfil': [{'municipe__categoria__nome': p['categoria'], 'qtd': p['qtd']} for p in data['perfil']]
+            })
+        else:
+            # Serializa listas globais
+            top_eventos = [{'nome': ev.nome, 'data': ev.data_evento, 'total': ev.total_real} for ev in data['top_eventos']]
+            return Response({
+                'tipo': 'global',
+                'qtd_eventos': data['qtd_eventos'],
+                'totais': data['totais'],
+                'top_eventos': top_eventos,
+                'top_convidados': list(data['top_convidados']),
+                'top_publico': list(data['top_publico']),
+                'top_perfis': [{'municipe__categoria__nome': p['categoria'], 'qtd': p['qtd']} for p in data['top_perfis']]
+            })
+
+
+# --- 3. NOVA VIEW DO PDF ---
+class GerarPdfBiEventosView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        # 1. Obtém os mesmos dados da API
+        data_bi = get_bi_eventos_data(request.user, request.query_params)
+        
+        if data_bi is None:
+            return HttpResponse('Evento não encontrado', status=404)
+        
+        # 1. Tenta recuperar a conta de forma segura
+        conta = None
+        if hasattr(request.user, 'perfil') and request.user.perfil.contas.exists():
+            conta = request.user.perfil.contas.first()
+
+        # 2. Define valores PADRÃO (Fallback) caso não tenha conta ou brasão
+        nome_instituicao = "Prefeitura Municipal de Mogi das Cruzes"
+        
+        # Caminho do brasão padrão nos arquivos estáticos
+        caminho_brasao = os.path.join(settings.STATIC_ROOT, 'images', 'logo-brasao-prefeitura.png')
+        
+        # 3. Se tiver conta, tenta sobrescrever com os dados personalizados
+        if conta:
+            nome_instituicao = conta.nome_instituicao or nome_instituicao
+            
+            # Só tenta acessar o brasão SE ele existir
+            if conta.brasao_instituicao:
+                try:
+                    # Pega o caminho físico
+                    if os.path.exists(conta.brasao_instituicao.path):
+                        caminho_brasao = conta.brasao_instituicao.path
+                except Exception:
+                    pass # Se der erro (arquivo não encontrado), mantém o padrão
+
+        # 4. Prepara a URI para o PDF (file://)
+        if os.path.exists(caminho_brasao):
+            logo_uri = f"file://{caminho_brasao}"
+        else:
+            logo_uri = "" # Se não achar nem o padrão, vai sem logo
+
+        # 2. Prepara contexto para o HTML
+        context = {
+            'data': data_bi,
+            'filtros': {
+                'inicio': request.query_params.get('data_inicio'),
+                'fim': request.query_params.get('data_fim'),
+                'categoria': request.query_params.get('categoria_nome') # Frontend pode mandar o nome para exibir bonito
+            },
+            'user': request.user,
+            'data_geracao': datetime.now(),
+            'brasao_url': logo_uri,
+        }
+
+        # 3. Renderiza HTML
+        html_string = render_to_string('relatorios/bi_eventos_report.html', context)
+        
+        # 4. Gera PDF com WeasyPrint
+        pdf_file = weasyprint.HTML(string=html_string).write_pdf()
+        
+        response = HttpResponse(pdf_file, content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="relatorio_eventos.pdf"'
         return response

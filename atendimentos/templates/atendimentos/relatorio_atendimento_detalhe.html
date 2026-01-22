@@ -65,6 +65,7 @@
     <div class="section">
         <h3 class="section-title">PROTOCOLO {{ atendimento.protocolo }}</h3>
         <div class="info-grid">
+            <p><strong>Data:</strong> {{ atendimento.data_criacao|date:"d/m/Y" }}</p>
             <p><strong>Assunto:</strong> {{ atendimento.titulo }}</p>
             <p><strong>Status:</strong> {{ atendimento.get_status_display }}</p>
         </div>

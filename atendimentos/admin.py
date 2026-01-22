@@ -1,11 +1,15 @@
+import os
 import re
 import string
 import secrets
+from django.conf import settings
+from .utils import enviar_email_com_cid
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
+from django.utils.crypto import get_random_string
 from import_export import resources
 from import_export.fields import Field
 from import_export.widgets import ForeignKeyWidget, ManyToManyWidget
@@ -19,50 +23,66 @@ from .models import (
 
 def enviar_email_de_acesso(modeladmin, request, queryset):
     """
-    Ação do Django Admin para gerar uma nova senha e enviar as credenciais por e-mail.
+    Ação do Django Admin para gerar nova senha e enviar com imagens (CID).
     """
     cont_enviados = 0
+    
     for user in queryset:
         if not user.email:
-            messages.warning(request, f"O usuário '{user.username}' não possui e-mail e não foi notificado.")
+            messages.warning(request, f"O usuário '{user.username}' não possui e-mail e foi pulado.")
             continue
 
         try:
-            # --- A CORREÇÃO ESTÁ AQUI ---
-            # 1. Gera uma senha forte e aleatória usando as ferramentas do Python
-            alfabeto = string.ascii_letters + string.digits
-            senha_provisoria = ''.join(secrets.choice(alfabeto) for i in range(10))
-            # --- FIM DA CORREÇÃO ---
+            # 1. Gera senha forte (8 caracteres é suficiente e mais fácil de copiar)
+            senha_provisoria = get_random_string(length=8)
             
-            # 2. Define a nova senha para o usuário (o Django cuida da criptografia)
+            # 2. Salva a senha
             user.set_password(senha_provisoria)
             user.save()
 
-            # 3. Prepara e envia o e-mail usando nosso template
+            # 3. Tenta descobrir a Conta (Secretaria) do usuário para mandar o Logo certo
+            # Se o usuário tiver Perfil e estiver vinculado a alguma conta, pegamos a primeira.
+            conta_alvo = None
+            if hasattr(user, 'perfil') and user.perfil.contas.exists():
+                conta_alvo = user.perfil.contas.first()
+
+            caminho_logo = os.path.join(settings.STATIC_ROOT, 'images', 'logo-siga-gab.png')
+    
+            # Se quiser garantir, converta para URI de arquivo
+            if os.path.exists(caminho_logo):
+                logo_uri = f"file://{caminho_logo}"
+            else:
+                # Fallback caso não ache (opcional)
+                logo_uri = ""
+
+            # 4. Prepara o contexto
             contexto = {
                 'nome_usuario': user.get_full_name() or user.username,
                 'username': user.username,
                 'senha_provisoria': senha_provisoria,
-                'link_sistema': 'https://gabinete.mogidascruzes.sp.gov.br' 
+                'link_sistema': 'https://gabinete.mogidascruzes.sp.gov.br',
+                'logo_uri': logo_uri,
             }
-            html_message = render_to_string('emails/envio_credenciais.html', contexto)
             
-            send_mail(
-                subject='Suas Credenciais de Acesso ao Sistema SIGA Gabinete',
-                message=f"Seu usuário é {user.username} e sua senha provisória é {senha_provisoria}",
-                from_email='nao-responda@mogidascruzes.sp.gov.br',
-                recipient_list=[user.email],
-                html_message=html_message
+            # 5. Envia usando o Utilitário (Resolve imagens quebradas)
+            enviar_email_com_cid(
+                assunto='Suas Credenciais de Acesso ao Sistema SIGA Gabinete',
+                destinatarios=[user.email],
+                template='emails/envio_credenciais.html',
+                contexto=contexto,
+                conta=conta_alvo # Se for None, o utils manda o Brasão Padrão
             )
+            
             cont_enviados += 1
+
         except Exception as e:
-            messages.error(request, f"Falha ao enviar e-mail para '{user.username}': {e}")
+            messages.error(request, f"Falha ao enviar para '{user.username}': {e}")
 
     if cont_enviados > 0:
-        messages.success(request, f"{cont_enviados} e-mail(s) de acesso enviados com sucesso!")
+        messages.success(request, f"{cont_enviados} credenciais enviadas com sucesso!")
 
-enviar_email_de_acesso.short_description = "Enviar E-mail de Acesso com Senha Provisória"
-
+# Registra a ação no Admin de Usuários
+enviar_email_de_acesso.short_description = "Gerar senha e enviar credenciais por e-mail"
 
 # --- Configuração do Perfil de Usuário no Admin ---
 class PerfilUsuarioInline(admin.StackedInline):
@@ -88,11 +108,20 @@ admin.site.register(User, UserAdmin)
 # --- Admin para o modelo Conta ---
 @admin.register(Conta)
 class ContaAdmin(admin.ModelAdmin):
-    list_display = ('id', 'nome', 'nome_sigla', 'nome_titular', 'nome_instituicao')
-    search_fields = ['nome', 'nome_instituicao']
+    list_display = ('id', 'nome', 'nome_sigla', 'participa_escala', 'nome_titular') 
+    
+    # --- ESTA LINHA É OBRIGATÓRIA PARA O AUTOCOMPLETE FUNCIONAR ---
+    search_fields = ['nome', 'nome_sigla', 'nome_titular'] 
+    # --------------------------------------------------------------
+    
+    list_filter = ('participa_escala',)
+
     fieldsets = (
         (None, {
-            'fields': ('nome_instituicao', 'nome', 'nome_sigla', 'nome_titular')
+            'fields': ('nome_instituicao', 'nome', 'nome_sigla', 'nome_titular', 'etiqueta_remetente')
+        }),
+        ('Configurações de Escala', {
+            'fields': ('participa_escala',)
         }),
         ('Dados Ofício', {
             'fields': ('ultimo_numero_oficio', 'ano_corrente_oficio')

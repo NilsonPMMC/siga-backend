@@ -34,14 +34,18 @@ class GerarEtiquetaAPIView(APIView):
         validated_data = request_serializer.validated_data
         template_id = validated_data.get('template_id')
         contatos_data = validated_data.get('contatos')
-        posicao_inicial = validated_data.get('posicao_inicial')
+        posicao_inicial = validated_data.get('posicao_inicial', 1)
+        imprimir_remetente = request.data.get('imprimir_remetente', False)
 
         template_obj = get_object_or_404(EtiquetaTemplate, pk=template_id)
         
-        # --- LÓGICA FINAL E ROBUSTA ---
-        # Lê diretamente do banco de dados quantos itens por página este template usa.
+        texto_remetente = ""
+        if imprimir_remetente:
+            if hasattr(request.user, 'perfil') and request.user.perfil.contas.exists():
+                conta = request.user.perfil.contas.first()
+                texto_remetente = conta.etiqueta_remetente if conta.etiqueta_remetente else ""
+                
         ITENS_POR_PAGINA = template_obj.etiquetas_por_pagina
-        # --- FIM DA LÓGICA ---
         
         try:
             pos_inicial_int = int(posicao_inicial) if posicao_inicial else 1
@@ -61,6 +65,8 @@ class GerarEtiquetaAPIView(APIView):
         template = Template(template_obj.template_html)
         context = Context({
             'paginas': paginas,
+            'remetente': texto_remetente,
+            'flag_imprimir_remetente': imprimir_remetente
         })
         html_renderizado = template.render(context)
         

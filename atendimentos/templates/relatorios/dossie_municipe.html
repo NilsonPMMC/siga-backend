@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Dossiê do Munícipe - {{ municipe.nome_completo }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+            @bottom-right {
+                content: "Página " counter(page) " de " counter(pages);
+                font-family: 'Helvetica', sans-serif;
+                font-size: 9pt;
+                color: #666;
+            }
+            @bottom-left {
+                content: "SIGA Gab - Gerado em {{ data_emissao|date:'d/m/Y H:i' }}";
+                font-family: 'Helvetica', sans-serif;
+                font-size: 9pt;
+                color: #666;
+            }
+        }
+
+        body {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            font-size: 10pt;
+            color: #333;
+            line-height: 1.4;
+        }
+
+        /* --- CABEÇALHO --- */
+        .header {
+            width: 100%;
+            border-bottom: 2px solid #004a8f; /* Azul Institucional */
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header-content { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+        .brasao { height: 60px; width: auto; display: block; margin: 0 0 5px 0; }
+        .institution-name { font-size: 12pt; font-weight: bold; text-transform: uppercase; color: #004a8f; margin: 0; }
+        .report-title { font-size: 16pt; font-weight: bold; margin-top: 5px; color: #222; }
+
+        /* --- DADOS DO MUNÍCIPE (CARD) --- */
+        .profile-card {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .profile-name {
+            font-size: 14pt;
+            font-weight: bold;
+            color: #004a8f;
+            margin-bottom: 5px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+        }
+        .profile-grid {
+            display: table;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .profile-row { display: table-row; }
+        .profile-cell {
+            display: table-cell;
+            padding-bottom: 5px;
+            width: 50%;
+        }
+        .label { font-weight: bold; color: #555; font-size: 9pt; text-transform: uppercase; }
+        .value { color: #000; font-weight: normal; }
+
+        /* --- SEÇÕES E TABELAS --- */
+        h2 {
+            font-size: 12pt;
+            color: #004a8f;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 3px;
+            margin-top: 25px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+            font-size: 9pt;
+        }
+        th {
+            background-color: #004a8f;
+            color: white;
+            padding: 6px;
+            text-align: left;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 8pt;
+        }
+        td {
+            border-bottom: 1px solid #eee;
+            padding: 6px;
+            vertical-align: top;
+        }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+
+        /* --- STATUS LABELS --- */
+        .badge {
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 7.5pt;
+            font-weight: bold;
+            color: white;
+            display: inline-block;
+            text-transform: uppercase;
+        }
+        /* Cores de Status */
+        .status-aberto, .status-solicitado { background-color: #007bff; } /* Azul */
+        .status-concluido, .status-presente, .status-confirmado { background-color: #28a745; } /* Verde */
+        .status-em_analise, .status-agendado { background-color: #ffc107; color: #333; } /* Amarelo */
+        .status-cancelado, .status-negado { background-color: #dc3545; } /* Vermelho */
+        .status-convidado { background-color: #6c757d; } /* Cinza */
+
+        .empty-msg {
+            font-style: italic;
+            color: #777;
+            padding: 10px;
+            background-color: #fafafa;
+            border: 1px dashed #ddd;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div class="header-content">
+            {% if brasao_url %}
+                <img src="{{ brasao_url }}" class="brasao" alt="Brasão">
+            {% endif %}
+            <div class="report-title">Relatório Dossiê</div>
+        </div>
+    </div>
+
+    <div class="profile-card">
+        <div class="profile-name">
+            {{ municipe.nome_completo }}
+            {% if municipe.nome_de_guerra %} <span style="font-size: 10pt; color: #666; font-weight: normal;">({{ municipe.nome_de_guerra }})</span>{% endif %}
+        </div>
+        
+        <div class="profile-grid">
+            <div class="profile-row">
+                <div class="profile-cell">
+                    <span class="label">Cargo:</span> <span class="value">{{ municipe.cargo|default:"-" }}</span>
+                </div>
+            </div>
+            <div class="profile-row">
+                <div class="profile-cell">
+                    <span class="label">Órgão:</span> <span class="value">{{ municipe.orgao|default:"-" }}</span>
+                </div>
+            </div>
+            <div class="profile-row">
+                <div class="profile-cell">
+                    <span class="label">Telefone Principal:</span> 
+                    <span class="value">
+                        {% if municipe.telefones %}
+                            {{ municipe.telefones.0.numero }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+            <div class="profile-row">
+                <div class="profile-cell">
+                    <span class="label">Email:</span> 
+                    <span class="value">
+                        {% if municipe.emails %}
+                            {{ municipe.emails.0.email|lower }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% if exibir_atendimentos %}
+        <h2>Histórico de Atendimentos</h2>
+        {% if atendimentos %}
+            <table>
+                <thead>
+                    <tr>
+                        <th width="15%">Data</th>
+                        <th width="15%">Protocolo</th>
+                        <th width="40%">Assunto / Título</th>
+                        <th width="15%">Gabinete</th>
+                        <th width="15%">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in atendimentos %}
+                    <tr>
+                        <td>{{ item.data_criacao|date:"d/m/Y" }}</td>
+                        <td>{{ item.protocolo }}</td>
+                        <td>{{ item.titulo|truncatechars:50 }}</td>
+                        <td>{{ item.conta.nome_sigla|default:item.conta.nome }}</td>
+                        <td>
+                            <span class="badge status-{{ item.status|lower }}">{{ item.get_status_display }}</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <div class="empty-msg">Nenhum atendimento registrado para este contato.</div>
+        {% endif %}
+    {% endif %}
+    {% if exibir_agendas %}   
+        <h2>Solicitações de Agenda e Reuniões</h2>
+        {% if agendas %}
+            <table>
+                <thead>
+                    <tr>
+                        <th width="15%">Data Solic.</th>
+                        <th width="15%">Data Reunião</th>
+                        <th width="40%">Pauta</th>
+                        <th width="15%">Local/Gabinete</th>
+                        <th width="15%">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for agenda in agendas %}
+                    <tr>
+                        <td>{{ agenda.data_criacao|date:"d/m/Y" }}</td>
+                        <td>
+                            {% if agenda.data_agendada %}
+                                <strong>{{ agenda.data_agendada|date:"d/m/Y H:i" }}</strong>
+                            {% else %}
+                                <span style="color:#999">-</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ agenda.assunto|truncatechars:50 }}</td>
+                        <td>{{ agenda.conta.nome_sigla|default:agenda.conta.nome }}</td>
+                        <td>
+                            <span class="badge status-{{ agenda.status|lower }}">{{ agenda.get_status_display }}</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+                <div class="empty-msg">Nenhuma solicitação de agenda ou reunião encontrada.</div>
+            {% endif %}
+    {% endif %}
+    {% if exibir_eventos %}
+        <h2>Participação em Eventos</h2>
+        {% if eventos %}
+            <table>
+                <thead>
+                    <tr>
+                        <th width="15%">Data Evento</th>
+                        <th width="45%">Nome do Evento</th>
+                        <th width="25%">Local</th>
+                        <th width="15%">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for evt in eventos %}
+                    <tr>
+                        <td>{{ evt.data|date:"d/m/Y H:i" }}</td>
+                        <td>{{ evt.nome }}</td>
+                        <td>{{ evt.local|default:"-" }}</td>
+                        <td>
+                            <span class="badge status-{{ evt.status|slugify }}">{{ evt.status }}</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <div class="empty-msg">Este contato ainda não possui registros em listas de eventos.</div>
+        {% endif %}
+    {% endif %}
+</body>
+</html>

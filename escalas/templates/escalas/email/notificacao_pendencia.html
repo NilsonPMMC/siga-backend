@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Pendência de Escala</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: sans-serif; background-color: #f4f4f4;">
+    <table width="100%" border="0" cellpadding="0" cellspacing="0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table width="600" border="0" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                    <tr>
+                        <td align="center" style="padding: 20px; background-color: #f9f9f9;">
+                            <img src="cid:logo_siga" alt="SIGA Gabinete" style="height: 50px; display: block;">
+                        </td>
+                    </tr>
+                    
+                    <tr>
+                        <td style="padding: 40px 30px;">
+                            <h2 style="color: #c0392b; margin-top: 0;">Pendência: Escala de Plantão</h2>
+                            
+                            <p style="color: #555;">Olá, <strong>{{ nome_usuario }}</strong>.</p>
+                            <p style="color: #555;">Constatamos que a <strong>{{ nome_secretaria }}</strong> ainda não informou os plantonistas para o período:</p>
+
+                            <div style="background-color: #fff3cd; border-left: 5px solid #ffc107; padding: 15px; margin: 20px 0;">
+                                <p style="margin: 0; color: #856404; font-weight: bold;">{{ nome_periodo }}</p>
+                                <p style="margin: 5px 0 0 0; color: #856404;">Início: {{ data_inicio }}</p>
+                            </div>
+
+                            {% if senha_provisoria %}
+                            <p style="color: #555;">Como este é seu primeiro acesso, geramos uma credencial provisória:</p>
+                            <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; text-align: center;">
+                                <p style="margin: 0; color: #6c757d; font-size: 12px;">USUÁRIO</p>
+                                <div style="font-family: monospace; font-size: 18px; margin-bottom: 10px;">{{ username }}</div>
+
+                                <p style="margin: 0; color: #6c757d; font-size: 12px;">SENHA PROVISÓRIA</p>
+                                <div style="font-family: monospace; font-size: 24px; font-weight: bold; color: #2c3e50; background: #fff; padding: 5px; border: 1px dashed #ccc; display: inline-block;">
+                                    {{ senha_provisoria }}
+                                </div>
+                            </div>
+                            {% else %}
+                            <p style="color: #555;">
+                                Utilize suas credenciais habituais para acessar o sistema. Caso tenha esquecido sua senha, entre em contato com o suporte.
+                            </p>
+                            {% endif %}
+
+                            <div style="text-align: center; margin-top: 30px;">
+                                <a href="https://gabinete.mogidascruzes.sp.gov.br/escalas" target="_blank" style="background-color: #007bff; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">
+                                    Acessar e Preencher
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

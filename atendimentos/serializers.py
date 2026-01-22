@@ -88,7 +88,7 @@ class MunicipeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Municipe
         fields = [
-            'id', 'nome_completo', 'tratamento', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
+            'id', 'foto', 'nome_completo', 'tratamento', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
             'telefones', 'endereco', 'observacoes', 'cargo', 'orgao',
             'contas',
             'categoria', 'categoria_nome', 'data_cadastro', 'data_atualizacao',
@@ -312,15 +312,30 @@ class MunicipeDetailSerializer(serializers.ModelSerializer):
     solicitacoes_agenda = SolicitacaoAgendaSerializer(many=True, read_only=True)
     contas = ContaSerializer(many=True, read_only=True)
     categoria = CategoriaContatoSerializer(read_only=True)
+    historico_eventos = serializers.SerializerMethodField()
 
     class Meta:
         model = Municipe
         fields = [
-            'id', 'nome_completo', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails', 
+            'id', 'nome_completo', 'foto', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails', 
             'telefones', 'endereco', 'observacoes', 'cargo', 'orgao', 
             'contas', 'categoria', 
-            'atendimentos', 'solicitacoes_agenda'
+            'atendimentos', 'solicitacoes_agenda', 'historico_eventos'
         ]
+
+    def get_historico_eventos(self, obj):
+        convites = obj.convites.select_related('evento').order_by('-evento__data_evento')
+        
+        resultado = []
+        for convite in convites:
+            resultado.append({
+                'evento_id': convite.evento.id,
+                'nome_evento': convite.evento.nome,
+                'data_evento': convite.evento.data_evento,
+                'status_participacao': convite.status,
+                'local': convite.evento.local
+            })
+        return resultado
     
 class BuscaGlobalSerializer(serializers.Serializer):
     """
@@ -348,10 +363,11 @@ class MunicipeLookupSerializer(serializers.ModelSerializer):
     qualidade_dados = serializers.SerializerMethodField()
     alerta_atualizacao = serializers.SerializerMethodField()
     contas = ContaSerializer(many=True, read_only=True)
+    #cargo = serializers.ReadOnlyField(source='cargo_funcao')
 
     class Meta:
         model = Municipe
-        fields = ['id', 'nome_completo', 'nome_de_guerra', 'contas', 'categoria', 'cargo', 'emails', 'pode_editar', 'qualidade_dados', 'alerta_atualizacao']
+        fields = ['id', 'nome_completo', 'nome_de_guerra', 'contas', 'categoria', 'cargo', 'emails', 'telefones', 'pode_editar', 'qualidade_dados', 'alerta_atualizacao']
 
     def get_pode_editar(self, obj):
         user = self.context['request'].user
@@ -484,3 +500,58 @@ class LembreteSerializer(serializers.ModelSerializer):
             'data_atualizacao'
         ]
         read_only_fields = ['usuario']
+
+class AgendaConvidadoSerializer(serializers.ModelSerializer):
+    # Dados 'flattened' para facilitar a exibição no card da recepção
+    nome_municipe = serializers.ReadOnlyField(source='municipe.nome_completo')
+    foto_municipe = serializers.ImageField(source='municipe.foto', read_only=True)
+    cargo_municipe = serializers.ReadOnlyField(source='municipe.cargo')
+    empresa_municipe = serializers.ReadOnlyField(source='municipe.orgao')
+    categoria_municipe = serializers.ReadOnlyField(source='municipe.categoria.nome')
+
+    class Meta:
+        model = AgendaConvidado
+        fields = [
+            'id', 'municipe', 'nome_municipe', 'foto_municipe', 
+            'cargo_municipe', 'empresa_municipe', 'categoria_municipe',
+            'observacao', 'confirmado', 'chegou', 'horario_chegada'
+        ]
+
+class AgendaCompromissoSerializer(serializers.ModelSerializer):
+    convidados = AgendaConvidadoSerializer(many=True, read_only=True)
+    
+    # Campo extra para o frontend saber de quem é a agenda
+    nome_conta = serializers.ReadOnlyField(source='conta.nome')
+    
+    # Helpers visuais
+    status_cor = serializers.SerializerMethodField()
+    tipo_label = serializers.CharField(source='get_tipo_display', read_only=True)
+
+    class Meta:
+        model = AgendaCompromisso
+        fields = [
+            'id', 'conta', 'nome_conta', # <--- Aqui está a identificação
+            'titulo', 'descricao', 
+            'data_inicio', 'data_fim', 'local', 
+            'tipo', 'tipo_label', 'situacao', 'confidencial', 
+            'convidados', 'status_cor', 'criado_por'
+        ]
+
+    def get_status_cor(self, obj):
+        # Mapeia cores para o PrimeVue (badges)
+        cores = {
+            'AGENDADO': 'primary',
+            'EM_ANDAMENTO': 'warning',
+            'CONCLUIDO': 'success',
+            'CANCELADO': 'danger',
+            'ADIADO': 'info'
+        }
+        return cores.get(obj.situacao, 'secondary')
+    
+class AgendaCompartilhamentoSerializer(serializers.ModelSerializer):
+    nome_usuario = serializers.CharField(source='usuario.get_full_name', read_only=True)
+    username = serializers.CharField(source='usuario.username', read_only=True)
+
+    class Meta:
+        model = AgendaCompartilhamento
+        fields = ['id', 'conta_alvo', 'usuario', 'nome_usuario', 'username', 'nivel', 'data_criacao']

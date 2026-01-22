@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório BI</title>
+    <style>
+        @page { size: A4; margin: 2cm; }
+        body { font-family: Helvetica, sans-serif; color: #333; }
+        .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #004a8f; padding-bottom: 10px; }
+        .brasao { height: 60px; margin-bottom: 10px; }
+        .title { font-size: 18pt; font-weight: bold; color: #004a8f; }
+        .subtitle { font-size: 10pt; color: #666; margin-top: 5px; }
+        
+        /* Cards de Resumo com Flexbox */
+        .kpi-container {
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        .kpi-card {
+            flex: 1; /* Divide o espaço igualmente */
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-left: 5px solid #004a8f; /* Detalhe visual lateral */
+            border-radius: 6px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        /* Variações de cor para os cards */
+        .kpi-card.success { border-left-color: #22c55e; }
+        .kpi-card.warning { border-left-color: #f59e0b; }
+
+        .kpi-value { display: block; font-size: 28pt; font-weight: bold; color: #333; line-height: 1.2; }
+        .kpi-label { font-size: 9pt; text-transform: uppercase; color: #666; letter-spacing: 1px; }
+
+        /* Tabelas */
+        .section-title { font-size: 14pt; border-bottom: 1px solid #ccc; margin-top: 30px; margin-bottom: 10px; color: #333; }
+        table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+        th { background: #004a8f; color: white; padding: 8px; text-align: left; }
+        td { border-bottom: 1px solid #eee; padding: 8px; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        {% if brasao_url %}<img src="{{ brasao_url }}" class="brasao">{% endif %}
+        <div class="title">{{ titulo_relatorio }}</div>
+        <div class="subtitle">
+            Período: {{ data_inicio|date:"d/m/Y" }} a {{ data_fim|date:"d/m/Y" }} <br>
+            Emissor: {{ usuario_emissao }} | {% if apenas_meus %}<strong>Visão: Apenas Meus Atendimentos</strong>{% else %}Visão: Gabinete Completo{% endif %}
+        </div>
+    </div>
+
+    <div class="kpi-container">
+        <div class="kpi-card">
+            <span class="kpi-value">{{ total_geral }}</span>
+            <span class="kpi-label">Total de Atendimentos</span>
+        </div>
+        <div class="kpi-card success">
+            <span class="kpi-value">{{ total_concluidos }}</span>
+            <span class="kpi-label">Concluídos</span>
+        </div>
+        <div class="kpi-card warning">
+            <span class="kpi-value">{{ total_abertos }}</span>
+            <span class="kpi-label">Em Aberto</span>
+        </div>
+    </div>
+
+    <div class="section-title">Produtividade da Equipe</div>
+    <table>
+        <thead><tr><th>Responsável</th><th width="20%" style="text-align: right;">Atendimentos</th></tr></thead>
+        <tbody>
+            {% for item in produtividade %}
+            <tr>
+                <td>{{ item.nome }}</td>
+                <td style="text-align: right;">{{ item.qtd }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="2">Nenhum dado encontrado.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="section-title">Principais Solicitantes (Top 10)</div>
+    <table>
+        <thead><tr><th>Munícipe</th><th width="20%" style="text-align: right;">Demandas</th></tr></thead>
+        <tbody>
+            {% for item in solicitantes %}
+            <tr>
+                <td>{{ item.nome }}</td>
+                <td style="text-align: right;">{{ item.qtd }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="2">Nenhuma solicitação encontrada no período.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

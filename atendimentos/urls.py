@@ -1,7 +1,11 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AgendaInstitucionalViewSet,
+    AgendaConvidadoCheckinView,
+    AgendaCompartilhamentoView,
     AdicionarEventoGoogleView,
     AgendasCompartilhadasListView,
     AnexoListCreateView,
@@ -23,6 +27,7 @@ from .views import (
     EspacoListCreateView,
     EspacoDetailView,
     ExportMunicipesExcelView,
+    GerarDossieMunicipePdfView,
     GerarPdfAgendasReportView,
     GerarPdfCheckinsView,
     GerarPdfGoogleAgendaView,
@@ -30,6 +35,7 @@ from .views import (
     GerarPdfAtendimentosView,
     GerarPdfLembretesView,
     GerarPdfMunicipesReportView,
+    GerarRelatorioBiPdfView,
     GoogleAuthCallbackView,
     GoogleAuthInitiateView,
     LembreteListCreateView,
@@ -49,6 +55,10 @@ from .views import (
     RelatorioAtendimentosPorCategoriaView,
     RelatorioAtendimentosPorContaView,
     RelatorioAtendimentosPorStatusView,
+    RelatorioProdutividadeEquipeView,
+    RelatorioTopSolicitantesView,
+    RelatorioEvolucaoAtendimentosView,
+    RelatorioStatusAtendimentosView,
     RemoverLinkGoogleView,
     ReservaEspacoListCreateView,
     ReservaEspacoDetailView,
@@ -60,6 +70,10 @@ from .views import (
     TramitacaoListCreateView,
     UserListView,
 )
+
+router = DefaultRouter()
+router.register(r'agenda-institucional', AgendaInstitucionalViewSet, basename='agenda-institucional')
+router.register(r'agenda-compartilhamentos', AgendaCompartilhamentoView, basename='agenda-compartilhamentos')
 
 urlpatterns = [
     # --- Autenticação e Senha ---
@@ -76,6 +90,12 @@ urlpatterns = [
     path('municipes/aniversariantes-do-dia/', AniversariantesDoDiaView.as_view(), name='municipes-aniversariantes-dia'),
     path('municipes/<int:pk>/', MunicipeDetailView.as_view(), name='municipe-detail'),
     path('municipes/<int:pk>/historico/', MunicipeDetailDataView.as_view(), name='municipe-historico'),
+    path('municipes/<int:pk>/dossie-pdf/', GerarDossieMunicipePdfView.as_view(), name='municipe-dossie-pdf'),
+    path('bi/produtividade-equipe/', RelatorioProdutividadeEquipeView.as_view(), name='bi-produtividade'),
+    path('bi/top-solicitantes/', RelatorioTopSolicitantesView.as_view(), name='bi-top-solicitantes'),
+    path('bi/evolucao-temporal/', RelatorioEvolucaoAtendimentosView.as_view(), name='bi-evolucao'),
+    path('bi/status-distribuicao/', RelatorioStatusAtendimentosView.as_view(), name='bi-status'),
+    path('bi/relatorio-pdf/', GerarRelatorioBiPdfView.as_view(), name='bi-relatorio-pdf'),
     path('municipes/check-duplicates/', MunicipeCheckDuplicatesView.as_view(), name='municipe-check-duplicates'),
     path('municipes/mesclar-duplicatas/', MesclarDuplicatasView.as_view(), name='municipe-mesclar-duplicatas'),
     path('municipes/atualizar-categoria-lote/', AtualizarCategoriaEmLoteView.as_view(), name='atualizar-categoria-lote'),
@@ -137,4 +157,11 @@ urlpatterns = [
     path('google/calendar/events/', ListarEventosGoogleView.as_view(), name='google-calendar-list-events'),
     path('google/calendar/events/create/', AdicionarEventoGoogleView.as_view(), name='google-calendar-create-event'),
     path('google/calendar/events/<str:eventId>/', EditarExcluirEventoGoogleView.as_view(), name='google-calendar-detail-event'),
+
+    # --- Listas Gerais e Utilitários ---
+    path('agenda-institucional/convidado/<int:pk>/checkin/', AgendaConvidadoCheckinView.as_view(), name='agenda-checkin'),
+    path('agenda-institucional/<int:pk>/adicionar-convidado/', AgendaInstitucionalViewSet.as_view({'post': 'adicionar_convidado'}), name='agenda-adicionar-convidado'),
+    path('agenda-institucional/<int:pk>/remover-convidado/', AgendaInstitucionalViewSet.as_view({'post': 'remover_convidado'}), name='agenda-remover-convidado'),
 ]
+
+urlpatterns += router.urls

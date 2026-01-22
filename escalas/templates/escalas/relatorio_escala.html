@@ -1,0 +1,190 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Escala de Plantão</title>
+    <style>
+        /* Reset e Fontes */
+        * { box-sizing: border-box; }
+        body {
+            font-family: "Helvetica", "Arial", sans-serif;
+            font-size: 10pt; /* Tamanho bom para leitura em A4 */
+            color: #333;
+            line-height: 1.4;
+        }
+
+        /* Cabeçalho */
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #000;
+            padding-bottom: 10px;
+        }
+        .header img {
+            height: 60px; /* Ajuste conforme seu brasão */
+            margin-bottom: 5px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 14pt;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+        .header h2 {
+            margin: 2px 0;
+            font-size: 12pt;
+            font-weight: normal;
+        }
+        .header .titulo-relatorio {
+            margin-top: 10px;
+            font-size: 16pt;
+            font-weight: bold;
+            background-color: #eee;
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        /* Informações do Período */
+        .info-periodo {
+            text-align: center;
+            font-size: 12pt;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+
+        /* Tabela Principal */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 6px 8px;
+            text-align: left;
+            vertical-align: middle;
+        }
+        th {
+            background-color: #f0f0f0;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 9pt;
+        }
+        /* Zebra striping para facilitar leitura */
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        /* Colunas específicas */
+        .col-secretaria { width: 45%; }
+        .col-servidor { width: 35%; }
+        .col-contato { width: 20%; white-space: nowrap; }
+
+        /* Rodapé de Emergência */
+        .emergencia-section {
+            margin-top: 30px;
+            page-break-inside: avoid; /* Evita que quebre no meio */
+        }
+        .emergencia-title {
+            background-color: #333;
+            color: #fff;
+            padding: 5px 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        
+        /* Grid de Emergência (Simulado com Flex para WeasyPrint) */
+        .emergencia-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .emergencia-item {
+            width: 48%; /* 2 por linha com um espacinho */
+            border: 1px solid #ddd;
+            padding: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #fff;
+        }
+        .emergencia-nome { font-weight: bold; font-size: 9pt; }
+        .emergencia-desc { font-size: 7pt; color: #666; display: block;}
+        .emergencia-tel { font-weight: bold; color: #c00; font-size: 10pt; }
+
+        /* Rodapé da Página (Data e Paginação) */
+        @page {
+            @bottom-center {
+                content: "Data: {{ data_geracao|date:'d/m/Y' }} | Escala de Plantão | Página " counter(page) " de " counter(pages);
+                font-size: 8pt;
+                color: #666;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <img src="{{ logo_uri }}" alt="Brasão Mogi das Cruzes" style="height: 60px;">
+        <div class="titulo-relatorio">Escala de Plantão</div>
+    </div>
+
+    <div class="info-periodo">
+        Período: De {{ periodo.data_inicio|date:"d/m/Y" }} até {{ periodo.data_fim|date:"d/m/Y" }}
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th class="col-secretaria">Secretaria / Coordenadoria</th>
+                <th class="col-servidor">Servidor de Plantão</th>
+                <th class="col-contato">Contato</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for reg in registros %}
+            <tr>
+                <td>{{ reg.conta.nome }}</td>
+                <td>
+                    {{ reg.servidor.nome_completo }}
+                    {% if reg.cargo_funcao_plantao %}
+                        <br><small style="color:#666">({{ reg.cargo_funcao_plantao }})</small>
+                    {% endif %}
+                </td>
+                <td style="font-weight: bold;">{{ reg.telefone_plantao }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="3" style="text-align: center; padding: 20px;">
+                    Nenhum plantonista registrado para este período.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if emergencias %}
+    <div class="emergencia-section">
+        <div class="emergencia-title">Contatos Primordiais de Emergência</div>
+        
+        <div class="emergencia-grid">
+            {% for emerg in emergencias %}
+            <div class="emergencia-item">
+                <div>
+                    <span class="emergencia-nome">{{ emerg.nome }}</span>
+                    {% if emerg.descricao %}
+                        <span class="emergencia-desc">{{ emerg.descricao }}</span>
+                    {% endif %}
+                </div>
+                <span class="emergencia-tel">{{ emerg.telefone }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+</body>
+</html>

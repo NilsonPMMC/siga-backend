@@ -6,7 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 
 class UppercaseFieldsMixin:
-    UPPERCASE_EXCEPTIONS = ('emails', 'endereco', 'dados_etiqueta')
+    UPPERCASE_EXCEPTIONS = ('emails', 'endereco', 'dados_etiqueta', 'etiqueta_remetente')
 
     def save(self, *args, **kwargs):
         for field in self._meta.fields:
@@ -58,6 +58,16 @@ class Conta(UppercaseFieldsMixin, models.Model):
         blank=True, null=True, # Permite que o campo fique vazio
         verbose_name="ID (email) do Google Calendar para Visualização"
     )
+    etiqueta_remetente = models.TextField(
+        blank=True, null=True,
+        verbose_name="Etiqueta do Remetente",
+        help_text="Texto completo que aparecerá no canto do envelope. Use Enter para quebrar linhas."
+    )
+    participa_escala = models.BooleanField(
+        "Participa da Escala de Plantão?", 
+        default=False, 
+        help_text="Se marcado, esta secretaria será cobrada no relatório de pendências."
+    )
     class Meta: verbose_name = "Conta"; verbose_name_plural = "Contas"
     def __str__(self): return self.nome
 
@@ -80,7 +90,16 @@ class CategoriaContato(UppercaseFieldsMixin, models.Model):
     class Meta:
         ordering = ['nome']
 
+def caminho_foto_municipe(instance, filename):
+    return f'fotos_municipes/{filename}'
+
 class Municipe(UppercaseFieldsMixin, models.Model):
+    foto = models.ImageField(
+        upload_to=caminho_foto_municipe, 
+        blank=True, 
+        null=True, 
+        verbose_name="Foto de Perfil"
+    )
     nome_completo = models.CharField(max_length=255, verbose_name="Nome Completo")
     tratamento = models.CharField(
         max_length=50, 
@@ -388,3 +407,107 @@ class TramitacaoAgenda(UppercaseFieldsMixin, models.Model):
 
     def __str__(self):
         return f"Tramitação em {self.data_tramitacao.strftime('%d/%m/%Y %H:%M')} por {self.usuario.username}"
+    
+class AgendaCompromisso(UppercaseFieldsMixin, models.Model):
+    """
+    Representa um evento na agenda oficial da autoridade (Gabinete).
+    Diferente da 'SolicitacaoAgenda', este é um evento CONFIRMADO e gerido pela assessoria.
+    """
+    TIPO_CHOICES = [
+        ('REUNIAO_INTERNA', 'Reunião Interna'),
+        ('ATENDIMENTO_GABINETE', 'Atendimento no Gabinete'),
+        ('EVENTO_EXTERNO', 'Evento Externo'),
+        ('VISITA_TECNICA', 'Visita Técnica'),
+        ('CERIMONIAL', 'Cerimonial / Solenidade'),
+        ('ALMOCO_JANTAR', 'Almoço / Jantar Oficial'),
+    ]
+
+    SITUACAO_CHOICES = [
+        ('AGENDADO', 'Agendado'),
+        ('EM_ANDAMENTO', 'Em Andamento'),
+        ('CONCLUIDO', 'Concluído'),
+        ('CANCELADO', 'Cancelado'),
+        ('ADIADO', 'Adiado'),
+    ]
+
+    conta = models.ForeignKey(Conta, on_delete=models.CASCADE, related_name='agenda_institucional', verbose_name="Gabinete/Conta")
+    titulo = models.CharField("Assunto / Título", max_length=150)
+    descricao = models.TextField("Detalhes / Pauta", blank=True, null=True)
+    
+    data_inicio = models.DateTimeField("Início")
+    data_fim = models.DateTimeField("Fim", blank=True, null=True)
+    local = models.CharField("Local", max_length=200, default="Gabinete")
+    
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES, default='ATENDIMENTO_GABINETE')
+    situacao = models.CharField(max_length=20, choices=SITUACAO_CHOICES, default='AGENDADO')
+    
+    # Segurança
+    confidencial = models.BooleanField("Agenda Reservada", default=False, help_text="Se marcado, oculta detalhes para usuários básicos, mostrando apenas horário ocupado.")
+    
+    # Auditoria
+    criado_por = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='compromissos_criados')
+    data_criacao = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-data_inicio']
+        verbose_name = "Compromisso Institucional"
+        verbose_name_plural = "Agenda Institucional"
+
+    def __str__(self):
+        return f"{self.data_inicio.strftime('%d/%m %H:%M')} - {self.titulo}"
+
+
+class AgendaConvidado(models.Model):
+    """
+    Pessoas esperadas para um compromisso específico.
+    Fundamental para a recepção saber quem liberar sem perguntar "quem é você?".
+    """
+    compromisso = models.ForeignKey(AgendaCompromisso, on_delete=models.CASCADE, related_name='convidados')
+    municipe = models.ForeignKey(Municipe, on_delete=models.CASCADE, related_name='agendas_participantes')
+    
+    observacao = models.CharField("Observação para Recepção", max_length=100, blank=True, null=True, help_text="Ex: Entrar pelos fundos, liberar carro, etc.")
+    
+    confirmado = models.BooleanField("Presença Confirmada?", default=False)
+    
+    # Controle de Acesso (Recepção)
+    chegou = models.BooleanField("Realizou Check-in", default=False)
+    horario_chegada = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Convidado da Agenda"
+        verbose_name_plural = "Convidados da Agenda"
+
+    def __str__(self):
+        return f"{self.municipe.nome_completo} em {self.compromisso}"
+    
+class AgendaCompartilhamento(models.Model):
+    NIVEL_CHOICES = [
+        ('LEITURA', 'Apenas Visualizar'),
+        ('ESCRITA', 'Pode Criar/Editar/Excluir'),
+    ]
+
+    # A Agenda que está sendo compartilhada (Ex: Gabinete)
+    conta_alvo = models.ForeignKey(
+        'Conta', 
+        on_delete=models.CASCADE, 
+        related_name='compartilhamentos_agenda'
+    )
+    
+    # O Usuário que ganha o acesso (Ex: Secretário de Cultura)
+    usuario = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='agendas_compartilhadas'
+    )
+    
+    nivel = models.CharField(max_length=20, choices=NIVEL_CHOICES, default='LEITURA')
+    data_criacao = models.DateTimeField(auto_now_add=True)
+    criado_por = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='+')
+
+    class Meta:
+        verbose_name = "Compartilhamento de Agenda"
+        verbose_name_plural = "Compartilhamentos de Agenda"
+        unique_together = ('conta_alvo', 'usuario') # Impede duplicar a regra
+
+    def __str__(self):
+        return f"{self.conta_alvo} -> {self.usuario} ({self.nivel})"
