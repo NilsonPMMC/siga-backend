@@ -25,14 +25,36 @@ dotenv.load_dotenv(os.path.join(BASE_DIR, '.env'))
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure--7hk=jn*vw$wm*sd*6t=l0tkh(k5brj)_+un79yc)e9(805k4l'
+# Obtém SECRET_KEY do ambiente, com fallback para desenvolvimento
+SECRET_KEY = config('SECRET_KEY', default='django-insecure--7hk=jn*vw$wm*sd*6t=l0tkh(k5brj)_+un79yc)e9(805k4l')
+
+# Validação crítica: SECRET_KEY não pode ser o valor padrão inseguro em produção
+if SECRET_KEY == 'django-insecure--7hk=jn*vw$wm*sd*6t=l0tkh(k5brj)_+un79yc)e9(805k4l':
+    import warnings
+    warnings.warn(
+        "⚠️ ATENÇÃO: SECRET_KEY está usando o valor padrão inseguro! "
+        "Configure SECRET_KEY no arquivo .env antes de fazer deploy em produção.",
+        UserWarning
+    )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# DEBUG deve ser False em produção!
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = ['gabinete.mogidascruzes.sp.gov.br', '192.168.10.50', 'localhost', '127.0.0.1']
+# Validação: Em produção, DEBUG deve ser False
+if DEBUG and 'gabinete.mogidascruzes.sp.gov.br' in config('ALLOWED_HOSTS', default=''):
+    import warnings
+    warnings.warn(
+        "⚠️ ATENÇÃO: DEBUG está True em ambiente de produção! "
+        "Configure DEBUG=False no arquivo .env para produção.",
+        UserWarning
+    )
 
-SITE_URL = 'https://gabinete.mogidascruzes.sp.gov.br'
+# ALLOWED_HOSTS: Lista de hosts permitidos
+ALLOWED_HOSTS_STR = config('ALLOWED_HOSTS', default='gabinete.mogidascruzes.sp.gov.br,192.168.10.50,localhost,127.0.0.1')
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_STR.split(',') if host.strip()]
+
+SITE_URL = config('SITE_URL', default='https://gabinete.mogidascruzes.sp.gov.br')
 
 # Application definition
 
@@ -93,15 +115,37 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+# Configuração do banco de dados via variáveis de ambiente
+# Fallback para SQLite apenas em desenvolvimento local
 default_dburl = 'sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3')
+
+# Tenta usar configuração do .env, senão usa valores padrão
+DB_ENGINE = config('DB_ENGINE', default='django.db.backends.mysql')
+DB_NAME = config('DB_NAME', default='gabinete_db')
+DB_USER = config('DB_USER', default='gabinete_user')
+DB_PASSWORD = config('DB_PASSWORD', default='')  # OBRIGATÓRIO em produção!
+DB_HOST = config('DB_HOST', default='localhost')
+DB_PORT = config('DB_PORT', default='3306')
+
+# Validação: Senha do banco não pode estar vazia em produção
+if not DB_PASSWORD and not DEBUG:
+    raise ValueError(
+        "❌ ERRO CRÍTICO: DB_PASSWORD não configurado! "
+        "Configure DB_PASSWORD no arquivo .env antes de fazer deploy."
+    )
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'gabinete_db',
-        'USER': 'gabinete_user',
-        'PASSWORD': 'qDGP8oBBSMVn6ET', # Coloque a senha que definimos para o banco
-        'HOST': 'localhost',
-        'PORT': '3306',
+        'ENGINE': DB_ENGINE,
+        'NAME': DB_NAME,
+        'USER': DB_USER,
+        'PASSWORD': DB_PASSWORD,
+        'HOST': DB_HOST,
+        'PORT': DB_PORT,
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+        },
     }
 }
 
@@ -152,7 +196,9 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CSRF_TRUSTED_ORIGINS = ['https://gabinete.mogidascruzes.sp.gov.br']
+# CSRF Trusted Origins: Domínios confiáveis para requisições CSRF
+CSRF_TRUSTED_ORIGINS_STR = config('CSRF_TRUSTED_ORIGINS', default='https://gabinete.mogidascruzes.sp.gov.br')
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_STR.split(',') if origin.strip()]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -161,16 +207,19 @@ REST_FRAMEWORK = {
 }
 
 # --- CONFIGURAÇÃO DE E-MAIL SMTP (MAILGRID - TI) ---
-#EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-#EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'cloud77.mailgrid.net.br'
-EMAIL_HOST = os.environ.get('EMAIL_HOST')
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_USE_SSL = False
-EMAIL_HOST_USER = os.environ.get('SMTP_USER')
-EMAIL_HOST_PASSWORD = os.environ.get('SMTP_PASSWORD')
-DEFAULT_FROM_EMAIL = 'comunicacao.gabinete@mogidascruzes.sp.gov.br'
+# Em desenvolvimento, pode usar console backend para ver e-mails no terminal
+# Descomente a linha abaixo para desenvolvimento local:
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# Em produção, use SMTP backend (padrão)
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='cloud77.mailgrid.net.br')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
+EMAIL_HOST_USER = config('SMTP_USER', default='')
+EMAIL_HOST_PASSWORD = config('SMTP_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='comunicacao.gabinete@mogidascruzes.sp.gov.br')
 
 # --- CONFIGURAÇÃO DO TEMPO DOS TOKENS DE ACESSO ---
 SIMPLE_JWT = {
@@ -246,9 +295,9 @@ SITE_ID = 1  # <-- 2. ADICIONE ESTA LINHA
 
 # --- CONFIGURAÇÃO DO CELERY ---
 # URL do Broker (gerente da fila). 'redis://localhost:6379/0' é o padrão.
-CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 # Onde o Celery armazena os resultados das tarefas.
-CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
 # Formato do conteúdo aceito.
 CELERY_ACCEPT_CONTENT = ['json']
 # Serializador das tarefas.
@@ -256,8 +305,40 @@ CELERY_TASK_SERIALIZER = 'json'
 # Serializador dos resultados.
 CELERY_RESULT_SERIALIZER = 'json'
 
-GEMINI_API_KEY = "AIzaSyA2truqQXMGO-nnLenO7Thtz49e1mTThgo"
+# --- API KEY DO GEMINI AI ---
+GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
 
+# Validação: Se a API key estiver vazia, emite aviso
+if not GEMINI_API_KEY:
+    import warnings
+    warnings.warn(
+        "⚠️ GEMINI_API_KEY não configurada. Funcionalidades que dependem do Gemini podem não funcionar.",
+        UserWarning
+    )
+
+# ============================================
+# CONFIGURAÇÕES DE SEGURANÇA
+# ============================================
+
+# Header para detectar HTTPS quando atrás de proxy reverso (nginx, etc)
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-SECURE_SSL_REDIRECT = False
+# Redireciona HTTP para HTTPS (True em produção)
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=bool)
+
+# Cookies de sessão apenas via HTTPS (True em produção)
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=False, cast=bool)
+
+# Cookies CSRF apenas via HTTPS (True em produção)
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=False, cast=bool)
+
+# Proteção contra clickjacking
+X_FRAME_OPTIONS = 'DENY'
+
+# Content Security Policy (recomendado para produção)
+# Descomente e configure conforme necessário:
+# SECURE_CONTENT_TYPE_NOSNIFF = True
+# SECURE_BROWSER_XSS_FILTER = True
+# SECURE_HSTS_SECONDS = 31536000  # 1 ano
+# SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+# SECURE_HSTS_PRELOAD = True

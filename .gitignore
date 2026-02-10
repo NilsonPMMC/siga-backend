@@ -1,17 +1,51 @@
 # Arquivos de Ambiente Virtual
 venv/
+env/
+ENV/
+.venv
 
 # Arquivos compilados do Python
 *.pyc
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
-# Segredos
+# Segredos e Credenciais (CRÍTICO: NUNCA commitar!)
+.env
+.env.local
+.env.production
+.env.*.local
 credentials.json
 token.json
-.env
+*.pem
+*.key
+*.crt
+
+# Banco de dados local (SQLite)
+db.sqlite3
+db.sqlite3-journal
+*.db
 
 # Arquivos de Mídia e Logs
 /media/
 /siga_uploads/
 logs/
 *.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sistema Operacional
+.DS_Store
+Thumbs.db
+
+# Backups
+*.sql
+backup_*.sql
+*.bak
