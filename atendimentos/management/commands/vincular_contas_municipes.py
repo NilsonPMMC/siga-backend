@@ -19,7 +19,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.WARNING('ATENÇÃO: Esta operação irá sobrescrever os vínculos de contas de TODOS os munícipes.'))
 
         # Nomes das contas que serão vinculadas
-        nomes_das_contas = ["GABINETE DA PREFEITA", "GABINETE DO VICE-PREFEITO"]
+        nomes_das_contas = ["GABINETE DA PREFEITA", "VICE-PREFEITO"]
         
         contas_para_vincular = []
         try:

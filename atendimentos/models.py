@@ -116,9 +116,9 @@ class Municipe(UppercaseFieldsMixin, models.Model):
     )
     categoria = models.ForeignKey(
         CategoriaContato, 
-        on_delete=models.SET_NULL, 
-        null=True, 
-        blank=True,
+        on_delete=models.PROTECT, 
+        null=False, 
+        blank=False,
         verbose_name="Categoria do Contato"
     )
     contas = models.ManyToManyField(

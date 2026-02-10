@@ -1,4 +1,5 @@
-# Em oficios/models.py
+# /var/www/gabinete/siga-gabinete/oficios/models.py
+
 from django.db import models, transaction
 from django.contrib.auth.models import User
 from atendimentos.models import Conta
@@ -19,8 +20,22 @@ class Oficio(models.Model):
         help_text="Ex: Prezado Senhor, Vossa Excelência, A quem possa interessar"
     )
     destinatario_nome = models.CharField(max_length=255, verbose_name="Nome do Destinatário")
-    destinatario_cargo = models.CharField(max_length=255, verbose_name="Cargo do Destinatário")
-    destinatario_orgao = models.CharField(max_length=255, verbose_name="Órgão/Empresa do Destinatário")
+    
+    # ALTERAÇÃO: Adicionado blank=True e null=True
+    destinatario_cargo = models.CharField(
+        max_length=255, 
+        verbose_name="Cargo do Destinatário", 
+        blank=True, 
+        null=True
+    )
+    
+    # ALTERAÇÃO: Adicionado blank=True e null=True
+    destinatario_orgao = models.CharField(
+        max_length=255, 
+        verbose_name="Órgão/Empresa do Destinatário", 
+        blank=True, 
+        null=True
+    )
     
     corpo = models.TextField(verbose_name="Corpo do Ofício")
     

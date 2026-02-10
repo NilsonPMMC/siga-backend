@@ -46,14 +46,17 @@
             align-items: center;
             justify-content: space-between; /* Centraliza verticalmente o bloco de conteúdo */
         }
+        .content-container {
+            width: 72mm;
+        }
 
         /* --- NOVO CSS DA FOTO --- */
         .foto-container {
-            width: 22mm;  /* Tamanho da foto */
-            height: 22mm;
+            width: 30mm;  /* Tamanho da foto */
+            height: 30mm;
             border-radius: 50%; /* Faz ficar redonda */
             overflow: hidden;
-            margin-bottom: 3mm; /* Espaço entre foto e nome */
+            margin-bottom: 5mm; /* Espaço entre foto e nome */
             border: 2px solid #4A90E2; /* Borda azul bonita */
             background-color: #f0f0f0; /* Cor de fundo se imagem falhar */
             display: flex;
@@ -123,7 +126,7 @@
                             </div>
                         {% endif %}
                     </div>
-                    <div>
+                    <div class="content-container">
                         <div class="name">
                             {% if convidado.municipe.tratamento %}<span style="font-size: 0.6em; display:block; margin-bottom:2px; font-weight:normal;">{{ convidado.municipe.tratamento }}</span>{% endif %}
                             {{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}

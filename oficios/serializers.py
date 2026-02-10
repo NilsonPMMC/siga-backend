@@ -24,7 +24,6 @@ class OficioSerializer(serializers.ModelSerializer):
             'ano', 
             'criado_por', 
             'data_criacao',
-            # Campos extras que adicionamos
             'conta_nome',
             'criado_por_nome'
         )

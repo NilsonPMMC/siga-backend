@@ -96,7 +96,8 @@ class MunicipeSerializer(serializers.ModelSerializer):
             'pode_editar', 'grupo_duplicado', 'dados_etiqueta'
         ]
         extra_kwargs = {
-            'categoria': {'required': False, 'allow_null': True}
+            'categoria': {'required': True, 'allow_null': False},
+            'cpf': {'required': False, 'allow_blank': True},
         }
     
     def validate_telefones(self, value):

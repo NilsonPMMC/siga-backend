@@ -69,6 +69,8 @@ from .views import (
     TramitacaoDetailView,
     TramitacaoListCreateView,
     UserListView,
+    UnificarMunicipesView,
+    VerificarDependenciasMunicipeView,
 )
 
 router = DefaultRouter()
@@ -99,6 +101,8 @@ urlpatterns = [
     path('municipes/check-duplicates/', MunicipeCheckDuplicatesView.as_view(), name='municipe-check-duplicates'),
     path('municipes/mesclar-duplicatas/', MesclarDuplicatasView.as_view(), name='municipe-mesclar-duplicatas'),
     path('municipes/atualizar-categoria-lote/', AtualizarCategoriaEmLoteView.as_view(), name='atualizar-categoria-lote'),
+    path('municipes/unificar/', UnificarMunicipesView.as_view(), name='unificar-municipes'),
+    path('municipes/<int:pk>/verificar-vinculos/', VerificarDependenciasMunicipeView.as_view(), name='verificar-vinculos'),
     
     # --- Atendimentos e sub-recursos (tramitações, anexos) ---
     path('atendimentos/', AtendimentoListCreateView.as_view(), name='atendimento-list-create'),

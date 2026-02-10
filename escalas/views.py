@@ -39,19 +39,36 @@ class EscalaRegistroViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        queryset = EscalaRegistro.objects.none() # Começa vazio por segurança
+
+        # --- 1. DEFINIÇÃO DO UNIVERSO PERMITIDO (Permissões) ---
         
-        # 1. VISÃO DO GESTOR (Vê tudo)
-        # Se for Superuser OU 'Gestor de Escalas'
+        # Visão do Gestor (Vê tudo)
         if user.is_superuser or user.groups.filter(name='Gestor de Escalas').exists():
-            return EscalaRegistro.objects.all().select_related('conta', 'servidor', 'periodo')
+            queryset = EscalaRegistro.objects.all().select_related('conta', 'servidor', 'periodo')
         
-        # 2. VISÃO DA SECRETARIA (Vê só o seu)
-        if user.groups.filter(name='Escalas').exists() and hasattr(user, 'perfil'):
+        # Visão da Secretaria (Vê só o seu)
+        elif user.groups.filter(name='Escalas').exists() and hasattr(user, 'perfil'):
             contas_usuario = user.perfil.contas.all()
-            return EscalaRegistro.objects.filter(conta__in=contas_usuario).select_related('conta', 'servidor', 'periodo')
-            
-        # Se não tiver grupo nenhum, não vê nada
-        return EscalaRegistro.objects.none()
+            queryset = EscalaRegistro.objects.filter(conta__in=contas_usuario).select_related('conta', 'servidor', 'periodo')
+        
+        # Se não caiu em nenhum if acima, retorna vazio
+        else:
+            return EscalaRegistro.objects.none()
+
+        # --- 2. APLICAÇÃO DE FILTROS DA URL (A CORREÇÃO) ---
+        
+        # Filtra pelo Período (ex: ?periodo=3)
+        periodo_id = self.request.query_params.get('periodo')
+        if periodo_id:
+            queryset = queryset.filter(periodo_id=periodo_id)
+
+        # Filtra pela Conta (ex: ?conta=5) - Opcional, mas útil
+        conta_id = self.request.query_params.get('conta')
+        if conta_id:
+            queryset = queryset.filter(conta_id=conta_id)
+
+        return queryset
 
     def perform_create(self, serializer):
         user = self.request.user

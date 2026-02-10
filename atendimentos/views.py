@@ -29,7 +29,7 @@ from django.contrib.auth.forms import PasswordResetForm, SetPasswordForm
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
-from django.db.models import Count, Q, Value, F, CharField
+from django.db.models import Count, Q, Value, F, CharField, ProtectedError
 from django.http import HttpResponse
 from django.shortcuts import redirect, get_object_or_404
 from django.template.loader import render_to_string
@@ -37,7 +37,8 @@ from django.utils.dateparse import parse_date
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
-from django.db import transaction, models
+from django.db import transaction, models, IntegrityError
+from django.db.models.fields.related import ManyToManyField, ForeignKey
 from django.apps import apps
 from itertools import chain
 
@@ -426,6 +427,40 @@ class MunicipeLookupView(generics.ListAPIView):
             
         return resultados.order_by('nome_completo')[:100]
     
+class VerificarDependenciasMunicipeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        municipe = get_object_or_404(Municipe, pk=pk)
+        vinculos = []
+        total_vinculos = 0
+
+        # Varre os relacionamentos para ver o que tem ligado a este munícipe
+        # (Lógica similar ao Unificar, mas apenas contagem)
+        for relation in Municipe._meta.get_fields():
+            if relation.is_relation and relation.auto_created:
+                try:
+                    accessor_name = relation.get_accessor_name()
+                    # Pega o manager reverso (ex: municipe.atendimentos)
+                    manager = getattr(municipe, accessor_name)
+                    
+                    # Conta quantos registros tem
+                    count = manager.count()
+                    
+                    if count > 0:
+                        # Formata nome amigável (ex: "atendimentos" -> "Atendimentos")
+                        nome_model = relation.related_model._meta.verbose_name_plural.title()
+                        vinculos.append(f"{count} {nome_model}")
+                        total_vinculos += count
+                except Exception:
+                    continue
+
+        return Response({
+            "tem_vinculos": total_vinculos > 0,
+            "total": total_vinculos,
+            "detalhes": vinculos
+        })
+    
 class MesclarDuplicatasView(APIView):
     permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
 
@@ -545,6 +580,114 @@ class MesclarDuplicatasView(APIView):
                 {'error': f'Ocorreu um erro durante a fusão: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        
+class UnificarMunicipesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        id_principal = request.data.get('id_principal')
+        id_duplicado = request.data.get('id_duplicado')
+
+        if not id_principal or not id_duplicado:
+            return Response({"detail": "IDs inválidos."}, status=400)
+
+        if str(id_principal) == str(id_duplicado):
+            return Response({"detail": "Você não pode unificar um registro com ele mesmo."}, status=400)
+
+        try:
+            with transaction.atomic():
+                principal = get_object_or_404(Municipe, pk=id_principal)
+                duplicado = get_object_or_404(Municipe, pk=id_duplicado)
+
+                # 1. COPIA DADOS FALTANTES (Merge de Informações)
+                if not principal.cpf and duplicado.cpf:
+                    principal.cpf = duplicado.cpf
+                if not principal.matricula_rh and duplicado.matricula_rh:
+                    principal.matricula_rh = duplicado.matricula_rh
+                if not principal.foto and duplicado.foto:
+                    principal.foto = duplicado.foto
+                
+                # Merge inteligente de telefones
+                if duplicado.telefones:
+                    if not principal.telefones: principal.telefones = []
+                    numeros_existentes = [t.get('numero') for t in principal.telefones if t.get('numero')]
+                    for tel in duplicado.telefones:
+                        if tel.get('numero') and tel.get('numero') not in numeros_existentes:
+                            principal.telefones.append(tel)
+
+                # Merge inteligente de emails
+                if duplicado.emails:
+                    if not principal.emails: principal.emails = []
+                    emails_existentes = [e.get('email') for e in principal.emails if e.get('email')]
+                    for mail in duplicado.emails:
+                        if mail.get('email') and mail.get('email') not in emails_existentes:
+                            principal.emails.append(mail)
+
+                principal.save()
+
+                # 2. TRANSFERIR VÍNCULOS (CORREÇÃO DA INTROSPECÇÃO)
+                links_migrados = 0
+                
+                # get_fields() traz todas as relações. Filtramos as que apontam PARA Munícipe (one_to_many)
+                for rel in Municipe._meta.get_fields():
+                    
+                    # Verifica se é uma relação reversa (OutroModel -> Municipe)
+                    if rel.one_to_many and rel.auto_created:
+                        related_model = rel.related_model
+                        remote_field_name = rel.field.name # Ex: 'municipe' ou 'solicitante'
+                        
+                        # Busca objetos do modelo relacionado que apontam para o duplicado
+                        try:
+                            filtro = {remote_field_name: duplicado}
+                            objetos = related_model.objects.filter(**filtro)
+                            
+                            for obj in objetos:
+                                # Tenta mover para o principal
+                                setattr(obj, remote_field_name, principal)
+                                try:
+                                    obj.save()
+                                    links_migrados += 1
+                                except IntegrityError:
+                                    # CONFLITO: O principal JÁ TEM esse vínculo (ex: convidado 2x na mesma agenda)
+                                    # Como não podemos ter dois iguais, e o duplicado vai sumir, deletamos o vínculo duplicado.
+                                    # Recarrega o objeto original antes de deletar para evitar inconsistência
+                                    # Mas como setattr alterou em memória, é melhor buscar o ID direto para deletar
+                                    related_model.objects.filter(pk=obj.pk).delete()
+                        except Exception as e:
+                            print(f"Erro ao migrar {related_model}: {e}")
+                            continue
+
+                # 3. MIGRAR RELAÇÕES MANY-TO-MANY (Ex: Listas de Distribuição)
+                # O loop acima (one_to_many) não pega ManyToMany.
+                for rel in Municipe._meta.get_fields():
+                     if rel.many_to_many and rel.auto_created:
+                        related_model = rel.related_model
+                        remote_field_name = rel.field.name 
+                        
+                        # Para M2M, o filtro é um pouco diferente
+                        filtro = {remote_field_name: duplicado}
+                        objetos_m2m = related_model.objects.filter(**filtro)
+                        
+                        for obj in objetos_m2m:
+                            # Pega o manager do campo M2M no objeto relacionado
+                            m2m_manager = getattr(obj, remote_field_name)
+                            m2m_manager.remove(duplicado)
+                            m2m_manager.add(principal)
+                            links_migrados += 1
+
+                # 4. EXCLUIR O DUPLICADO
+                # Agora que movemos Atendimentos, Solicitacoes, Agendas, etc., ele deve estar "limpo".
+                duplicado.delete()
+
+                return Response({
+                    "message": "Fusão concluída com sucesso.",
+                    "links_migrados": links_migrados,
+                    "nome_final": principal.nome_completo
+                })
+
+        except Exception as e:
+            # traceback.print_exc() # Habilite para debug no terminal se precisar
+            return Response({"detail": f"Erro ao unificar: {str(e)}"}, status=500)
         
 class AtualizarCategoriaEmLoteView(APIView):
     """
@@ -1085,15 +1228,16 @@ class ExportMunicipesExcelView(APIView):
     def get(self, request, *args, **kwargs):
         user = request.user
         
-        ordenar_por = request.query_params.get('ordenar_por', 'nome') # Default é 'nome'
-        
+        # 1. ORDENAÇÃO
+        ordenar_por = request.query_params.get('ordenar_por', 'nome')
         if ordenar_por == 'orgao':
-            order_fields = ['orgao', 'nome_completo'] # Ordena por Órgão, depois por Nome
+            order_fields = ['orgao', 'nome_completo']
         else:
-            order_fields = ['nome_completo'] # Default: ordena por Nome
+            order_fields = ['nome_completo']
         
         queryset = Municipe.objects.prefetch_related('categoria', 'contas').all().order_by(*order_fields)
 
+        # 2. PERMISSÕES DE VISUALIZAÇÃO
         if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
             if hasattr(user, 'perfil'):
                 contas_usuario = user.perfil.contas.all()
@@ -1103,6 +1247,15 @@ class ExportMunicipesExcelView(APIView):
             else:
                 queryset = queryset.filter(contas__isnull=True)
 
+        # --- 3. FILTRO POR CATEGORIA (O QUE FALTAVA) ---
+        # O Frontend manda ?categoria_id=1&categoria_id=2...
+        # Usamos .getlist() para pegar todos os IDs enviados
+        categoria_ids = request.query_params.getlist('categoria_id')
+        if categoria_ids:
+            queryset = queryset.filter(categoria_id__in=categoria_ids)
+        # -----------------------------------------------
+
+        # 4. BUSCA TEXTUAL (q)
         termo_busca = self.request.query_params.get('q', None)
         if termo_busca:
             palavras = termo_busca.split()
@@ -1118,6 +1271,7 @@ class ExportMunicipesExcelView(APIView):
             )
             queryset = queryset.filter(query_palavras_nome | query_outros_campos).distinct()
 
+        # 5. GERAÇÃO DO ARQUIVO EXCEL
         workbook = openpyxl.Workbook()
         sheet = workbook.active
         sheet.title = 'Contatos'
@@ -1126,12 +1280,9 @@ class ExportMunicipesExcelView(APIView):
         sheet.append(headers)
 
         for municipe in queryset:
-            # --- INÍCIO DA CORREÇÃO ---
-            # Pega o primeiro e-mail da lista JSON, com segurança.
             email_principal = ''
             if municipe.emails and isinstance(municipe.emails, list) and len(municipe.emails) > 0:
                 email_principal = municipe.emails[0].get('email', '')
-            # --- FIM DA CORREÇÃO ---
 
             telefone = municipe.telefones[0].get('numero', '') if municipe.telefones else ''
             data_nasc_formatada = municipe.data_nascimento.strftime('%d/%m/%Y') if municipe.data_nascimento else ''
@@ -1142,7 +1293,7 @@ class ExportMunicipesExcelView(APIView):
                 municipe.nome_completo,
                 municipe.cpf,
                 data_nasc_formatada,
-                email_principal, # <-- Usa a variável corrigida
+                email_principal,
                 telefone,
                 municipe.cargo,
                 municipe.orgao,
@@ -1159,12 +1310,12 @@ class ExportMunicipesExcelView(APIView):
         return response
     
 class GerarPdfMunicipesReportView(APIView):
-    permission_classes = [permissions.IsAuthenticated] # Mude se precisar de outra permissão
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         user = request.user
         
-        ordenar_por = request.query_params.get('ordenar_por', 'nome') # Default 'nome'
+        ordenar_por = request.query_params.get('ordenar_por', 'nome')
         
         if ordenar_por == 'orgao':
             order_fields = ['orgao', 'nome_completo']
@@ -1182,7 +1333,12 @@ class GerarPdfMunicipesReportView(APIView):
             else:
                 queryset = queryset.filter(contas__isnull=True)
 
-        # Corrigido para usar 'request.query_params' (baseado no nosso traceback anterior)
+        # --- CORREÇÃO: FILTRO POR CATEGORIA AQUI TAMBÉM ---
+        categoria_ids = request.query_params.getlist('categoria_id')
+        if categoria_ids:
+            queryset = queryset.filter(categoria_id__in=categoria_ids)
+        # --------------------------------------------------
+
         termo_busca = request.query_params.get('q', None)
         if termo_busca:
             palavras = termo_busca.split()
@@ -1199,12 +1355,9 @@ class GerarPdfMunicipesReportView(APIView):
             queryset = queryset.filter(query_palavras_nome | query_outros_campos).distinct()
 
         
-        # 2. --- PREPARAÇÃO DOS DADOS PARA O TEMPLATE ---
-        # (Em vez de criar um Excel, preparamos os dados para o HTML)
-        
+        # PREPARAÇÃO DOS DADOS PARA O TEMPLATE
         municipes_data = []
         for municipe in queryset:
-            # Lógica para pegar o telefone principal (igual a do Excel)
             telefone_principal = ''
             if municipe.telefones and isinstance(municipe.telefones, list) and len(municipe.telefones) > 0:
                 telefone_principal = municipe.telefones[0].get('numero', '')
@@ -1214,9 +1367,10 @@ class GerarPdfMunicipesReportView(APIView):
                 'telefone': telefone_principal,
                 'cargo': municipe.cargo,
                 'orgao': municipe.orgao,
+                'categoria': municipe.categoria.nome if municipe.categoria else '', # Adicionei categoria no PDF tbm, útil
             })
             
-        # 3. --- PREPARAÇÃO DO CONTEXTO DO CABEÇALHO (similar ao seu PDF de agendas) ---
+        # CABEÇALHO DO PDF
         conta_id = request.query_params.get('conta_id', None)
         conta_contexto = None
         
@@ -1243,9 +1397,10 @@ class GerarPdfMunicipesReportView(APIView):
             'brasao_url': brasao_url,
             'logo_conta_url': logo_conta_url,
             'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+            # Passa os filtros aplicados para exibir no título do relatório se quiser
+            'filtros_texto': termo_busca, 
         }
 
-        # 4. --- GERAÇÃO DO PDF ---
         try:
             html_string = render_to_string('relatorios/relatorio_municipes.html', context)
             pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
@@ -2526,11 +2681,11 @@ class RemoverLinkGoogleView(APIView):
 # --- NOVA VIEW PARA GERAR PDF DE OFÍCIO ---
 # (Colada do arquivo oficios/views.py)
 class GerarPdfOficioView(APIView):
-    permission_classes = [permissions.IsAuthenticated] # Usaremos a permissão genérica por enquanto
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk, *args, **kwargs):
         try:
-            # Usamos .select_related para otimizar a busca
+            # Otimização da query
             oficio = get_object_or_404(Oficio.objects.select_related('conta', 'criado_por'), pk=pk)
 
             user = request.user
@@ -2538,17 +2693,37 @@ class GerarPdfOficioView(APIView):
                 if not hasattr(user, 'perfil') or oficio.conta not in user.perfil.contas.all():
                     return Response({"detail": "Você não tem permissão para acessar este ofício."}, status=403)
             
+            # --- CORREÇÃO DO BRASÃO (Caminho Físico) ---
+            # Tenta pegar da pasta de produção (staticfiles) ou desenvolvimento (static)
+            
+            # Defina o nome exato do arquivo (confira se é .jpg ou .png no seu servidor)
+            nome_arquivo = 'brasao_prefeitura.jpg' 
+            
+            caminho_imagem = os.path.join(settings.BASE_DIR, 'staticfiles', 'images', nome_arquivo)
+            
+            # Fallback: Se não achar no staticfiles, tenta no static normal (src)
+            if not os.path.exists(caminho_imagem):
+                caminho_imagem = os.path.join(settings.BASE_DIR, 'static', 'images', nome_arquivo)
+
+            # Prepara a URL de arquivo local (file://)
+            # Isso faz o WeasyPrint ler direto do disco, sem depender de rede
+            brasao_uri = f"file://{caminho_imagem}"
+
             context = {
                 'oficio': oficio,
                 'conta': oficio.conta,
-                'brasao_url': request.build_absolute_uri('/static/images/brasao_prefeitura.jpg'),
+                'brasao_url': brasao_uri, # Passamos o caminho file://
             }
 
             html_string = render_to_string('oficios/oficio_template.html', context)
-            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            
+            # O base_url aponta para a raiz do projeto para carregar CSS locais se necessário
+            pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
 
             response = HttpResponse(pdf_file, content_type='application/pdf')
-            response['Content-Disposition'] = f'attachment; filename="oficio_{oficio.numero.replace("/", "-")}.pdf"'
+            # Limpa o número para não quebrar o nome do arquivo (remove barras)
+            nome_limpo = oficio.numero.replace("/", "-").replace(" ", "_")
+            response['Content-Disposition'] = f'attachment; filename="oficio_{nome_limpo}.pdf"'
             
             return response
 
