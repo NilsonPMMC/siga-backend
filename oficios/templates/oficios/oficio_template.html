@@ -46,12 +46,19 @@
 
         .signature {
             display: flex;
+            flex-direction: column;
+            align-items: center;
             padding-top: 48pt;
-            display: flex;
             justify-content: center;
         }
         .signature p{
             text-align: center;
+            margin: 4pt 0;
+        }
+        .signature img {
+            max-width: 200pt;
+            max-height: 60pt;
+            margin-bottom: 8pt;
         }
         
         #header, #footer {
@@ -147,6 +154,9 @@
     </div>
 
     <div class="signature">
+        {% if assinatura_url %}
+            <img src="{{ assinatura_url }}" alt="Assinatura Eletrônica">
+        {% endif %}
         <p class="sem-recuo">
             <b>{{ oficio.conta.nome_titular|default:oficio.criado_por.get_full_name|upper }}</b>
             <br>

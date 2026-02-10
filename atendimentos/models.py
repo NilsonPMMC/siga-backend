@@ -68,6 +68,18 @@ class Conta(UppercaseFieldsMixin, models.Model):
         default=False, 
         help_text="Se marcado, esta secretaria será cobrada no relatório de pendências."
     )
+    assinatura_eletronica = models.ImageField(
+        upload_to='assinaturas/',
+        blank=True, 
+        null=True,
+        verbose_name="Assinatura Eletrônica",
+        help_text="Imagem da assinatura eletrônica para uso em ofícios (formato PNG/JPG recomendado)"
+    )
+    usar_assinatura_eletronica = models.BooleanField(
+        default=False,
+        verbose_name="Usar Assinatura Eletrônica em Ofícios?",
+        help_text="Se marcado, a assinatura eletrônica será incluída nos ofícios gerados. Certifique-se de ter feito upload da imagem da assinatura."
+    )
     class Meta: verbose_name = "Conta"; verbose_name_plural = "Contas"
     def __str__(self): return self.nome
 

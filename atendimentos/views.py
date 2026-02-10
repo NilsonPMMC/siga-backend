@@ -2709,10 +2709,24 @@ class GerarPdfOficioView(APIView):
             # Isso faz o WeasyPrint ler direto do disco, sem depender de rede
             brasao_uri = f"file://{caminho_imagem}"
 
+            # --- ASSINATURA ELETRÔNICA ---
+            assinatura_url = None
+            if oficio.conta.usar_assinatura_eletronica and oficio.conta.assinatura_eletronica:
+                try:
+                    # Verifica se o arquivo existe fisicamente
+                    if os.path.exists(oficio.conta.assinatura_eletronica.path):
+                        # Usa file:// para o WeasyPrint ler direto do disco
+                        assinatura_url = f"file://{oficio.conta.assinatura_eletronica.path}"
+                except Exception as e:
+                    # Se houver erro ao acessar o arquivo, continua sem assinatura
+                    print(f"Erro ao carregar assinatura eletrônica: {e}")
+                    assinatura_url = None
+
             context = {
                 'oficio': oficio,
                 'conta': oficio.conta,
                 'brasao_url': brasao_uri, # Passamos o caminho file://
+                'assinatura_url': assinatura_url, # URL da assinatura eletrônica (se disponível)
             }
 
             html_string = render_to_string('oficios/oficio_template.html', context)

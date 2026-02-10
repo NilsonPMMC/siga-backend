@@ -126,6 +126,10 @@ class ContaAdmin(admin.ModelAdmin):
         ('Dados Ofício', {
             'fields': ('ultimo_numero_oficio', 'ano_corrente_oficio')
         }),
+        ('Assinatura Eletrônica', {
+            'fields': ('assinatura_eletronica', 'usar_assinatura_eletronica'),
+            'description': 'Configure a assinatura eletrônica que será incluída nos ofícios gerados. Faça upload da imagem e marque o checkbox para ativar.'
+        }),
         ('Personalização e Integrações', {
             'fields': ('brasao_instituicao', 'logo_conta', 'google_calendar_id')
         }),
