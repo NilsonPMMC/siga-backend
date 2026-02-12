@@ -230,8 +230,15 @@ class SolicitacaoAgendaDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class UserListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
-    queryset = User.objects.filter(is_active=True).order_by('username')
     serializer_class = UserSerializer
+    
+    def get_queryset(self):
+        queryset = User.objects.filter(is_active=True).order_by('username')
+        # Se for superuser e tiver conta_id, filtra membros da conta
+        conta_id = self.request.query_params.get('conta_id', None)
+        if self.request.user.is_superuser and conta_id:
+            queryset = queryset.filter(perfil__contas__id=conta_id).distinct()
+        return queryset
 
 class EspacoListCreateView(generics.ListCreateAPIView):
     """
@@ -1222,6 +1229,16 @@ class RelatorioAtendimentosPorStatusView(APIView):
         status = request.query_params.get('status', None)
         if status:
             queryset = queryset.filter(status=status)
+        
+        # Aplicar filtro de membros (responsáveis)
+        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
+        if responsavel_ids_str:
+            try:
+                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
+                if responsavel_ids:
+                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
+            except (ValueError, AttributeError):
+                pass
 
         # Debug: log do total de registros após filtros
         total_count = queryset.count()
@@ -1286,6 +1303,16 @@ class RelatorioAtendimentosPorContaView(APIView):
         status = request.query_params.get('status', None)
         if status:
             queryset = queryset.filter(status=status)
+        
+        # Aplicar filtro de membros (responsáveis)
+        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
+        if responsavel_ids_str:
+            try:
+                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
+                if responsavel_ids:
+                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
+            except (ValueError, AttributeError):
+                pass
 
         # Debug: log do total de registros após filtros
         total_count = queryset.count()
@@ -1350,6 +1377,16 @@ class RelatorioAtendimentosPorCategoriaView(APIView):
         status = request.query_params.get('status', None)
         if status:
             queryset = queryset.filter(status=status)
+        
+        # Aplicar filtro de membros (responsáveis)
+        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
+        if responsavel_ids_str:
+            try:
+                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
+                if responsavel_ids:
+                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
+            except (ValueError, AttributeError):
+                pass
 
         # Debug: log do total de registros após filtros
         total_count = queryset.count()
@@ -1427,6 +1464,16 @@ class GerarPdfAtendimentosView(APIView):
         if conta_id:
             queryset = queryset.filter(conta_id=conta_id)
         
+        # Aplicar filtro de membros (responsáveis)
+        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
+        if responsavel_ids_str:
+            try:
+                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
+                if responsavel_ids:
+                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
+            except (ValueError, AttributeError):
+                pass
+        
         # Aplicar filtros de data com timezone
         if data_inicio_str:
             try:
@@ -1476,12 +1523,36 @@ class GerarPdfAtendimentosView(APIView):
             else:
                 logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
+        # Calcular big numbers por status
+        total_atendimentos = queryset.count()
+        status_counts = queryset.values('status').annotate(total=Count('id'))
+        big_numbers = {
+            'total': total_atendimentos,
+            'aberto': 0,
+            'em_analise': 0,
+            'encaminhado': 0,
+            'concluido': 0,
+            'arquivado': 0,
+        }
+        status_map = {
+            'ABERTO': 'aberto',
+            'EM_ANALISE': 'em_analise',
+            'ENCAMINHADO': 'encaminhado',
+            'CONCLUIDO': 'concluido',
+            'ARQUIVADO': 'arquivado',
+        }
+        for item in status_counts:
+            status_key = status_map.get(item['status'], None)
+            if status_key:
+                big_numbers[status_key] = item['total']
+        
         context = {
             'atendimentos': queryset.select_related('municipe', 'conta', 'responsavel').prefetch_related('tramitacoes__usuario', 'categorias'),
             'nome_instituicao': nome_instituicao,
             'brasao_path': brasao_path,
             'logo_conta_path': logo_conta_path,
             'logo_siga_path': logo_siga_path,
+            'big_numbers': big_numbers,
         }
         html_string = render_to_string('atendimentos/relatorio_atendimentos.html', context)
         pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()

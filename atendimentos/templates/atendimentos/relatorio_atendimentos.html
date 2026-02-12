@@ -54,6 +54,38 @@
         }
         .footer { position: absolute; bottom: 0; margin-top: 20px; }
         .footer-logo { height: 20px; }
+        .big-numbers {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 25px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            flex-wrap: wrap;
+        }
+        .big-number-item {
+            text-align: center;
+            padding: 10px 15px;
+            min-width: 120px;
+        }
+        .big-number-value {
+            font-size: 32pt;
+            font-weight: bold;
+            line-height: 1;
+            margin-bottom: 5px;
+        }
+        .big-number-label {
+            font-size: 9pt;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .big-number-total { color: #2c3e50; }
+        .big-number-aberto { color: #e74c3c; }
+        .big-number-em_analise { color: #f39c12; }
+        .big-number-encaminhado { color: #3498db; }
+        .big-number-concluido { color: #27ae60; }
+        .big-number-arquivado { color: #95a5a6; }
     </style>
 </head>
 <body>
@@ -71,6 +103,33 @@
     </div>
 
     <h1>Relatório de Atendimentos</h1>
+
+    <div class="big-numbers">
+        <div class="big-number-item">
+            <div class="big-number-value big-number-total">{{ big_numbers.total }}</div>
+            <div class="big-number-label">Total</div>
+        </div>
+        <div class="big-number-item">
+            <div class="big-number-value big-number-aberto">{{ big_numbers.aberto }}</div>
+            <div class="big-number-label">Aberto</div>
+        </div>
+        <div class="big-number-item">
+            <div class="big-number-value big-number-em_analise">{{ big_numbers.em_analise }}</div>
+            <div class="big-number-label">Em Análise</div>
+        </div>
+        <div class="big-number-item">
+            <div class="big-number-value big-number-encaminhado">{{ big_numbers.encaminhado }}</div>
+            <div class="big-number-label">Encaminhado</div>
+        </div>
+        <div class="big-number-item">
+            <div class="big-number-value big-number-concluido">{{ big_numbers.concluido }}</div>
+            <div class="big-number-label">Concluído</div>
+        </div>
+        <div class="big-number-item">
+            <div class="big-number-value big-number-arquivado">{{ big_numbers.arquivado }}</div>
+            <div class="big-number-label">Arquivado</div>
+        </div>
+    </div>
 
     <table>
         <thead>
