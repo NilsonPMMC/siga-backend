@@ -2214,11 +2214,25 @@ class GerarPdfCheckinsView(APIView):
         ).order_by('-total')
         
         # 3. Dias com mais volumes (top 5 dias)
-        dias_com_mais_volumes = queryset.annotate(
-            dia=TruncDay('data_checkin')
-        ).values('dia').annotate(
-            total=Count('id')
-        ).order_by('-total')[:5]
+        # Usar timezone.localtime para converter para timezone local antes de truncar
+        from django.db.models.functions import Cast
+        from django.db.models import DateField
+        
+        dias_com_mais_volumes = []
+        if queryset.exists():
+            # Agrupar manualmente por data usando timezone local
+            visitas_por_dia = {}
+            for visita in queryset:
+                data_local = timezone.localtime(visita.data_checkin).date()
+                if data_local not in visitas_por_dia:
+                    visitas_por_dia[data_local] = 0
+                visitas_por_dia[data_local] += 1
+            
+            # Converter para lista e ordenar
+            dias_com_mais_volumes = [
+                {'dia': dia, 'total': total}
+                for dia, total in sorted(visitas_por_dia.items(), key=lambda x: x[1], reverse=True)[:5]
+            ]
         
         # Prepara o contexto para o template
         context = {
