@@ -9,9 +9,11 @@
             margin: 1.5cm;
         }
         body {
-            font-family: 'Helvetica', sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             color: #333;
             font-size: 12px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
         .header {
             display: flex;
@@ -78,7 +80,13 @@
 <body>
 
     <div class="header">
-        <img src="{{ logo_url }}" alt="Logo SIGA">
+        {% if logo_siga_path %}
+            {% if "http" in logo_siga_path %}
+                <img src="{{ logo_siga_path }}" alt="Logo SIGA">
+            {% else %}
+                <img src="file://{{ logo_siga_path }}" alt="Logo SIGA">
+            {% endif %}
+        {% endif %}
         <div class="title-section">
             <h1>Relatório de Checklist do Evento</h1>
         </div>

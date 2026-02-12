@@ -883,19 +883,31 @@ class EventoChecklistViewSet(viewsets.ModelViewSet):
         try:
             checklist = self.get_object()
             
+            # Prepara caminho do logo SIGA
+            logo_siga_path = None
+            logo_siga_static = settings.STATIC_ROOT / 'images' / 'logo-siga-gab.png'
+            if logo_siga_static.exists():
+                logo_siga_path = os.path.abspath(str(logo_siga_static)).replace('\\', '/')
+            else:
+                logo_siga_alt = settings.BASE_DIR / 'staticfiles' / 'images' / 'logo-siga-gab.png'
+                if logo_siga_alt.exists():
+                    logo_siga_path = os.path.abspath(str(logo_siga_alt)).replace('\\', '/')
+                else:
+                    logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
+            
             # Contexto para o template HTML
             context = {
                 'checklist': checklist,
                 'itens_status': checklist.itens_status.all().order_by('item_mestre__nome'),
                 'data_emissao': timezone.now(),
-                'logo_url': request.build_absolute_uri('/static/images/logo-siga-gab.png')
+                'logo_siga_path': logo_siga_path
             }
 
             # Renderiza o template HTML para uma string
             html_string = render_to_string('eventos/relatorio_checklist.html', context)
             
             # Gera o PDF a partir do HTML
-            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
             
             # Cria a resposta HTTP
             response = HttpResponse(pdf_file, content_type='application/pdf')

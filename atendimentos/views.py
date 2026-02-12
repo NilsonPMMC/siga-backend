@@ -1308,25 +1308,37 @@ class GerarPdfAtendimentosView(APIView):
         
         # Prepara as informações de personalização
         nome_instituicao = "Prefeitura Municipal" # Valor padrão
-        brasao_url = ''
-        logo_conta_url = ''
+        brasao_path = None
+        logo_conta_path = None
+        logo_siga_path = None
 
         if conta_contexto:
             nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
             if conta_contexto.brasao_instituicao:
-                brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+                brasao_path = os.path.abspath(conta_contexto.brasao_instituicao.path).replace('\\', '/')
             if conta_contexto.logo_conta:
-                logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
+                logo_conta_path = os.path.abspath(conta_contexto.logo_conta.path).replace('\\', '/')
+        
+        # Tenta encontrar o logo do SIGA no sistema de arquivos
+        logo_siga_static = settings.STATIC_ROOT / 'images' / 'logo-siga-gab.png'
+        if logo_siga_static.exists():
+            logo_siga_path = os.path.abspath(str(logo_siga_static)).replace('\\', '/')
+        else:
+            logo_siga_alt = settings.BASE_DIR / 'staticfiles' / 'images' / 'logo-siga-gab.png'
+            if logo_siga_alt.exists():
+                logo_siga_path = os.path.abspath(str(logo_siga_alt)).replace('\\', '/')
+            else:
+                logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
         context = {
-            'atendimentos': queryset.select_related('municipe', 'conta', 'responsavel').prefetch_related('categorias'),
+            'atendimentos': queryset.select_related('municipe', 'conta', 'responsavel').prefetch_related('tramitacoes__usuario', 'categorias'),
             'nome_instituicao': nome_instituicao,
-            'brasao_url': brasao_url,
-            'logo_conta_url': logo_conta_url,
-            'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+            'brasao_path': brasao_path,
+            'logo_conta_path': logo_conta_path,
+            'logo_siga_path': logo_siga_path,
         }
         html_string = render_to_string('atendimentos/relatorio_atendimentos.html', context)
-        pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+        pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
 
         response = HttpResponse(pdf_file, content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="relatorio_atendimentos.pdf"'
@@ -1376,18 +1388,12 @@ class GerarPdfAtendimentoDetailView(APIView):
                     # Fallback para URL se não encontrar no sistema de arquivos
                     logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
-            # Prepara caminho da fonte para o template
-            font_path = settings.BASE_DIR / 'static' / 'fonts' / 'timr45w.ttf'
-            if not font_path.exists():
-                font_path = settings.BASE_DIR / 'staticfiles' / 'fonts' / 'timr45w.ttf'
-            
             context = {
                 'atendimento': atendimento,
                 'nome_instituicao': nome_instituicao,
                 'brasao_path': brasao_path,
                 'logo_conta_path': logo_conta_path,
                 'logo_siga_path': logo_siga_path,
-                'BASE_DIR': str(settings.BASE_DIR).replace('\\', '/'),
             }
             html_string = render_to_string('atendimentos/relatorio_atendimento_detalhe.html', context)
             # Usa BASE_DIR como base_url para permitir acesso a arquivos locais
@@ -1442,15 +1448,27 @@ class GerarPdfAgendasReportView(APIView):
         
         # Prepara as informações de personalização
         nome_instituicao = "Prefeitura Municipal" # Valor padrão
-        brasao_url = ''
-        logo_conta_url = ''
+        brasao_path = None
+        logo_conta_path = None
+        logo_siga_path = None
 
         if conta_contexto:
             nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
             if conta_contexto.brasao_instituicao:
-                brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+                brasao_path = os.path.abspath(conta_contexto.brasao_instituicao.path).replace('\\', '/')
             if conta_contexto.logo_conta:
-                logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
+                logo_conta_path = os.path.abspath(conta_contexto.logo_conta.path).replace('\\', '/')
+        
+        # Tenta encontrar o logo do SIGA no sistema de arquivos
+        logo_siga_static = settings.STATIC_ROOT / 'images' / 'logo-siga-gab.png'
+        if logo_siga_static.exists():
+            logo_siga_path = os.path.abspath(str(logo_siga_static)).replace('\\', '/')
+        else:
+            logo_siga_alt = settings.BASE_DIR / 'staticfiles' / 'images' / 'logo-siga-gab.png'
+            if logo_siga_alt.exists():
+                logo_siga_path = os.path.abspath(str(logo_siga_alt)).replace('\\', '/')
+            else:
+                logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
         context = {
             'hoje': datetime.now(),
@@ -1458,14 +1476,14 @@ class GerarPdfAgendasReportView(APIView):
             'data_emissao': datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
             'usuario_emissao': request.user.get_full_name() or request.user.username,
             'nome_instituicao': nome_instituicao,
-            'brasao_url': brasao_url,
-            'logo_conta_url': logo_conta_url,
-            'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+            'brasao_path': brasao_path,
+            'logo_conta_path': logo_conta_path,
+            'logo_siga_path': logo_siga_path,
         }
 
         try:
             html_string = render_to_string('agendas/relatorio_agendas.html', context)
-            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
             
             response = HttpResponse(pdf_file, content_type='application/pdf')
             response['Content-Disposition'] = f'attachment; filename="relatorio_agendas_{datetime.now().strftime("%Y%m%d")}.pdf"'
@@ -1635,30 +1653,42 @@ class GerarPdfMunicipesReportView(APIView):
             conta_contexto = request.user.perfil.contas.first()
         
         nome_instituicao = "Prefeitura Municipal"
-        brasao_url = ''
-        logo_conta_url = ''
+        brasao_path = None
+        logo_conta_path = None
+        logo_siga_path = None
 
         if conta_contexto:
             nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
             if conta_contexto.brasao_instituicao:
-                brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+                brasao_path = os.path.abspath(conta_contexto.brasao_instituicao.path).replace('\\', '/')
             if conta_contexto.logo_conta:
-                logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
+                logo_conta_path = os.path.abspath(conta_contexto.logo_conta.path).replace('\\', '/')
+        
+        # Tenta encontrar o logo do SIGA no sistema de arquivos
+        logo_siga_static = settings.STATIC_ROOT / 'images' / 'logo-siga-gab.png'
+        if logo_siga_static.exists():
+            logo_siga_path = os.path.abspath(str(logo_siga_static)).replace('\\', '/')
+        else:
+            logo_siga_alt = settings.BASE_DIR / 'staticfiles' / 'images' / 'logo-siga-gab.png'
+            if logo_siga_alt.exists():
+                logo_siga_path = os.path.abspath(str(logo_siga_alt)).replace('\\', '/')
+            else:
+                logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
         context = {
             'municipes': municipes_data,
             'data_emissao': datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
             'usuario_emissao': request.user.get_full_name() or request.user.username,
-            'brasao_url': brasao_url,
-            'logo_conta_url': logo_conta_url,
-            'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+            'brasao_path': brasao_path,
+            'logo_conta_path': logo_conta_path,
+            'logo_siga_path': logo_siga_path,
             # Passa os filtros aplicados para exibir no título do relatório se quiser
             'filtros_texto': termo_busca, 
         }
 
         try:
             html_string = render_to_string('relatorios/relatorio_municipes.html', context)
-            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
             
             response = HttpResponse(pdf_file, content_type='application/pdf')
             response['Content-Disposition'] = f'attachment; filename="relatorio_contatos_{datetime.now().strftime("%Y%m%d")}.pdf"'
@@ -1918,28 +1948,40 @@ class GerarPdfCheckinsView(APIView):
         
         # Prepara as informações de personalização
         nome_instituicao = "Prefeitura Municipal" # Valor padrão
-        brasao_url = ''
-        logo_conta_url = ''
+        brasao_path = None
+        logo_conta_path = None
+        logo_siga_path = None
 
         if conta_contexto:
             nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
             if conta_contexto.brasao_instituicao:
-                brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+                brasao_path = os.path.abspath(conta_contexto.brasao_instituicao.path).replace('\\', '/')
             if conta_contexto.logo_conta:
-                logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
+                logo_conta_path = os.path.abspath(conta_contexto.logo_conta.path).replace('\\', '/')
+        
+        # Tenta encontrar o logo do SIGA no sistema de arquivos
+        logo_siga_static = settings.STATIC_ROOT / 'images' / 'logo-siga-gab.png'
+        if logo_siga_static.exists():
+            logo_siga_path = os.path.abspath(str(logo_siga_static)).replace('\\', '/')
+        else:
+            logo_siga_alt = settings.BASE_DIR / 'staticfiles' / 'images' / 'logo-siga-gab.png'
+            if logo_siga_alt.exists():
+                logo_siga_path = os.path.abspath(str(logo_siga_alt)).replace('\\', '/')
+            else:
+                logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
         # Prepara o contexto para o template
         context = {
             'visitas': queryset,
             'nome_instituicao': nome_instituicao,
-            'brasao_url': brasao_url,
-            'logo_conta_url': logo_conta_url,
-            'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+            'brasao_path': brasao_path,
+            'logo_conta_path': logo_conta_path,
+            'logo_siga_path': logo_siga_path,
         }
 
         # Renderiza o HTML e converte para PDF
         html_string = render_to_string('relatorios/relatorio_checkins.html', context)
-        pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+        pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
 
         response = HttpResponse(pdf_file, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="relatorio_checkins_{datetime.now().strftime("%Y%m%d")}.pdf"'

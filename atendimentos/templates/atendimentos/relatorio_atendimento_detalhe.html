@@ -4,19 +4,22 @@
     <meta charset="UTF-8">
     <title>Ficha de Atendimento - {{ atendimento.protocolo }}</title>
     <style>
-        @font-face {
-            font-family: 'TimesRoman';
-            src: url('file://{{ BASE_DIR }}/static/fonts/timr45w.ttf') format('truetype');
-        }
         @page {
             size: A4 portrait;
             margin: 1cm;
             @bottom-center {
                 content: "Página " counter(page) " de " counter(pages);
-                font-family: 'TimesRoman', 'Times New Roman', serif; font-size: 9pt; color: #888;
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 9pt; color: #888;
             }
         }
-        body { font-family: 'TimesRoman', 'Times New Roman', serif; font-size: 11pt; color: #333; line-height: 1.4; }
+        body { 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; 
+            font-size: 11pt; 
+            color: #333; 
+            line-height: 1.5; 
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
         .header { text-align: center; margin-bottom: 20px; display: flex; justify-content: space-between; }
         .header-container { text-align: center; margin-bottom: 30px; border-bottom: 1px solid #ccc; padding-bottom: 15px; }
         .logo { height: 40px; }
