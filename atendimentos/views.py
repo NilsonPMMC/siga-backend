@@ -1189,12 +1189,20 @@ class RelatorioAtendimentosPorStatusView(APIView):
                 queryset = Atendimento.objects.none()
 
         # Aplicar filtros de data
-        data_inicio = request.query_params.get('data_inicio', None)
-        data_fim = request.query_params.get('data_fim', None)
-        if data_inicio:
-            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
-        if data_fim:
-            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+        data_inicio_str = request.query_params.get('data_inicio', None)
+        data_fim_str = request.query_params.get('data_fim', None)
+        if data_inicio_str:
+            try:
+                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+                queryset = queryset.filter(data_criacao__date__gte=data_inicio_obj)
+            except ValueError:
+                pass  # Ignora se a data estiver em formato inválido
+        if data_fim_str:
+            try:
+                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+                queryset = queryset.filter(data_criacao__date__lte=data_fim_obj)
+            except ValueError:
+                pass  # Ignora se a data estiver em formato inválido
 
         # Aplicar filtros de conta e status
         conta_id = request.query_params.get('conta_id', None)
@@ -1230,12 +1238,20 @@ class RelatorioAtendimentosPorContaView(APIView):
                 queryset = Atendimento.objects.none()
 
         # Aplicar filtros de data
-        data_inicio = request.query_params.get('data_inicio', None)
-        data_fim = request.query_params.get('data_fim', None)
-        if data_inicio:
-            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
-        if data_fim:
-            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+        data_inicio_str = request.query_params.get('data_inicio', None)
+        data_fim_str = request.query_params.get('data_fim', None)
+        if data_inicio_str:
+            try:
+                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+                queryset = queryset.filter(data_criacao__date__gte=data_inicio_obj)
+            except ValueError:
+                pass  # Ignora se a data estiver em formato inválido
+        if data_fim_str:
+            try:
+                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+                queryset = queryset.filter(data_criacao__date__lte=data_fim_obj)
+            except ValueError:
+                pass  # Ignora se a data estiver em formato inválido
 
         # Aplicar filtros de conta e status
         conta_id = request.query_params.get('conta_id', None)
@@ -1271,12 +1287,20 @@ class RelatorioAtendimentosPorCategoriaView(APIView):
                 queryset = Atendimento.objects.none()
 
         # Aplicar filtros de data
-        data_inicio = request.query_params.get('data_inicio', None)
-        data_fim = request.query_params.get('data_fim', None)
-        if data_inicio:
-            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
-        if data_fim:
-            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+        data_inicio_str = request.query_params.get('data_inicio', None)
+        data_fim_str = request.query_params.get('data_fim', None)
+        if data_inicio_str:
+            try:
+                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+                queryset = queryset.filter(data_criacao__date__gte=data_inicio_obj)
+            except ValueError:
+                pass  # Ignora se a data estiver em formato inválido
+        if data_fim_str:
+            try:
+                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+                queryset = queryset.filter(data_criacao__date__lte=data_fim_obj)
+            except ValueError:
+                pass  # Ignora se a data estiver em formato inválido
 
         # Aplicar filtros de conta e status
         conta_id = request.query_params.get('conta_id', None)
