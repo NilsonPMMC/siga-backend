@@ -1191,18 +1191,28 @@ class RelatorioAtendimentosPorStatusView(APIView):
         # Aplicar filtros de data
         data_inicio_str = request.query_params.get('data_inicio', None)
         data_fim_str = request.query_params.get('data_fim', None)
+        
+        # Debug: log dos parâmetros recebidos
+        logging.info(f"RelatorioAtendimentosPorStatusView - data_inicio: {data_inicio_str}, data_fim: {data_fim_str}")
+        
         if data_inicio_str:
             try:
+                # Converter para datetime no início do dia (00:00:00) com timezone
                 data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
-                queryset = queryset.filter(data_criacao__date__gte=data_inicio_obj)
-            except ValueError:
-                pass  # Ignora se a data estiver em formato inválido
+                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
+                logging.info(f"Aplicando filtro data_inicio: {data_inicio_datetime}")
+                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}': {e}")
         if data_fim_str:
             try:
+                # Converter para datetime no fim do dia (23:59:59) com timezone
                 data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
-                queryset = queryset.filter(data_criacao__date__lte=data_fim_obj)
-            except ValueError:
-                pass  # Ignora se a data estiver em formato inválido
+                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
+                logging.info(f"Aplicando filtro data_fim: {data_fim_datetime}")
+                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_fim '{data_fim_str}': {e}")
 
         # Aplicar filtros de conta e status
         conta_id = request.query_params.get('conta_id', None)
@@ -1213,7 +1223,12 @@ class RelatorioAtendimentosPorStatusView(APIView):
         if status:
             queryset = queryset.filter(status=status)
 
+        # Debug: log do total de registros após filtros
+        total_count = queryset.count()
+        logging.info(f"Total de atendimentos após filtros: {total_count}")
+
         data = queryset.values('status').annotate(total=Count('status')).order_by('status')
+        logging.info(f"Dados retornados: {list(data)}")
         return Response(data)
 
 
@@ -1240,18 +1255,28 @@ class RelatorioAtendimentosPorContaView(APIView):
         # Aplicar filtros de data
         data_inicio_str = request.query_params.get('data_inicio', None)
         data_fim_str = request.query_params.get('data_fim', None)
+        
+        # Debug: log dos parâmetros recebidos
+        logging.info(f"RelatorioAtendimentosPorContaView - data_inicio: {data_inicio_str}, data_fim: {data_fim_str}")
+        
         if data_inicio_str:
             try:
+                # Converter para datetime no início do dia (00:00:00) com timezone
                 data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
-                queryset = queryset.filter(data_criacao__date__gte=data_inicio_obj)
-            except ValueError:
-                pass  # Ignora se a data estiver em formato inválido
+                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
+                logging.info(f"Aplicando filtro data_inicio: {data_inicio_datetime}")
+                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}': {e}")
         if data_fim_str:
             try:
+                # Converter para datetime no fim do dia (23:59:59) com timezone
                 data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
-                queryset = queryset.filter(data_criacao__date__lte=data_fim_obj)
-            except ValueError:
-                pass  # Ignora se a data estiver em formato inválido
+                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
+                logging.info(f"Aplicando filtro data_fim: {data_fim_datetime}")
+                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_fim '{data_fim_str}': {e}")
 
         # Aplicar filtros de conta e status
         conta_id = request.query_params.get('conta_id', None)
@@ -1262,7 +1287,12 @@ class RelatorioAtendimentosPorContaView(APIView):
         if status:
             queryset = queryset.filter(status=status)
 
+        # Debug: log do total de registros após filtros
+        total_count = queryset.count()
+        logging.info(f"Total de atendimentos após filtros: {total_count}")
+
         data = queryset.values('conta__nome').annotate(total=Count('id')).order_by('-total')
+        logging.info(f"Dados retornados: {list(data)}")
         return Response(data)
 
 
@@ -1289,18 +1319,28 @@ class RelatorioAtendimentosPorCategoriaView(APIView):
         # Aplicar filtros de data
         data_inicio_str = request.query_params.get('data_inicio', None)
         data_fim_str = request.query_params.get('data_fim', None)
+        
+        # Debug: log dos parâmetros recebidos
+        logging.info(f"RelatorioAtendimentosPorCategoriaView - data_inicio: {data_inicio_str}, data_fim: {data_fim_str}")
+        
         if data_inicio_str:
             try:
+                # Converter para datetime no início do dia (00:00:00) com timezone
                 data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
-                queryset = queryset.filter(data_criacao__date__gte=data_inicio_obj)
-            except ValueError:
-                pass  # Ignora se a data estiver em formato inválido
+                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
+                logging.info(f"Aplicando filtro data_inicio: {data_inicio_datetime}")
+                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}': {e}")
         if data_fim_str:
             try:
+                # Converter para datetime no fim do dia (23:59:59) com timezone
                 data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
-                queryset = queryset.filter(data_criacao__date__lte=data_fim_obj)
-            except ValueError:
-                pass  # Ignora se a data estiver em formato inválido
+                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
+                logging.info(f"Aplicando filtro data_fim: {data_fim_datetime}")
+                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_fim '{data_fim_str}': {e}")
 
         # Aplicar filtros de conta e status
         conta_id = request.query_params.get('conta_id', None)
@@ -1311,7 +1351,12 @@ class RelatorioAtendimentosPorCategoriaView(APIView):
         if status:
             queryset = queryset.filter(status=status)
 
+        # Debug: log do total de registros após filtros
+        total_count = queryset.count()
+        logging.info(f"Total de atendimentos após filtros: {total_count}")
+
         data = queryset.values('categorias__nome').annotate(total=Count('id')).order_by('-total')
+        logging.info(f"Dados retornados: {list(data)}")
         return Response(data)
 
 
