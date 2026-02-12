@@ -1419,17 +1419,31 @@ class GerarPdfAtendimentosView(APIView):
 
         status = request.query_params.get('status', None)
         conta_id = request.query_params.get('conta_id', None)
-        data_inicio = request.query_params.get('data_inicio', None)
-        data_fim = request.query_params.get('data_fim', None)
+        data_inicio_str = request.query_params.get('data_inicio', None)
+        data_fim_str = request.query_params.get('data_fim', None)
 
         if status:
             queryset = queryset.filter(status=status)
         if conta_id:
             queryset = queryset.filter(conta_id=conta_id)
-        if data_inicio:
-            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
-        if data_fim:
-            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+        
+        # Aplicar filtros de data com timezone
+        if data_inicio_str:
+            try:
+                # Converter para datetime no início do dia (00:00:00) com timezone
+                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
+                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}' em GerarPdfAtendimentosView: {e}")
+        if data_fim_str:
+            try:
+                # Converter para datetime no fim do dia (23:59:59) com timezone
+                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
+                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Erro ao processar data_fim '{data_fim_str}' em GerarPdfAtendimentosView: {e}")
 
         # Buscar conta_contexto para logos (sem duplicar a busca de conta_id)
         conta_contexto = None
