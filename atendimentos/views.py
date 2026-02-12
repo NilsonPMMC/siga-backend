@@ -79,29 +79,48 @@ class AtendimentoListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        queryset = Atendimento.objects.select_related('municipe', 'conta', 'responsavel')
 
         # REGRA 1: Superusuário vê tudo.
         if user.is_superuser:
-            return Atendimento.objects.all().order_by('-data_criacao')
-        
-        # --- AQUI ESTÁ A CORREÇÃO PARA A RECEPÇÃO ---
+            queryset = queryset.all()
         # REGRA 2: Se for da Recepção, mostra TODOS os atendimentos das contas vinculadas.
-        if is_in_group(user, 'Recepção'):
+        elif is_in_group(user, 'Recepção'):
             if hasattr(user, 'perfil'):
-                return Atendimento.objects.filter(conta__in=user.perfil.contas.all()).order_by('-data_criacao')
+                queryset = queryset.filter(conta__in=user.perfil.contas.all())
             else:
-                return Atendimento.objects.none() # Se não tem perfil, não vê nada.
-        # --- FIM DA CORREÇÃO ---
-
-        # REGRA 3: A regra para Membros e Secretárias continua a mesma
-        if hasattr(user, 'perfil'):
-            atendimentos_da_conta = Atendimento.objects.filter(conta__in=user.perfil.contas.all())
-            return atendimentos_da_conta.filter(
+                return Atendimento.objects.none()
+        # REGRA 3: A regra para Membros e Secretárias
+        elif hasattr(user, 'perfil'):
+            atendimentos_da_conta = queryset.filter(conta__in=user.perfil.contas.all())
+            queryset = atendimentos_da_conta.filter(
                 Q(responsavel=user) | Q(responsavel__isnull=True)
-            ).order_by('-data_criacao')
-        
-        # REGRA 4: Se nenhuma das anteriores se aplicar, não mostra nada.
-        return Atendimento.objects.none()
+            )
+        else:
+            # REGRA 4: Se nenhuma das anteriores se aplicar, não mostra nada.
+            return Atendimento.objects.none()
+
+        # Aplicar filtro de busca textual (se fornecido)
+        termo_busca = self.request.query_params.get('q', None)
+        if termo_busca:
+            queryset = queryset.filter(
+                Q(protocolo__icontains=termo_busca) |
+                Q(titulo__icontains=termo_busca) |
+                Q(municipe__nome_completo__icontains=termo_busca) |
+                Q(municipe__nome_de_guerra__icontains=termo_busca)
+            )
+
+        # Aplicar filtro de status (se fornecido)
+        status = self.request.query_params.get('status', None)
+        if status:
+            queryset = queryset.filter(status=status)
+
+        # Aplicar filtro de conta (se fornecido)
+        conta_id = self.request.query_params.get('conta_id', None)
+        if conta_id:
+            queryset = queryset.filter(conta_id=conta_id)
+
+        return queryset.order_by('-data_criacao')
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
