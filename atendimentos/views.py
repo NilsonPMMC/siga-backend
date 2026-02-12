@@ -2158,10 +2158,14 @@ class GerarPdfCheckinsView(APIView):
         conta_id = request.query_params.get('conta_id', None)
         conta_contexto = None
         
+        # Aplicar filtro de conta no queryset
         if conta_id:
+            queryset = queryset.filter(conta_destino_id=conta_id)
             conta_contexto = Conta.objects.filter(id=conta_id).first()
         elif not request.user.is_superuser and hasattr(request.user, 'perfil'):
             conta_contexto = request.user.perfil.contas.first()
+            if conta_contexto:
+                queryset = queryset.filter(conta_destino__in=request.user.perfil.contas.all())
         
         # Prepara as informações de personalização
         nome_instituicao = "Prefeitura Municipal" # Valor padrão
@@ -2187,6 +2191,35 @@ class GerarPdfCheckinsView(APIView):
             else:
                 logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
+        # Calcular quantitativos
+        # 1. Munícipe mais presente (só se tiver registro)
+        municipe_mais_presente = None
+        if queryset.exists():
+            municipe_counts = queryset.values('municipe').annotate(
+                total=Count('id')
+            ).order_by('-total').first()
+            if municipe_counts:
+                try:
+                    municipe_mais_presente_obj = Municipe.objects.get(id=municipe_counts['municipe'])
+                    municipe_mais_presente = {
+                        'nome': municipe_mais_presente_obj.nome_completo,
+                        'total': municipe_counts['total']
+                    }
+                except Municipe.DoesNotExist:
+                    pass
+        
+        # 2. Quantidade de checkins por conta
+        checkins_por_conta = queryset.values('conta_destino__nome').annotate(
+            total=Count('id')
+        ).order_by('-total')
+        
+        # 3. Dias com mais volumes (top 5 dias)
+        dias_com_mais_volumes = queryset.annotate(
+            dia=TruncDay('data_checkin')
+        ).values('dia').annotate(
+            total=Count('id')
+        ).order_by('-total')[:5]
+        
         # Prepara o contexto para o template
         context = {
             'visitas': queryset,
@@ -2194,6 +2227,9 @@ class GerarPdfCheckinsView(APIView):
             'brasao_path': brasao_path,
             'logo_conta_path': logo_conta_path,
             'logo_siga_path': logo_siga_path,
+            'municipe_mais_presente': municipe_mais_presente,
+            'checkins_por_conta': checkins_por_conta,
+            'dias_com_mais_volumes': dias_com_mais_volumes,
         }
 
         # Renderiza o HTML e converte para PDF

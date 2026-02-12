@@ -26,6 +26,76 @@
         th { background-color: #f2f2f2; }
         .footer { position: absolute; bottom: 0; margin-top: 20px; }
         .footer-logo { height: 20px; }
+        .quantitativos {
+            margin-bottom: 25px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+        }
+        .quantitativos h2 {
+            font-size: 12pt;
+            margin-bottom: 15px;
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }
+        .quantitativos-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-bottom: 15px;
+        }
+        .quantitativo-item {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            background-color: white;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
+        }
+        .quantitativo-label {
+            font-size: 8pt;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+        .quantitativo-value {
+            font-size: 18pt;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .quantitativo-subvalue {
+            font-size: 9pt;
+            color: #888;
+            margin-top: 3px;
+        }
+        .checkins-por-conta-list {
+            margin-top: 10px;
+        }
+        .checkins-por-conta-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px dashed #ddd;
+            font-size: 9pt;
+        }
+        .checkins-por-conta-item:last-child {
+            border-bottom: none;
+        }
+        .dias-volumes-list {
+            margin-top: 10px;
+        }
+        .dias-volumes-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px dashed #ddd;
+            font-size: 9pt;
+        }
+        .dias-volumes-item:last-child {
+            border-bottom: none;
+        }
     </style>
 </head>
 <body>
@@ -43,6 +113,53 @@
     </div>
 
     <h1>Relatório de Check-ins (Visitas)</h1>
+
+    <div class="quantitativos">
+        <h2>Quantitativos</h2>
+        <div class="quantitativos-grid">
+            {% if municipe_mais_presente %}
+            <div class="quantitativo-item">
+                <div class="quantitativo-label">Munícipe Mais Presente</div>
+                <div class="quantitativo-value">{{ municipe_mais_presente.nome|truncatewords:4 }}</div>
+                <div class="quantitativo-subvalue">{{ municipe_mais_presente.total }} visita{{ municipe_mais_presente.total|pluralize }}</div>
+            </div>
+            {% endif %}
+            
+            <div class="quantitativo-item">
+                <div class="quantitativo-label">Total de Check-ins</div>
+                <div class="quantitativo-value">{{ visitas|length }}</div>
+                <div class="quantitativo-subvalue">no período</div>
+            </div>
+        </div>
+
+        {% if checkins_por_conta %}
+        <div style="margin-top: 15px;">
+            <div class="quantitativo-label" style="margin-bottom: 8px;">Check-ins por Gabinete:</div>
+            <div class="checkins-por-conta-list">
+                {% for item in checkins_por_conta %}
+                <div class="checkins-por-conta-item">
+                    <span><strong>{{ item.conta_destino__nome }}</strong></span>
+                    <span>{{ item.total }} visita{{ item.total|pluralize }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if dias_com_mais_volumes %}
+        <div style="margin-top: 15px;">
+            <div class="quantitativo-label" style="margin-bottom: 8px;">Dias com Mais Volumes:</div>
+            <div class="dias-volumes-list">
+                {% for item in dias_com_mais_volumes %}
+                <div class="dias-volumes-item">
+                    <span><strong>{{ item.dia|date:"d/m/Y" }}</strong></span>
+                    <span>{{ item.total }} visita{{ item.total|pluralize }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
 
     <table>
         <thead>
