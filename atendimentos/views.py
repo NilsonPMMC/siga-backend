@@ -58,6 +58,9 @@ from rest_framework.decorators import action
 # Imports locais (do seu projeto)
 from .utils import enviar_email_com_cid
 from oficios.models import Oficio
+
+# Configurar logger
+logger = logging.getLogger(__name__)
 from .models import *
 from .permissions import (CanAccessContacts, CanAccessObjectByConta, CanViewSharedAgenda, CanAccessEspaco,
                           CanInteractWithAtendimento, CanManageAgendas, CanCreateGoogleEvent, CanManageReservas,
