@@ -1851,10 +1851,16 @@ class GerarPdfMunicipesReportView(APIView):
             telefone_principal = ''
             if municipe.telefones and isinstance(municipe.telefones, list) and len(municipe.telefones) > 0:
                 telefone_principal = municipe.telefones[0].get('numero', '')
+            
+            email_principal = ''
+            if municipe.emails and isinstance(municipe.emails, list) and len(municipe.emails) > 0:
+                # Pega o primeiro email da lista como principal
+                email_principal = municipe.emails[0].get('email', '') if isinstance(municipe.emails[0], dict) else str(municipe.emails[0])
 
             municipes_data.append({
                 'nome': municipe.nome_completo,
                 'telefone': telefone_principal,
+                'email': email_principal,
                 'cargo': municipe.cargo,
                 'orgao': municipe.orgao,
                 'categoria': municipe.categoria.nome if municipe.categoria else '', # Adicionei categoria no PDF tbm, útil
