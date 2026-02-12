@@ -1473,9 +1473,19 @@ class GerarPdfGoogleAgendaView(APIView):
             # Garante que o end_date pegue o dia todo (23:59:59)
             end_date = parse_datetime(end_date_str).replace(hour=23, minute=59, second=59)
             
+            # --- CORREÇÃO: AJUSTAR INÍCIO PARA SEMPRE COMEÇAR NA SEGUNDA-FEIRA ---
+            # Isso garante que o calendário sempre comece na coluna correta
+            # IMPORTANTE: Mantemos start_date_original para buscar eventos do Google
+            start_date_original = start_date.date()
+            # weekday() retorna: 0=Segunda, 1=Terça, 2=Quarta, 3=Quinta, 4=Sexta, 5=Sábado, 6=Domingo
+            dias_para_voltar = start_date_original.weekday()
+            # Ajusta o início para a segunda-feira da semana que contém a data inicial (apenas para visualização)
+            start_date_ajustado = start_date_original - timedelta(days=dias_para_voltar)
+            
+            # Busca eventos usando a data ORIGINAL (não a ajustada)
             events_result = service.events().list(
                 calendarId='primary', 
-                timeMin=start_date.isoformat() + "Z", # Adicione "Z" para UTC
+                timeMin=start_date.isoformat() + "Z", # Usa data original para buscar eventos
                 timeMax=end_date.isoformat() + "Z",   # Adicione "Z" para UTC
                 singleEvents=True,
                 orderBy='startTime'
@@ -1539,10 +1549,15 @@ class GerarPdfGoogleAgendaView(APIView):
             # Se você já tem a lógica do loop de calendário complexo, MANTENHA A SUA.
             # Vou colocar uma versão segura baseada no que você mandou:
             
-            data_corrente = start_date.date()
+            # Usa a data ajustada (sempre segunda-feira) para construir o calendário VISUAL
+            # Mas filtra eventos usando a data ORIGINAL
+            data_corrente = start_date_ajustado  # Começa na segunda-feira para alinhar colunas
             data_final_loop = end_date.date()
+            # Ajusta o fim também para terminar no domingo da semana que contém a data final
+            dias_para_avancar = 6 - data_final_loop.weekday()  # Dias até domingo
+            data_final_loop_ajustada = data_final_loop + timedelta(days=dias_para_avancar)
 
-            while data_corrente <= data_final_loop:
+            while data_corrente <= data_final_loop_ajustada:
                 mes_ano_atual = (data_corrente.year, data_corrente.month)
                 cal = calendar.Calendar()
                 semanas_do_mes = cal.monthdatescalendar(data_corrente.year, data_corrente.month)
@@ -1550,12 +1565,13 @@ class GerarPdfGoogleAgendaView(APIView):
                 for semana in semanas_do_mes:
                     dias_da_semana_com_eventos = []
                     for dia in semana:
-                        # Só adiciona se estiver dentro do range pedido
-                        if start_date.date() <= dia <= end_date.date():
+                        # Só adiciona se estiver dentro do range pedido (usa data original)
+                        if start_date_original <= dia <= end_date.date():
                              dias_da_semana_com_eventos.append({
                                 'data': dia,
                                 'eventos': eventos_por_dia.get(dia, [])
                             })
+                    # Só adiciona a semana se tiver pelo menos um dia dentro do range
                     if dias_da_semana_com_eventos:
                         semanas_com_eventos.append(dias_da_semana_com_eventos)
                 
