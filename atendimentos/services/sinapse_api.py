@@ -41,8 +41,10 @@ def buscar_estrutura_organizacional() -> List[Dict]:
         SinapseAPIError: Se houver erro na comunicação com a API
     """
     if not SINAPSE_API_TOKEN:
-        logger.warning("SINAPSE_API_TOKEN não configurada. Retornando lista vazia.")
+        logger.warning("SINAPSE_API_TOKEN não configurada. Verifique o arquivo .env")
         raise SinapseAPIError("SINAPSE_API_TOKEN não configurada no .env")
+    
+    logger.info(f"Iniciando busca na API Sinapse - Base URL: {SINAPSE_API_BASE_URL}")
     
     # Lista de endpoints possíveis para tentar
     endpoints_possiveis = [

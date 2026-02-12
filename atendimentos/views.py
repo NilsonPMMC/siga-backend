@@ -989,8 +989,10 @@ class BuscarSecretariasSinapseView(generics.GenericAPIView):
                 # Continua para tentar buscar da API
         
         # Se não tem cache ou tabela não existe, tenta buscar da API
+        logger.info("Iniciando busca de secretarias da API Sinapse...")
         try:
             estrutura = buscar_estrutura_organizacional()
+            logger.info(f"API Sinapse retornou {len(estrutura) if estrutura else 0} itens")
             
             # Normaliza resposta da API
             if estrutura:
