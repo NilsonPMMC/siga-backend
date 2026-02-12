@@ -18,7 +18,7 @@ from datetime import datetime
 from .models import (
     Conta, Municipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
     SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato,
-    Espaco, RegistroVisita, Lembrete, TramitacaoAgenda
+    Espaco, RegistroVisita, Lembrete, TramitacaoAgenda, SinapseSecretaria
 )
 
 def enviar_email_de_acesso(modeladmin, request, queryset):
@@ -252,7 +252,22 @@ class AtendimentoAdmin(admin.ModelAdmin):
     
 @admin.register(Tramitacao)
 class TramitacaoAdmin(admin.ModelAdmin):
-    list_display = ('atendimento', 'usuario', 'data_tramitacao')
+    list_display = ('atendimento', 'usuario', 'data_tramitacao', 'status_anterior', 'status_novo', 'alterou_status')
+    list_filter = ('alterou_status', 'status_novo', 'data_tramitacao')
+    search_fields = ('atendimento__protocolo', 'atendimento__titulo', 'despacho', 'usuario__username')
+    readonly_fields = ('data_tramitacao',)
+    fieldsets = (
+        ('Informações Básicas', {
+            'fields': ('atendimento', 'usuario', 'data_tramitacao', 'despacho')
+        }),
+        ('Mudança de Status', {
+            'fields': ('alterou_status', 'status_anterior', 'status_novo')
+        }),
+        ('Encaminhamento', {
+            'fields': ('encaminhado_para_sinapse_id', 'encaminhado_para_nome', 'encaminhado_para_tipo'),
+            'classes': ('collapse',)
+        }),
+    )
 
 @admin.register(LogDeAtividade)
 class LogDeAtividadeAdmin(admin.ModelAdmin):
@@ -262,6 +277,13 @@ class LogDeAtividadeAdmin(admin.ModelAdmin):
 
 admin.site.register(Anexo)
 admin.site.register(CategoriaAtendimento)
+
+@admin.register(SinapseSecretaria)
+class SinapseSecretariaAdmin(admin.ModelAdmin):
+    list_display = ('nome', 'sigla', 'tipo', 'ativo', 'data_atualizacao')
+    list_filter = ('ativo', 'tipo', 'data_atualizacao')
+    search_fields = ('nome', 'sigla', 'sinapse_id')
+    readonly_fields = ('data_atualizacao',)
 
 @admin.register(CategoriaContato)
 class CategoriaContatoAdmin(admin.ModelAdmin):

@@ -44,7 +44,7 @@ from itertools import chain
 
 # Imports do Django REST Framework
 from rest_framework import generics, permissions, status, viewsets
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -810,6 +810,199 @@ class TramitacaoDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Tramitacao.objects.all()
     serializer_class = TramitacaoSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+class AlterarStatusAtendimentoView(generics.GenericAPIView):
+    """
+    Endpoint específico para alterar status do atendimento via tramitação.
+    Requer despacho obrigatório e dados de encaminhamento (se status=ENCAMINHADO).
+    
+    Payload esperado:
+    {
+        "status_novo": "ENCAMINHADO",
+        "despacho": "Encaminhado para Secretaria de Educação...",
+        "encaminhado_para_sinapse_id": 123,  # Obrigatório se status=ENCAMINHADO
+        "encaminhado_para_nome": "Secretaria de Educação",  # Opcional
+        "encaminhado_para_tipo": "Secretaria",  # Opcional
+        "notificar_municipe": true  # Opcional
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request, pk):
+        from .models import Atendimento, Tramitacao
+        from .validators import validar_transicao_status, validar_encaminhamento
+        from .permissions import CanInteractWithAtendimento
+        from .utils import enviar_email_com_cid
+        
+        atendimento = get_object_or_404(Atendimento, pk=pk)
+        
+        # Valida permissão
+        permission_check = CanInteractWithAtendimento()
+        if not permission_check.has_object_permission(request, self, atendimento):
+            return Response(
+                {'detail': 'Você não tem permissão para alterar este atendimento.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Valida dados obrigatórios
+        status_novo = request.data.get('status_novo')
+        despacho = request.data.get('despacho')
+        
+        if not status_novo:
+            return Response(
+                {'detail': 'Campo "status_novo" é obrigatório.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not despacho or not despacho.strip():
+            return Response(
+                {'detail': 'Campo "despacho" é obrigatório para alterar o status.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Valida transição de status
+        try:
+            validar_transicao_status(atendimento.status, status_novo)
+        except ValidationError as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Valida encaminhamento se necessário
+        dados_encaminhamento = {
+            'encaminhado_para_sinapse_id': request.data.get('encaminhado_para_sinapse_id'),
+            'encaminhado_para_nome': request.data.get('encaminhado_para_nome'),
+            'encaminhado_para_tipo': request.data.get('encaminhado_para_tipo'),
+        }
+        
+        try:
+            validar_encaminhamento(status_novo, dados_encaminhamento)
+        except ValidationError as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Cria tramitação com mudança de status
+        try:
+            with transaction.atomic():
+                tramitacao = Tramitacao.objects.create(
+                    atendimento=atendimento,
+                    despacho=despacho.upper(),
+                    usuario=request.user,
+                    status_anterior=atendimento.status,
+                    status_novo=status_novo,
+                    alterou_status=True,
+                    encaminhado_para_sinapse_id=dados_encaminhamento.get('encaminhado_para_sinapse_id'),
+                    encaminhado_para_nome=dados_encaminhamento.get('encaminhado_para_nome'),
+                    encaminhado_para_tipo=dados_encaminhamento.get('encaminhado_para_tipo'),
+                )
+                
+                # Atualiza status do atendimento
+                atendimento.status = status_novo
+                atendimento.save()
+                
+                # Notifica munícipe se solicitado
+                notificar_raw = request.data.get('notificar_municipe', False)
+                notificar = str(notificar_raw).lower() == 'true' if isinstance(notificar_raw, str) else bool(notificar_raw)
+                
+                if notificar and atendimento.municipe and atendimento.municipe.emails:
+                    municipe_email_principal = atendimento.municipe.emails[0].get('email')
+                    if municipe_email_principal:
+                        contexto = {
+                            'nome_municipe': atendimento.municipe.nome_completo,
+                            'protocolo': atendimento.protocolo,
+                            'titulo': atendimento.titulo,
+                            'despacho': tramitacao.despacho,
+                            'status_novo': atendimento.get_status_display(),
+                        }
+                        
+                        enviar_email_com_cid(
+                            assunto=f"Atualização do seu Atendimento - Protocolo: {atendimento.protocolo}",
+                            destinatarios=[municipe_email_principal],
+                            template='emails/notificacao_tramitacao.html',
+                            contexto=contexto,
+                            conta=atendimento.conta
+                        )
+                
+                serializer = TramitacaoSerializer(tramitacao)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+                
+        except Exception as e:
+            logger.error(f"Erro ao alterar status do atendimento {pk}: {str(e)}")
+            return Response(
+                {'detail': f'Erro ao alterar status: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class BuscarSecretariasSinapseView(generics.GenericAPIView):
+    """
+    Endpoint para buscar secretarias/órgãos da API Sinapse.
+    Usado no frontend para preencher dropdown de encaminhamento.
+    
+    Retorna lista de secretarias ativas da API Sinapse ou do cache local.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        from .models import SinapseSecretaria
+        from .services.sinapse_api import buscar_estrutura_organizacional, SinapseAPIError
+        
+        # Tenta buscar do cache local primeiro
+        secretarias_cache = SinapseSecretaria.objects.filter(ativo=True).order_by('nome')
+        
+        if secretarias_cache.exists():
+            # Retorna do cache
+            data = [
+                {
+                    'id': s.sinapse_id,
+                    'nome': s.nome,
+                    'sigla': s.sigla or '',
+                    'tipo': s.tipo,
+                    'hierarquia': s.hierarquia,
+                }
+                for s in secretarias_cache
+            ]
+            return Response(data, status=status.HTTP_200_OK)
+        
+        # Se não tem cache, tenta buscar da API
+        try:
+            estrutura = buscar_estrutura_organizacional()
+            
+            # Normaliza resposta da API
+            if estrutura:
+                data = []
+                for item in estrutura:
+                    # Normaliza campos conforme estrutura real da API
+                    # Ajustar conforme documentação do Swagger
+                    data.append({
+                        'id': item.get('id') or item.get('sinapse_id'),
+                        'nome': item.get('nome') or item.get('name'),
+                        'sigla': item.get('sigla') or item.get('acronym', ''),
+                        'tipo': item.get('tipo') or item.get('type', 'Secretaria'),
+                        'hierarquia': item.get('hierarquia') or item.get('hierarchy'),
+                    })
+                
+                return Response(data, status=status.HTTP_200_OK)
+            else:
+                return Response([], status=status.HTTP_200_OK)
+                
+        except SinapseAPIError as e:
+            logger.warning(f"Erro ao buscar secretarias da API Sinapse: {str(e)}")
+            # Retorna lista vazia se API não estiver disponível
+            return Response(
+                {'detail': f'Não foi possível buscar secretarias da API Sinapse: {str(e)}'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar secretarias: {str(e)}")
+            return Response(
+                {'detail': f'Erro inesperado: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class AnexoListCreateView(generics.ListCreateAPIView):

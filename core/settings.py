@@ -316,6 +316,11 @@ if not GEMINI_API_KEY:
         UserWarning
     )
 
+# --- CONFIGURAÇÕES DA API SINAPSE ---
+SINAPSE_API_BASE_URL = config('SINAPSE_API_BASE_URL', default='https://api.mogidascruzes.sp.gov.br/api')
+SINAPSE_API_TOKEN = config('SINAPSE_API_TOKEN', default='')
+SINAPSE_API_TIMEOUT = config('SINAPSE_API_TIMEOUT', default=10, cast=int)
+
 # ============================================
 # CONFIGURAÇÕES DE SEGURANÇA
 # ============================================

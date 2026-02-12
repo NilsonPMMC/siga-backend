@@ -203,8 +203,55 @@ class Tramitacao(UppercaseFieldsMixin, models.Model):
     despacho = models.TextField(verbose_name="Despacho / Nota de Progresso")
     usuario = models.ForeignKey(User, on_delete=models.PROTECT, verbose_name="Usuário Responsável")
     data_tramitacao = models.DateTimeField(auto_now_add=True, verbose_name="Data")
-    class Meta: verbose_name = "Tramitação"; verbose_name_plural = "Tramitações"; ordering = ['-data_tramitacao']
-    def __str__(self): return f"Tramitação em {self.data_tramitacao.strftime('%d/%m/%Y %H:%M')} por {self.usuario.username}"
+    
+    # Campos para rastreamento de mudança de status
+    status_anterior = models.CharField(
+        max_length=20, 
+        choices=Atendimento.STATUS_CHOICES, 
+        null=True, 
+        blank=True,
+        verbose_name="Status Anterior"
+    )
+    status_novo = models.CharField(
+        max_length=20, 
+        choices=Atendimento.STATUS_CHOICES, 
+        null=True, 
+        blank=True,
+        verbose_name="Status Novo"
+    )
+    alterou_status = models.BooleanField(
+        default=False, 
+        verbose_name="Esta tramitação alterou o status?"
+    )
+    
+    # Campos para encaminhamento (quando status = ENCAMINHADO)
+    encaminhado_para_sinapse_id = models.IntegerField(
+        null=True, 
+        blank=True, 
+        verbose_name="ID Sinapse (Secretaria/Órgão)"
+    )
+    encaminhado_para_nome = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True, 
+        verbose_name="Nome do Destino (Sinapse)"
+    )
+    encaminhado_para_tipo = models.CharField(
+        max_length=50, 
+        null=True, 
+        blank=True, 
+        verbose_name="Tipo (Secretaria/Setor/etc)"
+    )
+    
+    class Meta: 
+        verbose_name = "Tramitação"
+        verbose_name_plural = "Tramitações"
+        ordering = ['-data_tramitacao']
+    
+    def __str__(self): 
+        if self.alterou_status and self.status_novo:
+            return f"Tramitação em {self.data_tramitacao.strftime('%d/%m/%Y %H:%M')} por {self.usuario.username} - Status: {self.get_status_novo_display()}"
+        return f"Tramitação em {self.data_tramitacao.strftime('%d/%m/%Y %H:%M')} por {self.usuario.username}"
 
 class Anexo(models.Model):
     atendimento = models.ForeignKey(Atendimento, on_delete=models.CASCADE, related_name='anexos', verbose_name="Atendimento")
@@ -523,3 +570,28 @@ class AgendaCompartilhamento(models.Model):
 
     def __str__(self):
         return f"{self.conta_alvo} -> {self.usuario} ({self.nivel})"
+
+class SinapseSecretaria(models.Model):
+    """
+    Cache local da estrutura organizacional da API Sinapse.
+    Atualizado periodicamente via comando de management.
+    """
+    sinapse_id = models.IntegerField(unique=True, verbose_name="ID Sinapse")
+    nome = models.CharField(max_length=255, verbose_name="Nome da Secretaria/Órgão")
+    sigla = models.CharField(max_length=50, blank=True, null=True, verbose_name="Sigla")
+    tipo = models.CharField(max_length=50, verbose_name="Tipo (Secretaria, Setor, etc)")
+    hierarquia = models.JSONField(
+        null=True, 
+        blank=True, 
+        help_text="Estrutura hierárquica completa da API Sinapse"
+    )
+    ativo = models.BooleanField(default=True, verbose_name="Está ativo?")
+    data_atualizacao = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")
+    
+    class Meta:
+        verbose_name = "Secretaria Sinapse"
+        verbose_name_plural = "Secretarias Sinapse"
+        ordering = ['nome']
+    
+    def __str__(self):
+        return f"{self.nome} ({self.sigla or 'Sem sigla'})"

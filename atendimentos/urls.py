@@ -8,12 +8,14 @@ from .views import (
     AgendaCompartilhamentoView,
     AdicionarEventoGoogleView,
     AgendasCompartilhadasListView,
+    AlterarStatusAtendimentoView,
     AnexoListCreateView,
     AniversariantesDoDiaView,
     AtendimentoDetailView,
     AtendimentoListCreateView,
     AtualizarCategoriaEmLoteView,
     BuscaGlobalView,
+    BuscarSecretariasSinapseView,
     CategoriaAtendimentoListView,
     CategoriaContatoListView,
     CategoriaContatoViewSet,
@@ -107,10 +109,14 @@ urlpatterns = [
     # --- Atendimentos e sub-recursos (tramitações, anexos) ---
     path('atendimentos/', AtendimentoListCreateView.as_view(), name='atendimento-list-create'),
     path('atendimentos/<int:pk>/', AtendimentoDetailView.as_view(), name='atendimento-detail'),
+    path('atendimentos/<int:pk>/alterar-status/', AlterarStatusAtendimentoView.as_view(), name='atendimento-alterar-status'),
     path('atendimentos/<int:pk>/pdf/', GerarPdfAtendimentoDetailView.as_view(), name='atendimento-detalhe-pdf'),
     path('atendimentos/<int:atendimento_pk>/tramitacoes/', TramitacaoListCreateView.as_view(), name='atendimento-tramitacao-list-create'),
     path('atendimentos/<int:atendimento_pk>/anexos/', AnexoListCreateView.as_view(), name='atendimento-anexos-list-create'),
     path('tramitacoes/<int:pk>/', TramitacaoDetailView.as_view(), name='tramitacao-detail'),
+    
+    # --- Integração Sinapse ---
+    path('sinapse/secretarias/', BuscarSecretariasSinapseView.as_view(), name='sinapse-secretarias'),
     path('checkins/', RegistroVisitaListCreateView.as_view(), name='registro-visita-list-create'),
     path('checkins/<int:pk>/', RegistroVisitaDetailView.as_view(), name='registro-visita-detail'),
 

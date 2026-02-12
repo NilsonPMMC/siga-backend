@@ -62,10 +62,18 @@ class CategoriaAtendimentoSerializer(serializers.ModelSerializer):
 class TramitacaoSerializer(serializers.ModelSerializer):
     # Campo para mostrar o nome do usuário em vez do ID
     usuario_nome = serializers.SerializerMethodField()
+    status_anterior_display = serializers.CharField(source='get_status_anterior_display', read_only=True)
+    status_novo_display = serializers.CharField(source='get_status_novo_display', read_only=True)
 
     class Meta:
         model = Tramitacao
-        fields = ['id', 'despacho', 'usuario', 'usuario_nome', 'data_tramitacao']
+        fields = [
+            'id', 'despacho', 'usuario', 'usuario_nome', 'data_tramitacao',
+            'status_anterior', 'status_anterior_display',
+            'status_novo', 'status_novo_display',
+            'alterou_status',
+            'encaminhado_para_sinapse_id', 'encaminhado_para_nome', 'encaminhado_para_tipo'
+        ]
         # O campo 'usuario' será preenchido automaticamente pela view
         read_only_fields = ['usuario', 'usuario_nome', 'data_tramitacao']
 
@@ -206,7 +214,8 @@ class AtendimentoSerializer(serializers.ModelSerializer):
             'responsavel', 'responsavel_obj', 'responsavel_nome', 'data_criacao',
             'data_atualizacao', 'tramitacoes', 'categorias', 'categorias_ids', 'anexos'
         ]
-        read_only_fields = ('protocolo', 'data_criacao', 'data_atualizacao')
+        # Status agora é read-only - deve ser alterado apenas via tramitação
+        read_only_fields = ('protocolo', 'status', 'data_criacao', 'data_atualizacao')
 
     def get_responsavel_nome(self, obj):
         # Retorna o nome completo se existir, senão o username
@@ -215,6 +224,9 @@ class AtendimentoSerializer(serializers.ModelSerializer):
         return None
 
     def update(self, instance, validated_data):
+        # Remove status se vier no validated_data (não pode ser alterado diretamente)
+        validated_data.pop('status', None)
+        
         categorias_data = validated_data.pop('categorias', None)
         instance = super().update(instance, validated_data)
         if categorias_data is not None:
