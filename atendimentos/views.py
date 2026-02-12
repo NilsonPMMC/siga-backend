@@ -948,27 +948,44 @@ class BuscarSecretariasSinapseView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def get(self, request):
-        from .models import SinapseSecretaria
+        from django.db import connection
         from .services.sinapse_api import buscar_estrutura_organizacional, SinapseAPIError
         
-        # Tenta buscar do cache local primeiro
-        secretarias_cache = SinapseSecretaria.objects.filter(ativo=True).order_by('nome')
+        # Verifica se a tabela SinapseSecretaria existe (migração foi executada)
+        tabela_existe = False
+        try:
+            from .models import SinapseSecretaria
+            # Tenta fazer uma query simples para verificar se a tabela existe
+            SinapseSecretaria.objects.exists()
+            tabela_existe = True
+        except Exception as e:
+            logger.debug(f"Tabela SinapseSecretaria não existe ou migração não executada: {str(e)}")
+            tabela_existe = False
         
-        if secretarias_cache.exists():
-            # Retorna do cache
-            data = [
-                {
-                    'id': s.sinapse_id,
-                    'nome': s.nome,
-                    'sigla': s.sigla or '',
-                    'tipo': s.tipo,
-                    'hierarquia': s.hierarquia,
-                }
-                for s in secretarias_cache
-            ]
-            return Response(data, status=status.HTTP_200_OK)
+        # Se a tabela existe, tenta buscar do cache local primeiro
+        if tabela_existe:
+            try:
+                from .models import SinapseSecretaria
+                secretarias_cache = SinapseSecretaria.objects.filter(ativo=True).order_by('nome')
+                
+                if secretarias_cache.exists():
+                    # Retorna do cache
+                    data = [
+                        {
+                            'id': s.sinapse_id,
+                            'nome': s.nome,
+                            'sigla': s.sigla or '',
+                            'tipo': s.tipo,
+                            'hierarquia': s.hierarquia,
+                        }
+                        for s in secretarias_cache
+                    ]
+                    return Response(data, status=status.HTTP_200_OK)
+            except Exception as e:
+                logger.warning(f"Erro ao buscar cache local de secretarias: {str(e)}")
+                # Continua para tentar buscar da API
         
-        # Se não tem cache, tenta buscar da API
+        # Se não tem cache ou tabela não existe, tenta buscar da API
         try:
             estrutura = buscar_estrutura_organizacional()
             
@@ -988,19 +1005,19 @@ class BuscarSecretariasSinapseView(generics.GenericAPIView):
                 
                 return Response(data, status=status.HTTP_200_OK)
             else:
+                # Retorna lista vazia se API não retornar dados
                 return Response([], status=status.HTTP_200_OK)
                 
         except SinapseAPIError as e:
             logger.warning(f"Erro ao buscar secretarias da API Sinapse: {str(e)}")
-            # Retorna lista vazia se API não estiver disponível
-            return Response(
-                {'detail': f'Não foi possível buscar secretarias da API Sinapse: {str(e)}'},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
+            # Retorna lista vazia se API não estiver disponível (melhor UX)
+            return Response([], status=status.HTTP_200_OK)
         except Exception as e:
-            logger.error(f"Erro inesperado ao buscar secretarias: {str(e)}")
+            logger.error(f"Erro inesperado ao buscar secretarias: {str(e)}", exc_info=True)
+            # Retorna erro detalhado em desenvolvimento, lista vazia em produção
+            error_detail = str(e) if settings.DEBUG else 'Erro ao buscar secretarias'
             return Response(
-                {'detail': f'Erro inesperado: {str(e)}'},
+                {'detail': error_detail, 'error_type': type(e).__name__},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
