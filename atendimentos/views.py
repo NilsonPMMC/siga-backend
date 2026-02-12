@@ -1543,54 +1543,64 @@ class GerarPdfGoogleAgendaView(APIView):
             # Como você pediu para manter a estrutura, estou assumindo que a lógica de 
             # while data_corrente <= data_final_loop, etc, continua aqui.
             
-            # Recriando o trecho final essencial para funcionar:
+            # --- CONSTRUÇÃO MANUAL DE SEMANAS COMECANDO NA SEGUNDA-FEIRA CORRETA ---
             meses_do_relatorio = []
-            # (Lógica simplificada de loop para não quebrar se você copiar e colar)
-            # Se você já tem a lógica do loop de calendário complexo, MANTENHA A SUA.
-            # Vou colocar uma versão segura baseada no que você mandou:
             
-            # Usa a data ajustada (sempre segunda-feira) para construir o calendário VISUAL
-            # Mas filtra eventos usando a data ORIGINAL
-            data_corrente = start_date_ajustado  # Começa na segunda-feira para alinhar colunas
-            data_final_loop = end_date.date()
-            # Ajusta o fim também para terminar no domingo da semana que contém a data final
-            dias_para_avancar = 6 - data_final_loop.weekday()  # Dias até domingo
-            data_final_loop_ajustada = data_final_loop + timedelta(days=dias_para_avancar)
-
-            while data_corrente <= data_final_loop_ajustada:
-                mes_ano_atual = (data_corrente.year, data_corrente.month)
-                cal = calendar.Calendar()
-                semanas_do_mes = cal.monthdatescalendar(data_corrente.year, data_corrente.month)
-                semanas_com_eventos = []
-                for semana in semanas_do_mes:
-                    dias_da_semana_com_eventos = []
-                    for dia in semana:
-                        # Só adiciona se estiver dentro do range pedido (usa data original)
-                        if start_date_original <= dia <= end_date.date():
-                             dias_da_semana_com_eventos.append({
-                                'data': dia,
-                                'eventos': eventos_por_dia.get(dia, [])
-                            })
-                    # Só adiciona a semana se tiver pelo menos um dia dentro do range
-                    if dias_da_semana_com_eventos:
-                        semanas_com_eventos.append(dias_da_semana_com_eventos)
+            # Calcula segunda-feira da semana que contém a data inicial
+            start_date_original = start_date.date()
+            dias_para_voltar = start_date_original.weekday()  # 0=Seg, 1=Ter, ..., 6=Dom
+            segunda_feira_inicio = start_date_original - timedelta(days=dias_para_voltar)
+            
+            # Calcula domingo da semana que contém a data final
+            end_date_final = end_date.date()
+            dias_para_avancar = 6 - end_date_final.weekday()  # Dias até domingo
+            domingo_fim = end_date_final + timedelta(days=dias_para_avancar)
+            
+            # Constrói semanas manualmente começando da segunda-feira correta
+            data_atual = segunda_feira_inicio
+            semanas_agrupadas_por_mes = defaultdict(list)
+            
+            while data_atual <= domingo_fim:
+                # Determina qual mês/ano estamos
+                mes_ano = (data_atual.year, data_atual.month)
                 
-                nomes_dos_meses = [
-                    'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-                    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
-                ]
-                nome_mes_pt = nomes_dos_meses[data_corrente.month - 1]
-
+                # Constrói uma semana (segunda a domingo)
+                semana = []
+                for i in range(7):  # 7 dias da semana
+                    dia_semana = data_atual + timedelta(days=i)
+                    # Sempre adiciona o dia, mas só mostra eventos se estiver no período selecionado
+                    if start_date_original <= dia_semana <= end_date_final:
+                        # Dia dentro do período: mostra eventos
+                        semana.append({
+                            'data': dia_semana,
+                            'eventos': eventos_por_dia.get(dia_semana, [])
+                        })
+                    else:
+                        # Dia fora do período: aparece vazio (mas mantém estrutura da semana)
+                        semana.append({
+                            'data': dia_semana,
+                            'eventos': []
+                        })
+                
+                # Adiciona semana ao mês correspondente
+                semanas_agrupadas_por_mes[mes_ano].append(semana)
+                
+                # Avança para a próxima semana (segunda-feira)
+                data_atual += timedelta(days=7)
+            
+            # Organiza por mês para o template
+            nomes_dos_meses = [
+                'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+            ]
+            
+            for (ano, mes), semanas in sorted(semanas_agrupadas_por_mes.items()):
+                nome_mes_pt = nomes_dos_meses[mes - 1]
                 meses_do_relatorio.append({
-                    'nome_mes': f"{nome_mes_pt} de {data_corrente.year}",
-                    'mes_numero': data_corrente.month,
-                    'semanas': semanas_com_eventos
+                    'nome_mes': f"{nome_mes_pt} de {ano}",
+                    'mes_numero': mes,
+                    'semanas': semanas
                 })
-                
-                # Avança mês
-                proximo_mes = (data_corrente.replace(day=28) + timedelta(days=4)).replace(day=1)
-                if (proximo_mes.year, proximo_mes.month) == mes_ano_atual: break
-                data_corrente = proximo_mes
 
             logo_path = os.path.join(settings.BASE_DIR, 'static', 'images', 'logo-brasao-prefeitura.png')
             logo_data = ""
