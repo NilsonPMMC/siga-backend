@@ -1013,16 +1013,30 @@ class BuscarSecretariasSinapseView(generics.GenericAPIView):
                 
         except SinapseAPIError as e:
             logger.warning(f"Erro ao buscar secretarias da API Sinapse: {str(e)}")
-            # Retorna lista vazia se API não estiver disponível (melhor UX)
+            # Em DEBUG, retorna erro detalhado. Em produção, retorna lista vazia
+            if settings.DEBUG:
+                return Response(
+                    {
+                        'detail': str(e),
+                        'error_type': 'SinapseAPIError',
+                        'message': 'Verifique se SINAPSE_API_TOKEN está configurado no .env e se o endpoint está correto'
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
             return Response([], status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"Erro inesperado ao buscar secretarias: {str(e)}", exc_info=True)
             # Retorna erro detalhado em desenvolvimento, lista vazia em produção
-            error_detail = str(e) if settings.DEBUG else 'Erro ao buscar secretarias'
-            return Response(
-                {'detail': error_detail, 'error_type': type(e).__name__},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            if settings.DEBUG:
+                return Response(
+                    {
+                        'detail': str(e),
+                        'error_type': type(e).__name__,
+                        'traceback': traceback.format_exc() if settings.DEBUG else None
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            return Response([], status=status.HTTP_200_OK)
 
 
 class AnexoListCreateView(generics.ListCreateAPIView):
