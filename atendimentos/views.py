@@ -1351,25 +1351,47 @@ class GerarPdfAtendimentoDetailView(APIView):
             conta_contexto = atendimento.conta
             
             nome_instituicao = "Prefeitura Municipal" # Valor padrão
-            brasao_url = ''
-            logo_conta_url = ''
+            brasao_path = None
+            logo_conta_path = None
+            logo_siga_path = None
 
             if conta_contexto:
                 nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
                 if conta_contexto.brasao_instituicao:
-                    brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+                    # Converte caminho para formato file:// compatível com weasyprint
+                    brasao_path = os.path.abspath(conta_contexto.brasao_instituicao.path).replace('\\', '/')
                 if conta_contexto.logo_conta:
-                    logo_conta_url = request.build_absolute_uri(conta_contexto.logo_conta.url)
+                    logo_conta_path = os.path.abspath(conta_contexto.logo_conta.path).replace('\\', '/')
+            
+            # Tenta encontrar o logo do SIGA no sistema de arquivos
+            logo_siga_static = settings.STATIC_ROOT / 'images' / 'logo-siga-gab.png'
+            if logo_siga_static.exists():
+                logo_siga_path = os.path.abspath(str(logo_siga_static)).replace('\\', '/')
+            else:
+                # Tenta também em staticfiles/images
+                logo_siga_alt = settings.BASE_DIR / 'staticfiles' / 'images' / 'logo-siga-gab.png'
+                if logo_siga_alt.exists():
+                    logo_siga_path = os.path.abspath(str(logo_siga_alt)).replace('\\', '/')
+                else:
+                    # Fallback para URL se não encontrar no sistema de arquivos
+                    logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
 
+            # Prepara caminho da fonte para o template
+            font_path = settings.BASE_DIR / 'static' / 'fonts' / 'timr45w.ttf'
+            if not font_path.exists():
+                font_path = settings.BASE_DIR / 'staticfiles' / 'fonts' / 'timr45w.ttf'
+            
             context = {
                 'atendimento': atendimento,
                 'nome_instituicao': nome_instituicao,
-                'brasao_url': brasao_url,
-                'logo_conta_url': logo_conta_url,
-                'logo_siga_url': request.build_absolute_uri('/static/images/logo-siga-gab.png'),
+                'brasao_path': brasao_path,
+                'logo_conta_path': logo_conta_path,
+                'logo_siga_path': logo_siga_path,
+                'BASE_DIR': str(settings.BASE_DIR).replace('\\', '/'),
             }
             html_string = render_to_string('atendimentos/relatorio_atendimento_detalhe.html', context)
-            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            # Usa BASE_DIR como base_url para permitir acesso a arquivos locais
+            pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
 
             response = HttpResponse(pdf_file, content_type='application/pdf')
             response['Content-Disposition'] = f'attachment; filename="atendimento_{atendimento.protocolo}.pdf"'

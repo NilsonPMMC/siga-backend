@@ -4,15 +4,19 @@
     <meta charset="UTF-8">
     <title>Ficha de Atendimento - {{ atendimento.protocolo }}</title>
     <style>
+        @font-face {
+            font-family: 'TimesRoman';
+            src: url('file://{{ BASE_DIR }}/static/fonts/timr45w.ttf') format('truetype');
+        }
         @page {
             size: A4 portrait;
             margin: 1cm;
             @bottom-center {
                 content: "Página " counter(page) " de " counter(pages);
-                font-family: 'Helvetica', 'Arial', sans-serif; font-size: 9pt; color: #888;
+                font-family: 'TimesRoman', 'Times New Roman', serif; font-size: 9pt; color: #888;
             }
         }
-        body { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 11pt; color: #333; }
+        body { font-family: 'TimesRoman', 'Times New Roman', serif; font-size: 11pt; color: #333; line-height: 1.4; }
         .header { text-align: center; margin-bottom: 20px; display: flex; justify-content: space-between; }
         .header-container { text-align: center; margin-bottom: 30px; border-bottom: 1px solid #ccc; padding-bottom: 15px; }
         .logo { height: 40px; }
@@ -36,12 +40,43 @@
         }
         .info-grid p { margin: 0 0 8px 0; }
         .timeline-item {
-            margin-bottom: 15px;
-            padding-left: 15px;
-            border-left: 3px solid #e0e0e0;
+            margin-bottom: 20px;
+            padding: 12px;
+            padding-left: 20px;
+            border-left: 4px solid #3498db;
+            background-color: #f8f9fa;
+            border-radius: 4px;
         }
-        .timeline-item p { margin: 0 0 5px 0; }
-        .timeline-item small { color: #555; font-style: italic; }
+        .timeline-item.status-change {
+            border-left-color: #2ecc71;
+            background-color: #e8f5e9;
+        }
+        .timeline-item p { margin: 0 0 8px 0; line-height: 1.5; }
+        .timeline-item small { color: #555; font-style: italic; display: block; margin-top: 8px; }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 9pt;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        .status-badge.anterior { background-color: #e74c3c; color: white; }
+        .status-badge.novo { background-color: #27ae60; color: white; }
+        .status-arrow {
+            display: inline-block;
+            margin: 0 8px;
+            color: #7f8c8d;
+            font-weight: bold;
+        }
+        .encaminhamento-info {
+            margin-top: 8px;
+            padding: 8px;
+            background-color: #fff3cd;
+            border-left: 3px solid #ffc107;
+            border-radius: 3px;
+            font-size: 10pt;
+        }
         ul { padding-left: 20px; list-style-type: square; }
         li { margin-bottom: 5px; }
         .footer { position: absolute; bottom: 0; margin-top: 20px; }
@@ -50,11 +85,11 @@
 <body>
 
     <div class="header">
-        {% if brasao_url %}
-            <img src="{{ brasao_url }}" alt="Brasão da Instituição" class="logo">
+        {% if brasao_path %}
+            <img src="file://{{ brasao_path }}" alt="Brasão da Instituição" class="logo">
         {% endif %}
-        {% if logo_conta_url %}
-            <img src="{{ logo_conta_url }}" alt="Logo da Conta" class="logo">
+        {% if logo_conta_path %}
+            <img src="file://{{ logo_conta_path }}" alt="Logo da Conta" class="logo">
         {% endif %}
     </div>
 
@@ -99,12 +134,30 @@
         <h3 class="section-title">Histórico de Tramitações</h3>
         <div class="timeline">
             {% for tramitacao in atendimento.tramitacoes.all %}
-                <div class="timeline-item">
-                    <p>{{ tramitacao.despacho }}</p>
-                    <small>Por: {{ tramitacao.usuario.get_full_name|default:tramitacao.usuario.username }} em {{ tramitacao.data_tramitacao|date:"d/m/Y H:i" }}</small>
+                <div class="timeline-item {% if tramitacao.alterou_status %}status-change{% endif %}">
+                    {% if tramitacao.alterou_status and tramitacao.status_anterior and tramitacao.status_novo %}
+                        <div style="margin-bottom: 10px;">
+                            <span class="status-badge anterior">{{ tramitacao.get_status_anterior_display }}</span>
+                            <span class="status-arrow">→</span>
+                            <span class="status-badge novo">{{ tramitacao.get_status_novo_display }}</span>
+                        </div>
+                        {% if tramitacao.encaminhado_para_nome %}
+                            <div class="encaminhamento-info">
+                                <strong>Encaminhado para:</strong> {{ tramitacao.encaminhado_para_nome }}
+                                {% if tramitacao.encaminhado_para_tipo %}
+                                    <br><small>({{ tramitacao.encaminhado_para_tipo }})</small>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+                    {% endif %}
+                    <p style="white-space: pre-wrap;">{{ tramitacao.despacho }}</p>
+                    <small>
+                        <strong>Por:</strong> {{ tramitacao.usuario.get_full_name|default:tramitacao.usuario.username }} 
+                        <strong>em</strong> {{ tramitacao.data_tramitacao|date:"d/m/Y" }} às {{ tramitacao.data_tramitacao|date:"H:i" }}
+                    </small>
                 </div>
             {% empty %}
-                <p>Nenhuma tramitação registrada.</p>
+                <p style="text-align: center; color: #999; font-style: italic;">Nenhuma tramitação registrada.</p>
             {% endfor %}
         </div>
     </div>
@@ -124,7 +177,13 @@
 
     <div class="footer">
         <p>{{ nome_instituicao }}</p>
-        <img src="{{ logo_siga_url }}" alt="Logo SIGA" class="footer-logo">
+        {% if logo_siga_path %}
+            {% if "http" in logo_siga_path %}
+                <img src="{{ logo_siga_path }}" alt="Logo SIGA" class="footer-logo">
+            {% else %}
+                <img src="file://{{ logo_siga_path }}" alt="Logo SIGA" class="footer-logo">
+            {% endif %}
+        {% endif %}
     </div>
 
 </body>
