@@ -46,92 +46,60 @@ def buscar_estrutura_organizacional() -> List[Dict]:
     
     logger.info(f"Iniciando busca na API Sinapse - Base URL: {SINAPSE_API_BASE_URL}")
     
-    # Lista de endpoints possíveis para tentar
-    endpoints_possiveis = [
-        '/organograma/',
-        '/secretarias/',
-        '/estrutura-organizacional/',
-        '/orgaos/',
-        '/departamentos/',
-    ]
+    # Endpoint correto conforme Swagger: /api/v1/unidades/
+    endpoint = f"{SINAPSE_API_BASE_URL}/v1/unidades/"
     
     headers = {
         'Authorization': f'Bearer {SINAPSE_API_TOKEN}',
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
     }
     
-    # Tenta cada endpoint possível
-    for endpoint_path in endpoints_possiveis:
-        try:
-            endpoint = f"{SINAPSE_API_BASE_URL}{endpoint_path}"
-            logger.info(f"Tentando buscar da API Sinapse: {endpoint}")
+    try:
+        logger.info(f"Buscando unidades da API Sinapse: {endpoint}")
+        
+        response = requests.get(
+            endpoint,
+            headers=headers,
+            timeout=SINAPSE_API_TIMEOUT
+        )
+        
+        logger.info(f"Resposta da API Sinapse - Status: {response.status_code}")
+        
+        response.raise_for_status()
+        
+        data = response.json()
+        logger.info(f"Resposta da API Sinapse recebida - Tipo: {type(data)}, Tamanho: {len(data) if isinstance(data, list) else 'N/A'}")
+        
+        # A API retorna uma lista direta de unidades
+        if isinstance(data, list):
+            # Filtra apenas unidades ativas
+            unidades_ativas = [u for u in data if u.get('ativo', True)]
+            logger.info(f"Retornando {len(unidades_ativas)} unidades ativas da API Sinapse")
+            return unidades_ativas
+        else:
+            logger.warning(f"Formato de resposta inesperado da API Sinapse: {type(data)}")
+            return []
             
-            response = requests.get(
-                endpoint,
-                headers=headers,
-                timeout=SINAPSE_API_TIMEOUT
-            )
-            
-            logger.info(f"Resposta da API Sinapse - Status: {response.status_code}, URL: {endpoint}")
-            
-            # Se retornou 404, tenta próximo endpoint
-            if response.status_code == 404:
-                logger.debug(f"Endpoint {endpoint} retornou 404, tentando próximo...")
-                continue
-            
-            response.raise_for_status()
-            
-            data = response.json()
-            logger.info(f"Resposta da API Sinapse recebida - Tipo: {type(data)}, Tamanho: {len(data) if isinstance(data, (list, dict)) else 'N/A'}")
-            
-            # Normalizar resposta conforme estrutura real da API
-            # Ajustar conforme documentação do Swagger
-            if isinstance(data, list):
-                if len(data) > 0:
-                    logger.info(f"Retornando {len(data)} itens da API Sinapse")
-                    return data
-                else:
-                    logger.warning(f"API retornou lista vazia do endpoint {endpoint}")
-                    continue
-            elif isinstance(data, dict):
-                if 'results' in data:
-                    results = data['results']
-                    if len(results) > 0:
-                        logger.info(f"Retornando {len(results)} itens do campo 'results'")
-                        return results
-                if 'data' in data:
-                    results = data['data']
-                    if len(results) > 0:
-                        logger.info(f"Retornando {len(results)} itens do campo 'data'")
-                        return results
-                logger.warning(f"Resposta dict sem 'results' ou 'data' do endpoint {endpoint}: {list(data.keys())}")
-            else:
-                logger.warning(f"Formato de resposta inesperado da API Sinapse: {type(data)}")
-                
-        except requests.exceptions.Timeout:
-            logger.error(f"Timeout ao buscar estrutura organizacional da API Sinapse no endpoint {endpoint}")
-            continue
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                logger.debug(f"Endpoint {endpoint} não encontrado (404), tentando próximo...")
-                continue
-            logger.error(f"Erro HTTP {e.response.status_code} ao buscar estrutura organizacional: {str(e)}")
-            # Se não for 404, pode ser erro de autenticação ou outro problema
-            if e.response.status_code == 401:
-                raise SinapseAPIError(f"Erro de autenticação (401) - Token inválido ou não autorizado")
-            elif e.response.status_code == 403:
-                raise SinapseAPIError(f"Erro de permissão (403) - Token sem permissão para acessar este recurso")
-            continue
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Erro ao buscar estrutura organizacional do endpoint {endpoint}: {str(e)}")
-            continue
-        except Exception as e:
-            logger.error(f"Erro inesperado ao buscar estrutura organizacional: {str(e)}", exc_info=True)
-            continue
-    
-    # Se chegou aqui, nenhum endpoint funcionou
-    logger.error("Nenhum endpoint da API Sinapse retornou dados válidos")
-    raise SinapseAPIError("Nenhum endpoint da API Sinapse retornou dados válidos. Verifique a documentação do Swagger.")
+    except requests.exceptions.Timeout:
+        logger.error("Timeout ao buscar unidades da API Sinapse")
+        raise SinapseAPIError("Timeout ao conectar com a API Sinapse")
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            logger.error("Erro de autenticação (401) - Token inválido ou não autorizado")
+            raise SinapseAPIError("Erro de autenticação (401) - Token inválido ou não autorizado")
+        elif e.response.status_code == 403:
+            logger.error("Erro de permissão (403) - Token sem permissão para acessar este recurso")
+            raise SinapseAPIError("Erro de permissão (403) - Token sem permissão para acessar este recurso")
+        else:
+            logger.error(f"Erro HTTP {e.response.status_code} ao buscar unidades: {str(e)}")
+            raise SinapseAPIError(f"Erro HTTP {e.response.status_code} ao buscar unidades da API Sinapse")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Erro ao buscar unidades da API Sinapse: {str(e)}")
+        raise SinapseAPIError(f"Erro ao conectar com a API Sinapse: {str(e)}")
+    except Exception as e:
+        logger.error(f"Erro inesperado ao buscar unidades: {str(e)}", exc_info=True)
+        raise SinapseAPIError(f"Erro inesperado: {str(e)}")
 
 
 def buscar_secretaria_por_id(sinapse_id: int) -> Optional[Dict]:
@@ -157,8 +125,8 @@ def buscar_secretaria_por_id(sinapse_id: int) -> Optional[Dict]:
             'Content-Type': 'application/json',
         }
         
-        # Endpoint provável - ajustar conforme documentação real
-        endpoint = f"{SINAPSE_API_BASE_URL}/organograma/{sinapse_id}/"
+        # Endpoint correto conforme Swagger: /api/v1/unidades/{id}/
+        endpoint = f"{SINAPSE_API_BASE_URL}/v1/unidades/{sinapse_id}/"
         
         response = requests.get(
             endpoint,

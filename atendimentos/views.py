@@ -994,18 +994,22 @@ class BuscarSecretariasSinapseView(generics.GenericAPIView):
             estrutura = buscar_estrutura_organizacional()
             logger.info(f"API Sinapse retornou {len(estrutura) if estrutura else 0} itens")
             
-            # Normaliza resposta da API
+            # Normaliza resposta da API conforme estrutura real: /api/v1/unidades/
             if estrutura:
                 data = []
                 for item in estrutura:
-                    # Normaliza campos conforme estrutura real da API
-                    # Ajustar conforme documentação do Swagger
+                    # Mapeia campos da API Sinapse para o formato esperado pelo frontend
                     data.append({
-                        'id': item.get('id') or item.get('sinapse_id'),
-                        'nome': item.get('nome') or item.get('name'),
-                        'sigla': item.get('sigla') or item.get('acronym', ''),
-                        'tipo': item.get('tipo') or item.get('type', 'Secretaria'),
-                        'hierarquia': item.get('hierarquia') or item.get('hierarchy'),
+                        'id': item.get('id'),
+                        'nome': item.get('nome') or item.get('nome_reduzido', ''),
+                        'sigla': item.get('sigla') or '',
+                        'tipo': item.get('tipo_unidade') or 'Secretaria',
+                        'hierarquia': {
+                            'codigo_hierarquico': item.get('codigo_hierarquico'),
+                            'nivel_hierarquico': item.get('nivel_hierarquico'),
+                            'unidade_pai': item.get('unidade_pai'),
+                            'nome_pai': item.get('nome_pai'),
+                        } if item.get('codigo_hierarquico') else None,
                     })
                 
                 return Response(data, status=status.HTTP_200_OK)
