@@ -1157,19 +1157,34 @@ class RelatorioAtendimentosPorStatusView(APIView):
         queryset = Atendimento.objects.all()
 
         # Lógica de permissão UNIFICADA
-        if not user.is_superuser:
+        if not (user.is_superuser or is_in_group(user, 'Recepção')):
+            if hasattr(user, 'perfil'):
+                queryset = queryset.filter(conta__in=user.perfil.contas.all())
+                queryset = queryset.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
+            else:
+                queryset = Atendimento.objects.none()
+        elif is_in_group(user, 'Recepção') and not user.is_superuser:
             if hasattr(user, 'perfil'):
                 queryset = queryset.filter(conta__in=user.perfil.contas.all())
             else:
                 queryset = Atendimento.objects.none()
 
+        # Aplicar filtros de data
         data_inicio = request.query_params.get('data_inicio', None)
         data_fim = request.query_params.get('data_fim', None)
-
         if data_inicio:
-            queryset = queryset.filter(data_criacao__gte=f'{data_inicio} 00:00:00')
+            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
         if data_fim:
-            queryset = queryset.filter(data_criacao__lte=f'{data_fim} 23:59:59')
+            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+
+        # Aplicar filtros de conta e status
+        conta_id = request.query_params.get('conta_id', None)
+        if conta_id:
+            queryset = queryset.filter(conta_id=conta_id)
+        
+        status = request.query_params.get('status', None)
+        if status:
+            queryset = queryset.filter(status=status)
 
         data = queryset.values('status').annotate(total=Count('status')).order_by('status')
         return Response(data)
@@ -1183,19 +1198,34 @@ class RelatorioAtendimentosPorContaView(APIView):
         queryset = Atendimento.objects.all()
 
         # Lógica de permissão UNIFICADA
-        if not user.is_superuser:
+        if not (user.is_superuser or is_in_group(user, 'Recepção')):
+            if hasattr(user, 'perfil'):
+                queryset = queryset.filter(conta__in=user.perfil.contas.all())
+                queryset = queryset.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
+            else:
+                queryset = Atendimento.objects.none()
+        elif is_in_group(user, 'Recepção') and not user.is_superuser:
             if hasattr(user, 'perfil'):
                 queryset = queryset.filter(conta__in=user.perfil.contas.all())
             else:
                 queryset = Atendimento.objects.none()
 
+        # Aplicar filtros de data
         data_inicio = request.query_params.get('data_inicio', None)
         data_fim = request.query_params.get('data_fim', None)
-
         if data_inicio:
-            queryset = queryset.filter(data_criacao__gte=f'{data_inicio} 00:00:00')
+            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
         if data_fim:
-            queryset = queryset.filter(data_criacao__lte=f'{data_fim} 23:59:59')
+            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+
+        # Aplicar filtros de conta e status
+        conta_id = request.query_params.get('conta_id', None)
+        if conta_id:
+            queryset = queryset.filter(conta_id=conta_id)
+        
+        status = request.query_params.get('status', None)
+        if status:
+            queryset = queryset.filter(status=status)
 
         data = queryset.values('conta__nome').annotate(total=Count('id')).order_by('-total')
         return Response(data)
@@ -1209,19 +1239,34 @@ class RelatorioAtendimentosPorCategoriaView(APIView):
         queryset = Atendimento.objects.all()
 
         # Lógica de permissão UNIFICADA
-        if not user.is_superuser:
+        if not (user.is_superuser or is_in_group(user, 'Recepção')):
+            if hasattr(user, 'perfil'):
+                queryset = queryset.filter(conta__in=user.perfil.contas.all())
+                queryset = queryset.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
+            else:
+                queryset = Atendimento.objects.none()
+        elif is_in_group(user, 'Recepção') and not user.is_superuser:
             if hasattr(user, 'perfil'):
                 queryset = queryset.filter(conta__in=user.perfil.contas.all())
             else:
                 queryset = Atendimento.objects.none()
 
+        # Aplicar filtros de data
         data_inicio = request.query_params.get('data_inicio', None)
         data_fim = request.query_params.get('data_fim', None)
-
         if data_inicio:
-            queryset = queryset.filter(data_criacao__gte=f'{data_inicio} 00:00:00')
+            queryset = queryset.filter(data_criacao__date__gte=data_inicio)
         if data_fim:
-            queryset = queryset.filter(data_criacao__lte=f'{data_fim} 23:59:59')
+            queryset = queryset.filter(data_criacao__date__lte=data_fim)
+
+        # Aplicar filtros de conta e status
+        conta_id = request.query_params.get('conta_id', None)
+        if conta_id:
+            queryset = queryset.filter(conta_id=conta_id)
+        
+        status = request.query_params.get('status', None)
+        if status:
+            queryset = queryset.filter(status=status)
 
         data = queryset.values('categorias__nome').annotate(total=Count('id')).order_by('-total')
         return Response(data)
@@ -1298,9 +1343,8 @@ class GerarPdfAtendimentosView(APIView):
         if data_fim:
             queryset = queryset.filter(data_criacao__date__lte=data_fim)
 
-        conta_id = request.query_params.get('conta_id', None)
+        # Buscar conta_contexto para logos (sem duplicar a busca de conta_id)
         conta_contexto = None
-        
         if conta_id:
             conta_contexto = Conta.objects.filter(id=conta_id).first()
         elif not request.user.is_superuser and hasattr(request.user, 'perfil'):
