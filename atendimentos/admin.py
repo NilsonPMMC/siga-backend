@@ -15,11 +15,19 @@ from import_export.fields import Field
 from import_export.widgets import ForeignKeyWidget, ManyToManyWidget
 from import_export.admin import ImportExportModelAdmin
 from datetime import datetime
+from django import forms
 from .models import (
     Conta, Municipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
     SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato,
     Espaco, RegistroVisita, Lembrete, TramitacaoAgenda, SinapseSecretaria
 )
+
+
+class AtendimentoAdminForm(forms.ModelForm):
+    """Form que inclui data_criacao para permitir ajuste de data de registro no admin."""
+    class Meta:
+        model = Atendimento
+        fields = '__all__'
 
 def enviar_email_de_acesso(modeladmin, request, queryset):
     """
@@ -245,10 +253,21 @@ class MunicipeAdmin(ImportExportModelAdmin):
 # --- Admin para outros modelos ---
 @admin.register(Atendimento)
 class AtendimentoAdmin(admin.ModelAdmin):
+    form = AtendimentoAdminForm
     list_display = ('protocolo', 'titulo', 'municipe', 'conta', 'status', 'data_criacao')
     list_filter = ('status', 'conta', 'data_criacao', 'categorias')
     search_fields = ('protocolo', 'titulo', 'municipe__nome_completo')
     filter_horizontal = ('categorias',)
+    fieldsets = (
+        (None, {
+            'fields': ('protocolo', 'titulo', 'descricao', 'status', 'conta', 'municipe', 'responsavel', 'created_by', 'categorias')
+        }),
+        ('Datas (ajuste de registro)', {
+            'fields': ('data_criacao', 'data_atualizacao'),
+            'description': 'Use "Data de Criação" para corrigir a data de registro quando o atendimento foi inserido com data incorreta (ex.: dados retroativos).',
+        }),
+    )
+    readonly_fields = ('data_atualizacao',)
     
 @admin.register(Tramitacao)
 class TramitacaoAdmin(admin.ModelAdmin):
