@@ -295,8 +295,12 @@ class AtendimentoAdmin(admin.ModelAdmin):
     readonly_fields = ('protocolo', 'data_atualizacao')
 
     def get_form(self, request, obj=None, **kwargs):
-        """Usar apenas os campos do form (sem data_criacao do model) para não disparar FieldError."""
-        kwargs.setdefault('fields', AtendimentoAdminForm.Meta.fields)
+        """Excluir do model form os campos não editáveis; data_criacao vem do form explícito; protocolo/data_atualizacao em readonly."""
+        exclude = list(kwargs.get('exclude', []))
+        for f in ('protocolo', 'data_criacao', 'data_atualizacao'):
+            if f not in exclude:
+                exclude.append(f)
+        kwargs['exclude'] = exclude
         return super().get_form(request, obj=obj, **kwargs)
     
 @admin.register(Tramitacao)
