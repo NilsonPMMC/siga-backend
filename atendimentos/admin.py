@@ -293,6 +293,11 @@ class AtendimentoAdmin(admin.ModelAdmin):
         }),
     )
     readonly_fields = ('protocolo', 'data_atualizacao')
+
+    def get_form(self, request, obj=None, **kwargs):
+        """Usar apenas os campos do form (sem data_criacao do model) para não disparar FieldError."""
+        kwargs.setdefault('fields', AtendimentoAdminForm.Meta.fields)
+        return super().get_form(request, obj=obj, **kwargs)
     
 @admin.register(Tramitacao)
 class TramitacaoAdmin(admin.ModelAdmin):
