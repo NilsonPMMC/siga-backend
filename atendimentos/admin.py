@@ -24,10 +24,14 @@ from .models import (
 
 
 class AtendimentoAdminForm(forms.ModelForm):
-    """Form que inclui data_criacao para permitir ajuste de data de registro no admin."""
+    """Form que inclui data_criacao para ajuste de registro. protocolo fica fora (editable=False no model)."""
     class Meta:
         model = Atendimento
-        fields = '__all__'
+        # protocolo é editable=False no model; data_atualizacao é auto_now → só leitura no admin
+        fields = [
+            'titulo', 'descricao', 'status', 'conta', 'municipe', 'responsavel', 'created_by',
+            'categorias', 'data_criacao', 'data_atualizacao'
+        ]
 
 def enviar_email_de_acesso(modeladmin, request, queryset):
     """
@@ -267,7 +271,7 @@ class AtendimentoAdmin(admin.ModelAdmin):
             'description': 'Use "Data de Criação" para corrigir a data de registro quando o atendimento foi inserido com data incorreta (ex.: dados retroativos).',
         }),
     )
-    readonly_fields = ('data_atualizacao',)
+    readonly_fields = ('protocolo', 'data_atualizacao')
     
 @admin.register(Tramitacao)
 class TramitacaoAdmin(admin.ModelAdmin):
