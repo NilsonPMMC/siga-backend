@@ -16,6 +16,7 @@ from import_export.widgets import ForeignKeyWidget, ManyToManyWidget
 from import_export.admin import ImportExportModelAdmin
 from datetime import datetime
 from django import forms
+from django.utils import timezone as tz
 from .models import (
     Conta, Municipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
     SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato,
@@ -24,14 +25,34 @@ from .models import (
 
 
 class AtendimentoAdminForm(forms.ModelForm):
-    """Form que inclui data_criacao para ajuste de registro. protocolo fica fora (editable=False no model)."""
+    """Form com data_criacao como campo explícito (model tem auto_now_add=True, não pode estar em Meta.fields)."""
+    data_criacao = forms.DateTimeField(
+        label='Data de Criação',
+        required=True,
+        help_text='Ajuste aqui quando o registro foi inserido com data incorreta (ex.: dados retroativos).',
+    )
+
     class Meta:
         model = Atendimento
-        # protocolo é editable=False no model; data_atualizacao é auto_now → só leitura no admin
         fields = [
             'titulo', 'descricao', 'status', 'conta', 'municipe', 'responsavel', 'created_by',
-            'categorias', 'data_criacao', 'data_atualizacao'
+            'categorias',
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk and self.instance.data_criacao:
+            self.fields['data_criacao'].initial = tz.localtime(self.instance.data_criacao)
+        elif not (self.instance and self.instance.pk):
+            self.fields['data_criacao'].initial = tz.now()
+
+    def save(self, commit=True):
+        obj = super().save(commit=False)
+        obj.data_criacao = self.cleaned_data['data_criacao']
+        if commit:
+            obj.save()
+            self.save_m2m()
+        return obj
 
 def enviar_email_de_acesso(modeladmin, request, queryset):
     """
