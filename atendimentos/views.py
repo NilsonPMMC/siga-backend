@@ -715,6 +715,7 @@ class UnificarMunicipesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        logger = logging.getLogger(__name__)
         id_principal = request.data.get('id_principal')
         id_duplicado = request.data.get('id_duplicado')
 
@@ -725,9 +726,14 @@ class UnificarMunicipesView(APIView):
             return Response({"detail": "Você não pode unificar um registro com ele mesmo."}, status=400)
 
         try:
+            logger.info(f"Iniciando unificação: principal={id_principal}, duplicado={id_duplicado}")
+            
+            # Buscar objetos ANTES da transação para evitar problemas
+            principal = get_object_or_404(Municipe, pk=id_principal)
+            duplicado = get_object_or_404(Municipe, pk=id_duplicado)
+            logger.info(f"Objetos carregados: principal={principal.nome_completo} (ID: {principal.id}), duplicado={duplicado.nome_completo} (ID: {duplicado.id})")
+            
             with transaction.atomic():
-                principal = get_object_or_404(Municipe, pk=id_principal)
-                duplicado = get_object_or_404(Municipe, pk=id_duplicado)
 
                 # 1. COPIA DADOS FALTANTES (Merge de Informações)
                 if not principal.cpf and duplicado.cpf:
@@ -753,12 +759,15 @@ class UnificarMunicipesView(APIView):
                         if mail.get('email') and mail.get('email') not in emails_existentes:
                             principal.emails.append(mail)
 
+                logger.info(f"Salvando principal (ID: {principal.id})")
                 principal.save(update_fields=['cpf', 'matricula_rh', 'foto', 'telefones', 'emails'])
+                logger.info(f"Principal salvo com sucesso")
 
                 # 2. TRANSFERIR VÍNCULOS (CORREÇÃO DA INTROSPECÇÃO)
                 links_migrados = 0
                 
                 # get_fields() traz todas as relações. Filtramos as que apontam PARA Munícipe (one_to_many)
+                logger.info("Iniciando transferência de vínculos one-to-many")
                 for rel in Municipe._meta.get_fields():
                     
                     # Verifica se é uma relação reversa (OutroModel -> Municipe)
@@ -768,33 +777,44 @@ class UnificarMunicipesView(APIView):
                         
                         # Busca objetos do modelo relacionado que apontam para o duplicado
                         try:
+                            logger.debug(f"Processando relação: {related_model.__name__}.{remote_field_name}")
                             filtro = {remote_field_name: duplicado}
                             # Usar select_for_update para evitar problemas de concorrência dentro da transação
+                            # IMPORTANTE: Converter para lista ANTES de entrar no loop para evitar lazy evaluation
                             objetos = list(related_model.objects.filter(**filtro).select_for_update())
+                            logger.debug(f"Encontrados {len(objetos)} objetos para migrar em {related_model.__name__}")
                             
-                            for obj in objetos:
-                                # Tenta mover para o principal
-                                setattr(obj, remote_field_name, principal)
+                            for idx, obj in enumerate(objetos):
                                 try:
+                                    # Tenta mover para o principal
+                                    setattr(obj, remote_field_name, principal)
                                     obj.save()
                                     links_migrados += 1
-                                except IntegrityError:
+                                    logger.debug(f"Migrado objeto {idx+1}/{len(objetos)} de {related_model.__name__} (ID: {obj.pk})")
+                                except IntegrityError as ie:
                                     # CONFLITO: O principal JÁ TEM esse vínculo (ex: convidado 2x na mesma agenda)
-                                    # Como não podemos ter dois iguais, e o duplicado vai sumir, deletamos o vínculo duplicado.
+                                    logger.warning(f"IntegrityError ao migrar {related_model.__name__} ID {obj.pk}: {ie}. Removendo duplicado.")
                                     # Captura o ID antes de tentar modificar para evitar problemas de transação
                                     obj_id = obj.pk
-                                    # Usa delete() direto no objeto já carregado (sem refresh_from_db que causa erro de transação)
+                                    # IMPORTANTE: Não fazer refresh_from_db() aqui! Usa o objeto já carregado
+                                    # Mas primeiro, reverte a mudança em memória para evitar problemas
+                                    setattr(obj, remote_field_name, duplicado)
                                     obj.delete()
                                     links_migrados += 1  # Conta como migrado (foi removido)
+                                    logger.debug(f"Duplicado removido: {related_model.__name__} ID {obj_id}")
+                                except Exception as obj_error:
+                                    logger.error(f"Erro ao processar objeto {idx+1} de {related_model.__name__} (ID: {obj.pk}): {obj_error}", exc_info=True)
+                                    # Reverte mudança em memória antes de continuar
+                                    setattr(obj, remote_field_name, duplicado)
+                                    raise  # Re-raise para ser capturado pelo try externo
                         except Exception as e:
                             # Log do erro mas continua processamento
-                            import logging
-                            logger = logging.getLogger(__name__)
-                            logger.error(f"Erro ao migrar {related_model}: {e}", exc_info=True)
+                            logger.error(f"Erro ao migrar relação {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
                             continue
 
                 # 3. MIGRAR RELAÇÕES MANY-TO-MANY (Ex: Listas de Distribuição)
                 # O loop acima (one_to_many) não pega ManyToMany.
+                logger.info("Iniciando transferência de vínculos many-to-many")
                 for rel in Municipe._meta.get_fields():
                      if rel.many_to_many and rel.auto_created:
                         related_model = rel.related_model
@@ -802,27 +822,35 @@ class UnificarMunicipesView(APIView):
                         
                         # Para M2M, o filtro é um pouco diferente
                         try:
+                            logger.debug(f"Processando relação M2M: {related_model.__name__}.{remote_field_name}")
                             filtro = {remote_field_name: duplicado}
                             # Converter para lista para evitar problemas de lazy evaluation dentro da transação
                             objetos_m2m = list(related_model.objects.filter(**filtro).select_for_update())
+                            logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
                             
-                            for obj in objetos_m2m:
-                                # Pega o manager do campo M2M no objeto relacionado
-                                m2m_manager = getattr(obj, remote_field_name)
-                                m2m_manager.remove(duplicado)
-                                m2m_manager.add(principal)
-                                links_migrados += 1
+                            for idx, obj in enumerate(objetos_m2m):
+                                try:
+                                    # Pega o manager do campo M2M no objeto relacionado
+                                    m2m_manager = getattr(obj, remote_field_name)
+                                    m2m_manager.remove(duplicado)
+                                    m2m_manager.add(principal)
+                                    links_migrados += 1
+                                    logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj.pk})")
+                                except Exception as obj_error:
+                                    logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj.pk}): {obj_error}", exc_info=True)
+                                    raise  # Re-raise para ser capturado pelo try externo
                         except Exception as e:
                             # Log do erro mas continua processamento
-                            import logging
-                            logger = logging.getLogger(__name__)
-                            logger.error(f"Erro ao migrar relação M2M {related_model}: {e}", exc_info=True)
+                            logger.error(f"Erro ao migrar relação M2M {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
                             continue
 
                 # 4. EXCLUIR O DUPLICADO
                 # Agora que movemos Atendimentos, Solicitacoes, Agendas, etc., ele deve estar "limpo".
+                logger.info(f"Excluindo munícipe duplicado (ID: {duplicado.id})")
                 duplicado.delete()
+                logger.info(f"Duplicado excluído com sucesso")
 
+                logger.info(f"Unificação concluída: {links_migrados} vínculos migrados")
                 return Response({
                     "message": "Fusão concluída com sucesso.",
                     "links_migrados": links_migrados,
@@ -830,8 +858,21 @@ class UnificarMunicipesView(APIView):
                 })
 
         except Exception as e:
-            # traceback.print_exc() # Habilite para debug no terminal se precisar
-            return Response({"detail": f"Erro ao unificar: {str(e)}"}, status=500)
+            # Log completo do erro para depuração
+            logger.error(f"ERRO CRÍTICO ao unificar municipes (principal={id_principal}, duplicado={id_duplicado}): {e}", exc_info=True)
+            error_detail = str(e)
+            error_type = type(e).__name__
+            
+            # Mensagem mais detalhada para o cliente
+            if "atomic" in error_detail.lower() or "transaction" in error_detail.lower():
+                error_detail = f"Erro de transação: {error_detail}. Verifique os logs do servidor para mais detalhes."
+            
+            return Response({
+                "detail": f"Erro ao unificar: {error_detail}",
+                "error_type": error_type,
+                "principal_id": id_principal,
+                "duplicado_id": id_duplicado
+            }, status=500)
         
 class AtualizarCategoriaEmLoteView(APIView):
     """
