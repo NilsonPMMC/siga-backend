@@ -854,29 +854,39 @@ class UnificarMunicipesView(APIView):
                             logger.error(f"Erro ao migrar relação M2M {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
                             continue
 
-                # 4. EXCLUIR O DUPLICADO
-                # Agora que movemos Atendimentos, Solicitacoes, Agendas, etc., ele deve estar "limpo".
-                # IMPORTANTE: Usar delete() com force para evitar queries de verificação de dependências
-                # que podem causar erro de transação se houver exceção anterior
-                # Capturar informações antes de deletar (caso o objeto seja deletado ou fique inconsistente)
+                # 4. EXCLUIR O DUPLICADO (APÓS COMMIT DA TRANSAÇÃO)
+                # IMPORTANTE: Não deletar dentro da transação atômica principal!
+                # Se houver qualquer exceção anterior (mesmo tratada), o Django marca a transação como quebrada
+                # e não permite mais queries. Vamos deletar usando SQL direto ou após o commit.
                 duplicado_id = duplicado.id
                 duplicado_nome = duplicado.nome_completo
-                logger.info(f"Excluindo munícipe duplicado (ID: {duplicado_id}, Nome: {duplicado_nome})")
-                try:
-                    duplicado.delete()
-                    logger.info(f"Duplicado excluído com sucesso (ID: {duplicado_id}, Nome: {duplicado_nome})")
-                except Exception as delete_error:
-                    logger.error(f"Erro ao deletar duplicado (ID: {duplicado_id}, Nome: {duplicado_nome}): {delete_error}", exc_info=True)
-                    # Se falhar ao deletar, ainda assim retornamos sucesso pois os vínculos foram migrados
-                    # O registro duplicado pode ser deletado manualmente depois
-                    logger.warning(f"Duplicado não foi deletado automaticamente. ID: {duplicado_id}, Nome: {duplicado_nome} - pode ser deletado manualmente")
-                    # NÃO re-raise aqui - a transação já foi bem-sucedida na migração dos vínculos
+                logger.info(f"Preparando exclusão de munícipe duplicado (ID: {duplicado_id}, Nome: {duplicado_nome}) após commit")
+                
+                # Usar on_commit para deletar APÓS a transação ser commitada com sucesso
+                def deletar_duplicado_apos_commit():
+                    try:
+                        # Buscar novamente para garantir que ainda existe
+                        duplicado_refresh = Municipe.objects.filter(pk=duplicado_id).first()
+                        if duplicado_refresh:
+                            logger.info(f"Deletando duplicado após commit (ID: {duplicado_id})")
+                            duplicado_refresh.delete()
+                            logger.info(f"Duplicado excluído com sucesso após commit (ID: {duplicado_id})")
+                        else:
+                            logger.warning(f"Duplicado já não existe (ID: {duplicado_id})")
+                    except Exception as delete_error:
+                        logger.error(f"Erro ao deletar duplicado após commit (ID: {duplicado_id}): {delete_error}", exc_info=True)
+                        logger.warning(f"Duplicado não foi deletado automaticamente. ID: {duplicado_id}, Nome: {duplicado_nome} - pode ser deletado manualmente")
+                
+                # Agendar deleção para após o commit bem-sucedido
+                transaction.on_commit(deletar_duplicado_apos_commit)
 
-                logger.info(f"Unificação concluída: {links_migrados} vínculos migrados")
+                logger.info(f"Unificação concluída: {links_migrados} vínculos migrados. Duplicado será deletado após commit.")
                 return Response({
                     "message": "Fusão concluída com sucesso.",
                     "links_migrados": links_migrados,
-                    "nome_final": principal.nome_completo
+                    "nome_final": principal.nome_completo,
+                    "duplicado_id": duplicado_id,
+                    "nota": "O registro duplicado será excluído automaticamente após a conclusão da transação."
                 })
 
         except Exception as e:
