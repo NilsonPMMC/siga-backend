@@ -1,9 +1,12 @@
 """
 Serviço de integração com Google Gemini AI para geração de resumos automáticos.
 Usa a nova biblioteca google-genai (cliente unificado).
+
+Também inclui LocalAIService para análise local usando Sentence-Transformers.
 """
 import logging
 import time
+import re
 from django.conf import settings
 from google import genai
 
@@ -390,3 +393,229 @@ Responda APENAS em formato JSON válido, sem markdown:
             error_type = type(e).__name__
             logger.error(f"Erro inesperado ao sugerir fusão: {error_msg}")
             return None
+
+
+class LocalAIService:
+    """
+    Serviço de IA Local usando Sentence-Transformers para análise de qualidade
+    e detecção de duplicidades sem depender de APIs externas.
+    Implementado como Singleton para carregar o modelo apenas uma vez.
+    """
+    _instance = None
+    _model = None
+    _initialized = False
+    _cosine_similarity = None
+    _np = None
+    
+    def __new__(cls):
+        """Implementa padrão Singleton para garantir uma única instância."""
+        if cls._instance is None:
+            cls._instance = super(LocalAIService, cls).__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        """Inicializa o serviço carregando o modelo apenas uma vez."""
+        if not LocalAIService._initialized:
+            try:
+                from sentence_transformers import SentenceTransformer
+                from sklearn.metrics.pairwise import cosine_similarity
+                import numpy as np
+                
+                logger.info("Carregando modelo Sentence-Transformer (paraphrase-multilingual-MiniLM-L12-v2)...")
+                # Modelo leve e multilíngue, ideal para 8GB RAM
+                LocalAIService._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+                LocalAIService._cosine_similarity = cosine_similarity
+                LocalAIService._np = np
+                LocalAIService._initialized = True
+                logger.info("Modelo Sentence-Transformer carregado com sucesso!")
+            except ImportError as e:
+                logger.error(f"Erro ao importar dependências de IA local: {e}")
+                logger.error("Instale as dependências: pip install sentence-transformers scikit-learn rapidfuzz")
+                LocalAIService._model = None
+                LocalAIService._initialized = True
+            except Exception as e:
+                logger.error(f"Erro ao carregar modelo Sentence-Transformer: {e}", exc_info=True)
+                LocalAIService._model = None
+                LocalAIService._initialized = True
+    
+    @property
+    def _model(self):
+        """Acessa o modelo da classe (Singleton)."""
+        return LocalAIService._model
+    
+    @property
+    def _cosine_similarity(self):
+        """Acessa a função cosine_similarity da classe."""
+        return LocalAIService._cosine_similarity
+    
+    @property
+    def _np(self):
+        """Acessa numpy da classe."""
+        return LocalAIService._np
+    
+    def calcular_similaridade_duplicados(self, nome_novo, lista_existentes, threshold=0.85):
+        """
+        Calcula similaridade semântica entre um nome novo e uma lista de nomes existentes.
+        
+        Args:
+            nome_novo (str): Nome do novo registro
+            lista_existentes (list[str]): Lista de nomes existentes para comparar
+            threshold (float): Threshold de similaridade (default: 0.85)
+        
+        Returns:
+            list[dict]: Lista de registros com similaridade >= threshold, ordenados por similaridade
+                Cada dict contém: {'nome': str, 'similaridade': float, 'indice': int}
+        """
+        if not self._model or not nome_novo or not lista_existentes:
+            return []
+        
+        try:
+            # Converter nomes em embeddings (vetores)
+            textos = [nome_novo] + lista_existentes
+            embeddings = self._model.encode(textos, show_progress_bar=False)
+            
+            # Calcular similaridade de cosseno entre o primeiro (nome_novo) e os demais
+            nome_embedding = embeddings[0:1]  # Primeiro embedding
+            existentes_embeddings = embeddings[1:]  # Resto dos embeddings
+            
+            similaridades = self._cosine_similarity(nome_embedding, existentes_embeddings)[0]
+            
+            # Filtrar e ordenar por similaridade (maior primeiro)
+            resultados = []
+            for idx, sim in enumerate(similaridades):
+                if sim >= threshold:  # Usar threshold fornecido
+                    resultados.append({
+                        'nome': lista_existentes[idx],
+                        'similaridade': float(sim),
+                        'indice': idx
+                    })
+            
+            # Ordenar por similaridade (maior primeiro)
+            resultados.sort(key=lambda x: x['similaridade'], reverse=True)
+            
+            return resultados
+            
+        except Exception as e:
+            logger.error(f"Erro ao calcular similaridade de duplicados: {e}", exc_info=True)
+            return []
+    
+    def classificar_lixo_semantico(self, nome, telefone):
+        """
+        Classifica se nome/telefone são preenchimentos falsos usando análise semântica e padrões.
+        
+        Args:
+            nome (str): Nome completo do munícipe
+            telefone (str): Telefone do munícipe
+        
+        Returns:
+            dict: {
+                'eh_lixo': bool,
+                'nota_qualidade': int (0-100),
+                'problemas_detectados': list[str],
+                'sugestao_correcao': str
+            }
+        """
+        problemas = []
+        nota_base = 100
+        
+        # Análise do nome
+        if nome:
+            nome_upper = nome.upper().strip()
+            nome_sem_espacos = nome_upper.replace(' ', '')
+            
+            # Padrões de lixo no nome
+            padroes_lixo_nome = [
+                ('TESTE', 'Nome de teste'),
+                ('FULANO', 'Nome genérico'),
+                ('CICLANO', 'Nome genérico'),
+                ('BELTRANO', 'Nome genérico'),
+                ('NOME COMPLETO', 'Placeholder'),
+                ('EXEMPLO', 'Nome de exemplo'),
+                ('DEMO', 'Nome de demonstração'),
+                ('XXX', 'Sequência repetitiva'),
+                ('YYY', 'Sequência repetitiva'),
+                ('ZZZ', 'Sequência repetitiva'),
+                ('ABC', 'Sequência alfabética'),
+                ('123', 'Sequência numérica'),
+            ]
+            
+            for padrao, motivo in padroes_lixo_nome:
+                if padrao in nome_upper:
+                    problemas.append(f"Nome contém padrão suspeito: {motivo}")
+                    nota_base -= 20
+            
+            # Verificar sequências repetitivas (AAAAA, BBBBB, etc)
+            if len(nome_sem_espacos) > 2:
+                chars_unicos = len(set(nome_sem_espacos))
+                if chars_unicos == 1:
+                    problemas.append("Nome contém apenas um caractere repetido")
+                    nota_base -= 30
+                elif chars_unicos == 2 and len(nome_sem_espacos) > 4:
+                    # Padrão alternado (ABABAB)
+                    if nome_sem_espacos[:2] * (len(nome_sem_espacos) // 2) == nome_sem_espacos[:len(nome_sem_espacos) - (len(nome_sem_espacos) % 2)]:
+                        problemas.append("Nome com padrão alternado suspeito")
+                        nota_base -= 25
+            
+            # Nome muito curto
+            if len(nome_sem_espacos) < 3:
+                problemas.append("Nome muito curto (menos de 3 caracteres)")
+                nota_base -= 15
+            
+            # Apenas números
+            if nome_sem_espacos.isdigit():
+                problemas.append("Nome contém apenas números")
+                nota_base -= 30
+        else:
+            problemas.append("Nome não informado")
+            nota_base -= 40
+        
+        # Análise do telefone
+        if telefone:
+            telefone_numeros = re.sub(r'\D', '', telefone)
+            
+            # Padrões de lixo no telefone
+            if len(telefone_numeros) >= 8:
+                # Sequências repetitivas (00000000, 11111111, etc)
+                if len(set(telefone_numeros)) == 1:
+                    problemas.append("Telefone com sequência repetitiva")
+                    nota_base -= 30
+                
+                # Sequências óbvias (12345678, 98765432)
+                if telefone_numeros in ['12345678', '123456789', '98765432', '987654321']:
+                    problemas.append("Telefone com sequência óbvia")
+                    nota_base -= 30
+                
+                # Padrão genérico (99999999)
+                if telefone_numeros == '9' * len(telefone_numeros):
+                    problemas.append("Telefone genérico (todos 9s)")
+                    nota_base -= 30
+                
+                # Padrão alternado (12121212)
+                if len(telefone_numeros) >= 8:
+                    padrao = telefone_numeros[:2]
+                    if telefone_numeros == padrao * (len(telefone_numeros) // 2):
+                        problemas.append("Telefone com padrão alternado")
+                        nota_base -= 25
+        else:
+            problemas.append("Telefone não informado")
+            nota_base -= 20
+        
+        # Determinar se é lixo
+        eh_lixo = nota_base < 50 or len(problemas) >= 2
+        
+        # Gerar sugestão de correção
+        if eh_lixo:
+            sugestao = "Registro com dados de baixa qualidade. Verifique e complete as informações faltantes."
+        elif problemas:
+            sugestao = f"Registro com alguns problemas detectados: {', '.join(problemas[:2])}. Verifique os dados."
+        else:
+            sugestao = "Nenhuma correção necessária."
+        
+        nota_final = max(0, min(100, nota_base))  # Garantir entre 0 e 100
+        
+        return {
+            'eh_lixo': eh_lixo,
+            'nota_qualidade': nota_final,
+            'problemas_detectados': problemas,
+            'sugestao_correcao': sugestao
+        }

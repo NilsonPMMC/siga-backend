@@ -1,14 +1,14 @@
 """
-Comando para auditar qualidade de dados do CRM usando Gemini AI.
+Comando para auditar qualidade de dados do CRM usando IA Local (Sentence-Transformers).
 Identifica registros com dados pobres, telefones genéricos e sugere correções.
+Também detecta duplicidades usando similaridade semântica.
 """
 import re
 import logging
-import time
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from atendimentos.models import Municipe
-from atendimentos.services.ai_service import AIService
+from atendimentos.services.ai_service import LocalAIService
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ def detectar_padrao_lixo_nome(nome):
 
 
 class Command(BaseCommand):
-    help = "Audita qualidade de dados do CRM usando Gemini AI. Identifica registros pobres e sugere correções."
+    help = "Audita qualidade de dados do CRM usando IA Local (Sentence-Transformers). Identifica registros pobres, sugere correções e detecta duplicidades."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -139,27 +139,34 @@ class Command(BaseCommand):
             help='Limite de registros a processar (útil para testes)',
         )
         parser.add_argument(
-            '--skip-ai',
-            action='store_true',
-            help='Apenas detecta padrões lixo com regex, sem chamar IA (mais rápido)',
-        )
-        parser.add_argument(
             '--force',
             action='store_true',
             help='Força reauditoria mesmo de registros já auditados',
+        )
+        parser.add_argument(
+            '--similarity-threshold',
+            type=float,
+            default=0.85,
+            help='Threshold de similaridade para detectar duplicatas (default: 0.85)',
         )
 
     def handle(self, *args, **options):
         batch_size = options['batch_size']
         limit = options.get('limit')
-        skip_ai = options.get('skip_ai', False)
         force = options.get('force', False)
+        similarity_threshold = options.get('similarity_threshold', 0.85)
         
-        if skip_ai:
-            self.stdout.write(self.style.WARNING("Modo SKIP-AI: apenas detecção regex, sem chamar Gemini."))
+        self.stdout.write(self.style.SUCCESS("Inicializando IA Local (Sentence-Transformers)..."))
         
-        # Inicializar serviço de IA
-        ai_service = AIService() if not skip_ai else None
+        # Inicializar serviço de IA Local (Singleton - carrega modelo apenas uma vez)
+        local_ai = LocalAIService()
+        
+        if local_ai._model is None:
+            self.stdout.write(self.style.ERROR("ERRO: Modelo Sentence-Transformer não pôde ser carregado!"))
+            self.stdout.write(self.style.ERROR("Instale as dependências: pip install sentence-transformers scikit-learn rapidfuzz"))
+            return
+        
+        self.stdout.write(self.style.SUCCESS("IA Local inicializada com sucesso!"))
         
         # Query base: registros sem auditoria ou forçar reauditoria
         queryset = Municipe.objects.all()
@@ -170,21 +177,19 @@ class Command(BaseCommand):
             queryset = queryset[:limit]
         
         total = queryset.count()
-        self.stdout.write(f"Total de registros a processar: {total}")
+        self.stdout.write(f"\nTotal de registros a processar: {total}")
         
         processados = 0
         com_problemas = 0
         sem_problemas = 0
+        duplicatas_encontradas = 0
         
-        # Processar em lotes
+        # Processar em lotes de 50
         for offset in range(0, total, batch_size):
             batch = queryset[offset:offset + batch_size]
-            self.stdout.write(f"\nProcessando lote {offset // batch_size + 1} (registros {offset + 1} a {min(offset + batch_size, total)})...")
-            
-            # Adicionar delay entre lotes para evitar rate limit da API (versão gratuita/padrão)
-            # Nota: O delay principal agora é de 5 segundos entre registros individuais
-            if offset > 0 and not skip_ai:
-                time.sleep(2)  # Delay adicional entre batches
+            self.stdout.write(f"\n{'='*60}")
+            self.stdout.write(f"Processando lote {offset // batch_size + 1} (registros {offset + 1} a {min(offset + batch_size, total)})...")
+            self.stdout.write(f"{'='*60}")
             
             for municipe in batch:
                 try:
@@ -193,152 +198,101 @@ class Command(BaseCommand):
                     if municipe.telefones and isinstance(municipe.telefones, list) and len(municipe.telefones) > 0:
                         telefone_principal = municipe.telefones[0].get('numero', '')
                     
-                    bairro = ''
-                    if municipe.endereco and isinstance(municipe.endereco, dict):
-                        bairro = municipe.endereco.get('bairro', '')
+                    nome_completo = municipe.nome_completo or ''
                     
-                    dados = {
-                        'nome_completo': municipe.nome_completo or '',
-                        'telefone': telefone_principal,
-                        'cpf': municipe.cpf or '',
-                        'categoria': municipe.categoria.nome if municipe.categoria else '',
-                        'orgao': municipe.orgao or '',
-                        'bairro': bairro,
+                    # 1. Análise de qualidade usando IA Local
+                    resultado_qualidade = local_ai.classificar_lixo_semantico(nome_completo, telefone_principal)
+                    
+                    # 2. Buscar duplicidades usando similaridade semântica
+                    duplicatas_potenciais = []
+                    try:
+                        # Buscar outros municipes com nomes similares (excluindo o atual)
+                        outros_municipes = Municipe.objects.exclude(id=municipe.id).exclude(
+                            nome_completo__isnull=True
+                        ).exclude(nome_completo='').values_list('nome_completo', flat=True)[:100]  # Limitar a 100 para performance
+                        
+                        if outros_municipes:
+                            lista_nomes = list(outros_municipes)
+                            # Usar threshold configurado diretamente no método
+                            duplicatas_potenciais = local_ai.calcular_similaridade_duplicados(
+                                nome_completo, 
+                                lista_nomes,
+                                threshold=similarity_threshold
+                            )
+                    except Exception as e:
+                        logger.warning(f"Erro ao buscar duplicatas para {nome_completo}: {e}")
+                    
+                    # 3. Montar resultado da auditoria
+                    problemas = resultado_qualidade.get('problemas_detectados', [])
+                    
+                    # Adicionar informações de duplicatas se encontradas
+                    if duplicatas_potenciais:
+                        duplicatas_encontradas += len(duplicatas_potenciais)
+                        problemas.append(f"Possíveis duplicatas encontradas: {len(duplicatas_potenciais)} registro(s) similar(es)")
+                        
+                        # Ajustar nota se houver duplicatas
+                        nota_qualidade = resultado_qualidade.get('nota_qualidade', 100)
+                        nota_qualidade = max(0, nota_qualidade - (len(duplicatas_potenciais) * 5))
+                        resultado_qualidade['nota_qualidade'] = nota_qualidade
+                    
+                    # Determinar classificação
+                    if resultado_qualidade.get('eh_lixo', False):
+                        classificacao = 'SAD'
+                        com_problemas += 1
+                    elif duplicatas_potenciais:
+                        classificacao = 'DUPLICATA_POTENCIAL'
+                        com_problemas += 1
+                    else:
+                        classificacao = 'OK'
+                        sem_problemas += 1
+                    
+                    # Montar auditoria completa
+                    auditoria = {
+                        'classificacao': classificacao,
+                        'nota_qualidade': resultado_qualidade.get('nota_qualidade', 100),
+                        'sugestao_correcao': resultado_qualidade.get('sugestao_correcao', 'Nenhuma correção necessária'),
+                        'problemas_detectados': problemas,
+                        'metodo_deteccao': 'ia_local_sentence_transformers',
+                        'duplicatas_potenciais': [
+                            {
+                                'nome': dup['nome'],
+                                'similaridade': round(dup['similaridade'], 3)
+                            }
+                            for dup in duplicatas_potenciais[:5]  # Limitar a 5 duplicatas
+                        ] if duplicatas_potenciais else []
                     }
                     
-                    # Detecção rápida de padrões "lixo" com regex (OTIMIZAÇÃO: antes de chamar IA)
-                    telefone_lixo = detectar_padrao_lixo_telefone(telefone_principal)
-                    nome_lixo = detectar_padrao_lixo_nome(municipe.nome_completo)
-                    cpf_vazio = not municipe.cpf or municipe.cpf.strip() == ''
+                    # Salvar auditoria
+                    municipe.auditoria_ia = auditoria
+                    municipe.save(update_fields=['auditoria_ia'])
                     
-                    # Se regex detectou padrão lixo óbvio, marcar diretamente SEM chamar IA (economiza tokens)
-                    if telefone_lixo or nome_lixo or (cpf_vazio and not telefone_principal):
-                        problemas = []
-                        if telefone_lixo:
-                            problemas.append('Telefone genérico/inválido detectado por regex')
-                        if nome_lixo:
-                            problemas.append('Nome fictício ou incompleto detectado por regex')
-                        if cpf_vazio and not telefone_principal:
-                            problemas.append('CPF ausente e sem telefone válido')
-                        
-                        # Calcular nota baseada na gravidade
-                        if telefone_lixo and nome_lixo:
-                            nota = 1  # Muito grave
-                        elif telefone_lixo or nome_lixo:
-                            nota = 3  # Grave
-                        else:
-                            nota = 5  # Moderado
-                        
-                        auditoria = {
-                            'classificacao': 'SAD',
-                            'nota_qualidade': nota,
-                            'sugestao_correcao': 'Registro com dados inválidos detectados por padrões regex. Verificar manualmente e completar informações faltantes.',
-                            'problemas_detectados': problemas,
-                            'metodo_deteccao': 'regex'  # Indica que foi detectado por regex, não IA
-                        }
-                        
-                        municipe.auditoria_ia = auditoria
-                        municipe.save(update_fields=['auditoria_ia'])
-                        com_problemas += 1
-                        processados += 1
-                        continue  # Pula para próximo registro, não chama IA
+                    processados += 1
                     
-                    # Se não detectou padrão lixo óbvio, chamar IA apenas se não estiver em modo skip-ai
-                    if skip_ai:
-                        # Modo skip-ai: marcar como OK se regex não detectou problemas
-                        auditoria = {
-                            'classificacao': 'OK',
-                            'nota_qualidade': 8,
-                            'sugestao_correcao': 'Nenhuma correção necessária (validação regex)',
-                            'problemas_detectados': [],
-                            'metodo_deteccao': 'regex'
-                        }
-                        municipe.auditoria_ia = auditoria
-                        municipe.save(update_fields=['auditoria_ia'])
-                        sem_problemas += 1
+                    # Feedback no console
+                    if duplicatas_potenciais:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"  [{processados}/{total}] {nome_completo[:50]} - "
+                                f"Nota: {resultado_qualidade.get('nota_qualidade', 100)}/100 - "
+                                f"⚠️ {len(duplicatas_potenciais)} duplicata(s) potencial(is)"
+                            )
+                        )
+                    elif resultado_qualidade.get('eh_lixo', False):
+                        self.stdout.write(
+                            self.style.ERROR(
+                                f"  [{processados}/{total}] {nome_completo[:50]} - "
+                                f"Nota: {resultado_qualidade.get('nota_qualidade', 100)}/100 - "
+                                f"❌ Dados de baixa qualidade"
+                            )
+                        )
                     else:
-                        # Delay de 10 segundos antes de chamar a IA para evitar rate limiting
-                        time.sleep(10)
-                        
-                        # Chamar IA para análise completa (regex não detectou problemas óbvios)
-                        try:
-                            resultado = ai_service.analisar_qualidade_registro(dados)
-                        except Exception as e:
-                            # Capturar qualquer exceção não tratada e retornar mensagem amigável
-                            error_msg = str(e)
-                            self.stdout.write(self.style.ERROR(f"  Erro ao processar {municipe.nome_completo}: {error_msg}"))
-                            logger.error(f"Erro ao chamar IA para munícipe {municipe.id}: {error_msg}", exc_info=True)
-                            
-                            # Marcar como pendente em caso de erro
-                            auditoria = {
-                                'classificacao': 'OK',
-                                'nota_qualidade': 7,
-                                'sugestao_correcao': f'Erro ao processar com IA: {error_msg}. Será processado na próxima rodada.',
-                                'problemas_detectados': [],
-                                'metodo_deteccao': 'erro_processamento',
-                                'status': 'erro'
-                            }
-                            municipe.auditoria_ia = auditoria
-                            municipe.save(update_fields=['auditoria_ia'])
-                            continue
-                        
-                        # Tratar retorno de erro da IA graciosamente
-                        if resultado:
-                            # Verificar se é um retry_later (cota atingida)
-                            if resultado.get('status') == 'retry_later':
-                                # Cota atingida: pular registro e marcar como pendente
-                                msg_amigavel = resultado.get('msg', 'Cota do Google atingida')
-                                self.stdout.write(self.style.WARNING(f"  ⚠️  {msg_amigavel} - Registro {municipe.nome_completo} será processado na próxima rodada."))
-                                auditoria = {
-                                    'classificacao': 'OK',
-                                    'nota_qualidade': 7,
-                                    'sugestao_correcao': f'Análise por IA pendente - {msg_amigavel}. Será processado na próxima rodada.',
-                                    'problemas_detectados': [],
-                                    'metodo_deteccao': 'pendente_cota',
-                                    'status': 'retry_later'
-                                }
-                                municipe.auditoria_ia = auditoria
-                                municipe.save(update_fields=['auditoria_ia'])
-                                # Não incrementar contadores, apenas marcar como pendente
-                                continue
-                            # Verificar se é um objeto de erro padrão retornado pela IA
-                            elif resultado.get('status') == 'erro_ia':
-                                # IA retornou erro estruturado (404, ResourceExhausted, etc)
-                                self.stdout.write(self.style.WARNING(f"  IA retornou erro para {municipe.nome_completo}: {resultado.get('detalhes')}"))
-                                resultado['metodo_deteccao'] = 'ia_erro'
-                                municipe.auditoria_ia = resultado
-                                municipe.save(update_fields=['auditoria_ia'])
-                                # Considerar como sem problemas para não bloquear o processamento
-                                sem_problemas += 1
-                            else:
-                                # Resultado válido da IA
-                                resultado['metodo_deteccao'] = 'ia'  # Indica que foi detectado por IA
-                                municipe.auditoria_ia = resultado
-                                municipe.save(update_fields=['auditoria_ia'])
-                                
-                                if resultado.get('classificacao') in ('SAD', 'FALSO_POSITIVO'):
-                                    com_problemas += 1
-                                else:
-                                    sem_problemas += 1
-                        else:
-                            # Se IA retornou None (erro não tratado ou exceção), usar fallback
-                            self.stdout.write(self.style.WARNING(f"  IA retornou None para {municipe.nome_completo}, marcando como pendente..."))
-                            auditoria = {
-                                'classificacao': 'OK',
-                                'nota_qualidade': 7,
-                                'sugestao_correcao': 'Análise por IA indisponível. Validação regex não detectou problemas óbvios.',
-                                'problemas_detectados': [],
-                                'metodo_deteccao': 'regex_fallback'
-                            }
-                            municipe.auditoria_ia = auditoria
-                            municipe.save(update_fields=['auditoria_ia'])
-                            sem_problemas += 1
-                        
-                        processados += 1
+                        if processados % 10 == 0:  # Mostrar apenas a cada 10 registros OK
+                            self.stdout.write(
+                                self.style.SUCCESS(
+                                    f"  [{processados}/{total}] Processando... ({sem_problemas} OK, {com_problemas} com problemas)"
+                                )
+                            )
                     
-                    if processados % 10 == 0:
-                        self.stdout.write(f"  Processados: {processados}/{total}")
-                        
                 except Exception as e:
                     logger.error(f"Erro ao processar munícipe ID {municipe.id}: {e}", exc_info=True)
                     self.stdout.write(self.style.ERROR(f"  Erro ao processar {municipe.nome_completo}: {e}"))
@@ -346,8 +300,9 @@ class Command(BaseCommand):
         
         # Resumo final
         self.stdout.write("\n" + "="*60)
-        self.stdout.write(self.style.SUCCESS(f"Auditoria concluída!"))
+        self.stdout.write(self.style.SUCCESS("Auditoria concluída!"))
         self.stdout.write(f"Total processados: {processados}")
         self.stdout.write(self.style.WARNING(f"Registros com problemas: {com_problemas}"))
         self.stdout.write(self.style.SUCCESS(f"Registros OK: {sem_problemas}"))
+        self.stdout.write(self.style.WARNING(f"Duplicatas potenciais encontradas: {duplicatas_encontradas}"))
         self.stdout.write("="*60)
