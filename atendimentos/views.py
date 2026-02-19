@@ -833,45 +833,55 @@ class UnificarMunicipesView(APIView):
                         try:
                             logger.debug(f"Processando relação M2M: {related_model.__name__}.{remote_field_name}")
                             filtro = {remote_field_name: duplicado}
-                            # IMPORTANTE: Não usar select_for_update() e fazer query dentro de try/except
-                            # Converter para lista para evitar problemas de lazy evaluation dentro da transação
-                            try:
-                                objetos_m2m = list(related_model.objects.filter(**filtro))
-                                logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
-                            except Exception as query_error:
-                                logger.error(f"Erro ao buscar objetos M2M de {related_model.__name__}: {query_error}", exc_info=True)
-                                continue  # Pula esta relação e continua com a próxima
                             
-                            for idx, obj in enumerate(objetos_m2m):
-                                obj_id = obj.pk  # Captura ID antes de qualquer modificação
+                            # Usar savepoint para isolar cada relação M2M
+                            with transaction.savepoint():
                                 try:
-                                    # Pega o manager do campo M2M no objeto relacionado
-                                    m2m_manager = getattr(obj, remote_field_name)
-                                    m2m_manager.remove(duplicado)
-                                    m2m_manager.add(principal)
-                                    links_migrados += 1
-                                    logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj_id})")
-                                except Exception as obj_error:
-                                    logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
-                                    # NÃO re-raise aqui - apenas loga e continua para não quebrar a transação
-                                    # O objeto problemático pode ser corrigido manualmente depois
+                                    objetos_m2m = list(related_model.objects.filter(**filtro))
+                                    logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
+                                except Exception as query_error:
+                                    logger.error(f"Erro ao buscar objetos M2M de {related_model.__name__}: {query_error}", exc_info=True)
+                                    continue  # Pula esta relação e continua com a próxima
+                                
+                                for idx, obj in enumerate(objetos_m2m):
+                                    obj_id = obj.pk  # Captura ID antes de qualquer modificação
+                                    try:
+                                        # Usar savepoint individual para cada objeto M2M
+                                        with transaction.savepoint():
+                                            # Pega o manager do campo M2M no objeto relacionado
+                                            m2m_manager = getattr(obj, remote_field_name)
+                                            m2m_manager.remove(duplicado)
+                                            m2m_manager.add(principal)
+                                            links_migrados += 1
+                                            logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj_id})")
+                                    except Exception as obj_error:
+                                        logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
+                                        # NÃO re-raise aqui - apenas loga e continua para não quebrar a transação
+                                        # O objeto problemático pode ser corrigido manualmente depois
                         except Exception as e:
                             # Log do erro mas continua processamento - NUNCA re-raise aqui!
                             logger.error(f"Erro ao migrar relação M2M {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
                             continue
 
-                # 4. EXCLUIR O DUPLICADO (APÓS COMMIT DA TRANSAÇÃO)
-                # IMPORTANTE: Não deletar dentro da transação atômica principal!
-                # Se houver qualquer exceção anterior (mesmo tratada), o Django marca a transação como quebrada
-                # e não permite mais queries. Vamos deletar usando SQL direto ou após o commit.
+                # 4. EXCLUIR OBJETOS DUPLICADOS E O DUPLICADO (APÓS COMMIT DA TRANSAÇÃO)
                 duplicado_id = duplicado.id
                 duplicado_nome = duplicado.nome_completo
-                logger.info(f"Preparando exclusão de munícipe duplicado (ID: {duplicado_id}, Nome: {duplicado_nome}) após commit")
+                logger.info(f"Preparando exclusão de {len(objetos_para_deletar_apos_commit)} objetos duplicados e munícipe duplicado após commit")
                 
                 # Usar on_commit para deletar APÓS a transação ser commitada com sucesso
-                def deletar_duplicado_apos_commit():
+                def deletar_objetos_apos_commit():
+                    # Deletar objetos duplicados primeiro
+                    for model_class, obj_id in objetos_para_deletar_apos_commit:
+                        try:
+                            obj = model_class.objects.filter(pk=obj_id).first()
+                            if obj:
+                                obj.delete()
+                                logger.info(f"Objeto duplicado deletado após commit: {model_class.__name__} ID {obj_id}")
+                        except Exception as delete_error:
+                            logger.error(f"Erro ao deletar objeto duplicado {model_class.__name__} ID {obj_id} após commit: {delete_error}", exc_info=True)
+                    
+                    # Deletar o munícipe duplicado
                     try:
-                        # Buscar novamente para garantir que ainda existe
                         duplicado_refresh = Municipe.objects.filter(pk=duplicado_id).first()
                         if duplicado_refresh:
                             logger.info(f"Deletando duplicado após commit (ID: {duplicado_id})")
@@ -884,7 +894,7 @@ class UnificarMunicipesView(APIView):
                         logger.warning(f"Duplicado não foi deletado automaticamente. ID: {duplicado_id}, Nome: {duplicado_nome} - pode ser deletado manualmente")
                 
                 # Agendar deleção para após o commit bem-sucedido
-                transaction.on_commit(deletar_duplicado_apos_commit)
+                transaction.on_commit(deletar_objetos_apos_commit)
 
                 logger.info(f"Unificação concluída: {links_migrados} vínculos migrados. Duplicado será deletado após commit.")
                 return Response({
