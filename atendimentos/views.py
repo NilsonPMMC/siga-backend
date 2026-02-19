@@ -378,6 +378,25 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
             return base_queryset.order_by('-data_cadastro')[:100]
 
     # --- O AJUSTE ESTÁ AQUI EMBAIXO ---
+    def create(self, request, *args, **kwargs):
+        """
+        Sobrescreve create para adicionar aviso de qualidade de dados no response.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        
+        # Verificar qualidade e adicionar aviso ao response se necessário
+        municipe = serializer.instance
+        aviso_qualidade = self._verificar_qualidade_dados(municipe)
+        
+        response_data = serializer.data
+        if aviso_qualidade:
+            response_data['aviso_qualidade'] = aviso_qualidade
+        
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+    
     def perform_create(self, serializer):
         """
         Intercepta a criação para garantir que o munícipe seja vinculado
@@ -394,6 +413,88 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
                 contas_do_usuario = user.perfil.contas.all()
                 # .set() funciona para campos ManyToMany
                 municipe.contas.set(contas_do_usuario)
+    
+    def _verificar_qualidade_dados(self, municipe):
+        """
+        Verifica qualidade dos dados do munícipe e dispara análise assíncrona se necessário.
+        Retorna aviso para incluir no response (não bloqueia salvamento).
+        """
+        try:
+            # Extrair telefone principal
+            telefone_principal = ''
+            if municipe.telefones and isinstance(municipe.telefones, list) and len(municipe.telefones) > 0:
+                telefone_principal = municipe.telefones[0].get('numero', '')
+            
+            # Verificar se telefone é genérico ou já existe em outros registros
+            telefone_genérico = False
+            telefone_duplicado = False
+            problemas = []
+            
+            if telefone_principal:
+                # Detecção rápida de padrão lixo
+                import re
+                numeros = re.sub(r'\D', '', telefone_principal)
+                if len(numeros) >= 8:
+                    # Padrão genérico (99) 99999-9999
+                    if re.match(r'^9{2}9{5}9{4}$', numeros) or re.match(r'^9{10,11}$', numeros):
+                        telefone_genérico = True
+                        problemas.append('Telefone genérico detectado')
+                    # Sequências repetitivas
+                    elif len(set(numeros)) == 1:
+                        telefone_genérico = True
+                        problemas.append('Telefone com sequência repetitiva')
+                    # Sequências óbvias
+                    elif re.match(r'^12345678', numeros) or re.match(r'^123456789', numeros):
+                        telefone_genérico = True
+                        problemas.append('Telefone com sequência óbvia')
+                
+                # Verificar se telefone já existe em outros 5 registros
+                outros_com_mesmo_telefone = Municipe.objects.exclude(id=municipe.id).filter(
+                    telefones__contains=[{'numero': telefone_principal}]
+                )[:5]
+                if outros_com_mesmo_telefone.exists():
+                    telefone_duplicado = True
+                    problemas.append(f'Telefone já existe em {outros_com_mesmo_telefone.count()} outro(s) registro(s)')
+            
+            if not municipe.cpf or not municipe.cpf.strip():
+                problemas.append('CPF não informado')
+            
+            # Se detectou problemas, disparar análise assíncrona e retornar aviso
+            if telefone_genérico or telefone_duplicado or not municipe.cpf:
+                # Preparar dados para análise
+                bairro = ''
+                if municipe.endereco and isinstance(municipe.endereco, dict):
+                    bairro = municipe.endereco.get('bairro', '')
+                
+                dados = {
+                    'nome_completo': municipe.nome_completo or '',
+                    'telefone': telefone_principal,
+                    'cpf': municipe.cpf or '',
+                    'categoria': municipe.categoria.nome if municipe.categoria else '',
+                    'orgao': municipe.orgao or '',
+                    'bairro': bairro,
+                }
+                
+                # Disparar análise assíncrona (task do Celery)
+                try:
+                    from .tasks import task_auditar_qualidade_municipe
+                    task_auditar_qualidade_municipe.delay(municipe.id)
+                except Exception as e:
+                    logger.warning(f"Erro ao disparar auditoria para munícipe {municipe.id}: {e}")
+                
+                # Retornar aviso para incluir no response
+                return {
+                    'tipo': 'baixa_qualidade',
+                    'mensagem': 'Este registro apresenta indicadores de baixa qualidade de dados e será auditado automaticamente.',
+                    'problemas': problemas,
+                    'acao_recomendada': 'Verifique os dados informados e complete as informações faltantes quando possível.'
+                }
+            
+            return None
+                    
+        except Exception as e:
+            logger.warning(f"Erro ao verificar qualidade de dados do munícipe {municipe.id}: {e}")
+            return None
 
 class MunicipeDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]

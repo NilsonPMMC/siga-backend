@@ -162,6 +162,13 @@ class Municipe(UppercaseFieldsMixin, models.Model):
         db_index=True, # Otimiza a busca por este campo
         verbose_name="Grupo de Possíveis Duplicatas"
     )
+    auditoria_ia = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True,
+        verbose_name="Auditoria de Qualidade (IA)",
+        help_text="Dados de auditoria gerados pela IA: nota de qualidade, classificação, sugestões de correção."
+    )
     class Meta: verbose_name = "Munícipe"; verbose_name_plural = "Munícipes"; ordering = ['nome_completo']
     def __str__(self): return self.nome_completo
 
