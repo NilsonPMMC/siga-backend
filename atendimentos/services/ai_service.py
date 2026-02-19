@@ -1,33 +1,34 @@
 """
 Serviço de integração com Google Gemini AI para geração de resumos automáticos.
+Usa a nova biblioteca google-genai (cliente unificado).
 """
 import logging
 from django.conf import settings
-import google.generativeai as genai
+from google import genai
 
 logger = logging.getLogger(__name__)
 
 
 class AIService:
-    """Serviço para interação com Google Gemini AI."""
+    """Serviço para interação com Google Gemini AI usando google-genai."""
     
     def __init__(self):
         """Inicializa o serviço com a API key do Gemini."""
         api_key = getattr(settings, 'GEMINI_API_KEY', None)
-        if not api_key:
+        if not api_key or not api_key.strip():
             logger.warning("GEMINI_API_KEY não configurada. Funcionalidades de IA não estarão disponíveis.")
-            self.model = None
+            self.client = None
             self.model_name = None
         else:
             try:
-                genai.configure(api_key=api_key)
-                # Usar gemini-1.5-flash (mais rápido e econômico) ou gemini-1.5-pro (mais preciso)
+                # Usar o novo cliente unificado do google-genai
+                self.client = genai.Client(api_key=api_key.strip())
+                # Usar gemini-1.5-flash (mais rápido e econômico)
                 self.model_name = 'gemini-1.5-flash'
-                self.model = genai.GenerativeModel(self.model_name)
                 logger.info(f"AIService inicializado com sucesso usando modelo {self.model_name}.")
             except Exception as e:
                 logger.error(f"Erro ao inicializar AIService: {e}", exc_info=True)
-                self.model = None
+                self.client = None
                 self.model_name = None
     
     def gerar_resumo_atendimento(self, titulo, descricao, tramitacoes):
@@ -42,8 +43,8 @@ class AIService:
         Returns:
             str: Resumo gerado pela IA ou None em caso de erro
         """
-        if not self.model:
-            logger.warning("Modelo Gemini não disponível. Não é possível gerar resumo.")
+        if not self.client:
+            logger.warning("Cliente Gemini não disponível. Não é possível gerar resumo.")
             return None
         
         try:
@@ -85,10 +86,13 @@ Analise o seguinte atendimento público e gere um resumo executivo conciso (máx
 
 Gere o resumo agora:"""
 
-            # Chamar a API do Gemini
-            response = self.model.generate_content(prompt)
+            # Chamar a API do Gemini usando o novo cliente
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             
-            if response and response.text:
+            if response and hasattr(response, 'text') and response.text:
                 resumo = response.text.strip()
                 logger.info(f"Resumo gerado com sucesso. Tamanho: {len(resumo)} caracteres.")
                 return resumo
@@ -98,11 +102,14 @@ Gere o resumo agora:"""
                 
         except Exception as e:
             error_msg = str(e)
+            error_type = type(e).__name__
             # Tratamento específico para erros comuns da API
-            if '404' in error_msg or 'NotFound' in error_msg:
+            if '404' in error_msg or 'NotFound' in error_msg or '404' in error_type:
                 logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
             elif '500' in error_msg or 'InternalServerError' in error_msg:
                 logger.error("Erro interno do servidor Gemini (500). Tente novamente mais tarde.")
+            elif '429' in error_msg or 'ResourceExhausted' in error_type or 'QuotaExceeded' in error_type:
+                logger.error("Quota da API Gemini excedida ou limite de requisições atingido.")
             else:
                 logger.error(f"Erro ao gerar resumo com Gemini AI: {error_msg}")
             return None
@@ -128,8 +135,8 @@ Gere o resumo agora:"""
                 'problemas_detectados': list[str]
             } ou None em caso de erro
         """
-        if not self.model:
-            logger.warning("Modelo Gemini não disponível. Não é possível analisar qualidade.")
+        if not self.client:
+            logger.warning("Cliente Gemini não disponível. Não é possível analisar qualidade.")
             return None
         
         try:
@@ -172,9 +179,12 @@ Responda APENAS em formato JSON válido, sem markdown, com a seguinte estrutura:
     "problemas_detectados": ["<problema 1>", "<problema 2>", ...]
 }}"""
 
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             
-            if response and response.text:
+            if response and hasattr(response, 'text') and response.text:
                 import json
                 import re
                 # Extrair JSON da resposta (pode vir com markdown ou texto extra)
@@ -198,16 +208,37 @@ Responda APENAS em formato JSON válido, sem markdown, com a seguinte estrutura:
                 
         except Exception as e:
             error_msg = str(e)
-            # Tratamento específico para erros da API - não expor traceback completo
-            if '404' in error_msg or 'NotFound' in error_msg:
+            error_type = type(e).__name__
+            
+            # Tratamento robusto para erros específicos da API
+            if '404' in error_msg or 'NotFound' in error_msg or '404' in error_type:
                 logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
+                # Retornar objeto padrão para evitar que o comando trave
+                return {
+                    "status": "erro_ia",
+                    "detalhes": "API fora do ar ou modelo incompatível (404)",
+                    "classificacao": "OK",  # Fallback seguro
+                    "nota_qualidade": 5,
+                    "sugestao_correcao": "Análise por IA indisponível. Verificar manualmente.",
+                    "problemas_detectados": []
+                }
+            elif 'ResourceExhausted' in error_type or '429' in error_msg or 'QuotaExceeded' in error_type:
+                logger.error("Quota da API Gemini excedida ou limite de requisições atingido (ResourceExhausted).")
+                # Retornar objeto padrão para evitar que o comando trave
+                return {
+                    "status": "erro_ia",
+                    "detalhes": "API fora do ar ou modelo incompatível (limite de cota excedido)",
+                    "classificacao": "OK",  # Fallback seguro
+                    "nota_qualidade": 5,
+                    "sugestao_correcao": "Análise por IA indisponível devido a limite de cota. Verificar manualmente.",
+                    "problemas_detectados": []
+                }
             elif '500' in error_msg or 'InternalServerError' in error_msg:
                 logger.error("Erro interno do servidor Gemini (500). API temporariamente indisponível.")
-            elif '429' in error_msg or 'QuotaExceeded' in error_msg:
-                logger.error("Quota da API Gemini excedida. Aguarde antes de tentar novamente.")
             else:
                 logger.error(f"Erro ao analisar qualidade do registro com Gemini AI: {error_msg}")
-            # Retornar None para permitir fallback para detecção regex
+            
+            # Retornar None para permitir fallback para detecção regex (comportamento padrão)
             return None
     
     def sugerir_fusao(self, registro_a, lista_possiveis):
@@ -232,8 +263,8 @@ Responda APENAS em formato JSON válido, sem markdown, com a seguinte estrutura:
                 'registros_similares': list[int] (índices dos registros que devem ser fundidos)
             } ou None em caso de erro
         """
-        if not self.model:
-            logger.warning("Modelo Gemini não disponível. Não é possível sugerir fusão.")
+        if not self.client:
+            logger.warning("Cliente Gemini não disponível. Não é possível sugerir fusão.")
             return None
         
         if not lista_possiveis or len(lista_possiveis) == 0:
@@ -283,9 +314,12 @@ Responda APENAS em formato JSON válido, sem markdown:
     "registros_similares": [<lista de índices (1, 2, 3...) dos registros que devem ser fundidos>]
 }}"""
 
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             
-            if response and response.text:
+            if response and hasattr(response, 'text') and response.text:
                 import json
                 import re
                 texto = response.text.strip()
@@ -307,13 +341,14 @@ Responda APENAS em formato JSON válido, sem markdown:
                 
         except Exception as e:
             error_msg = str(e)
+            error_type = type(e).__name__
             # Tratamento específico para erros da API
-            if '404' in error_msg or 'NotFound' in error_msg:
+            if '404' in error_msg or 'NotFound' in error_msg or '404' in error_type:
                 logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
             elif '500' in error_msg or 'InternalServerError' in error_msg:
                 logger.error("Erro interno do servidor Gemini (500). API temporariamente indisponível.")
-            elif '429' in error_msg or 'QuotaExceeded' in error_msg:
-                logger.error("Quota da API Gemini excedida. Aguarde antes de tentar novamente.")
+            elif '429' in error_msg or 'ResourceExhausted' in error_type or 'QuotaExceeded' in error_type:
+                logger.error("Quota da API Gemini excedida ou limite de requisições atingido.")
             else:
                 logger.error(f"Erro ao sugerir fusão com Gemini AI: {error_msg}")
             return None

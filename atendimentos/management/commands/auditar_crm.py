@@ -4,6 +4,7 @@ Identifica registros com dados pobres, telefones genéricos e sugere correções
 """
 import re
 import logging
+import time
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from atendimentos.models import Municipe
@@ -180,6 +181,10 @@ class Command(BaseCommand):
             batch = queryset[offset:offset + batch_size]
             self.stdout.write(f"\nProcessando lote {offset // batch_size + 1} (registros {offset + 1} a {min(offset + batch_size, total)})...")
             
+            # Adicionar delay entre lotes para evitar rate limit da API (versão gratuita/padrão)
+            if offset > 0 and not skip_ai:
+                time.sleep(1)  # 1 segundo entre batches para respeitar limites da API
+            
             for municipe in batch:
                 try:
                     # Extrair dados essenciais
@@ -234,6 +239,7 @@ class Command(BaseCommand):
                         municipe.auditoria_ia = auditoria
                         municipe.save(update_fields=['auditoria_ia'])
                         com_problemas += 1
+                        processados += 1
                         continue  # Pula para próximo registro, não chama IA
                     
                     # Se não detectou padrão lixo óbvio, chamar IA apenas se não estiver em modo skip-ai
@@ -253,18 +259,30 @@ class Command(BaseCommand):
                         # Chamar IA para análise completa (regex não detectou problemas óbvios)
                         resultado = ai_service.analisar_qualidade_registro(dados)
                         
+                        # Tratar retorno de erro da IA graciosamente
                         if resultado:
-                            resultado['metodo_deteccao'] = 'ia'  # Indica que foi detectado por IA
-                            municipe.auditoria_ia = resultado
-                            municipe.save(update_fields=['auditoria_ia'])
-                            
-                            if resultado.get('classificacao') in ('SAD', 'FALSO_POSITIVO'):
-                                com_problemas += 1
-                            else:
+                            # Verificar se é um objeto de erro padrão retornado pela IA
+                            if resultado.get('status') == 'erro_ia':
+                                # IA retornou erro estruturado (404, ResourceExhausted, etc)
+                                self.stdout.write(self.style.WARNING(f"  IA retornou erro para {municipe.nome_completo}: {resultado.get('detalhes')}"))
+                                resultado['metodo_deteccao'] = 'ia_erro'
+                                municipe.auditoria_ia = resultado
+                                municipe.save(update_fields=['auditoria_ia'])
+                                # Considerar como sem problemas para não bloquear o processamento
                                 sem_problemas += 1
+                            else:
+                                # Resultado válido da IA
+                                resultado['metodo_deteccao'] = 'ia'  # Indica que foi detectado por IA
+                                municipe.auditoria_ia = resultado
+                                municipe.save(update_fields=['auditoria_ia'])
+                                
+                                if resultado.get('classificacao') in ('SAD', 'FALSO_POSITIVO'):
+                                    com_problemas += 1
+                                else:
+                                    sem_problemas += 1
                         else:
-                            # Se IA falhou, usar detecção regex como fallback (mas já passou pela validação acima)
-                            self.stdout.write(self.style.WARNING(f"  IA falhou para {municipe.nome_completo}, marcando como pendente..."))
+                            # Se IA retornou None (erro não tratado ou exceção), usar fallback
+                            self.stdout.write(self.style.WARNING(f"  IA retornou None para {municipe.nome_completo}, marcando como pendente..."))
                             auditoria = {
                                 'classificacao': 'OK',
                                 'nota_qualidade': 7,
@@ -275,8 +293,8 @@ class Command(BaseCommand):
                             municipe.auditoria_ia = auditoria
                             municipe.save(update_fields=['auditoria_ia'])
                             sem_problemas += 1
-                    
-                    processados += 1
+                        
+                        processados += 1
                     
                     if processados % 10 == 0:
                         self.stdout.write(f"  Processados: {processados}/{total}")

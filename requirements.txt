@@ -1,0 +1,31 @@
+# Django e dependências principais
+Django>=5.2.3,<6.0
+djangorestframework>=3.14.0
+django-rest-framework-simplejwt>=5.3.0
+django-cors-headers>=4.3.0
+django-import-export>=4.0.0
+
+# Banco de dados
+mysqlclient>=2.2.0
+dj-database-url>=2.1.0
+
+# Variáveis de ambiente
+python-decouple>=3.8
+python-dotenv>=1.0.0
+
+# Autenticação e segurança
+django-allauth>=0.57.0
+
+# Celery para tarefas assíncronas
+celery>=5.3.0
+redis>=5.0.0
+
+# Geração de PDFs
+weasyprint>=60.0
+
+# Google Gemini AI (nova biblioteca unificada)
+google-genai>=0.2.0
+
+# Utilitários
+Pillow>=10.0.0
+python-dateutil>=2.8.0
