@@ -753,7 +753,7 @@ class UnificarMunicipesView(APIView):
                         if mail.get('email') and mail.get('email') not in emails_existentes:
                             principal.emails.append(mail)
 
-                principal.save()
+                principal.save(update_fields=['cpf', 'matricula_rh', 'foto', 'telefones', 'emails'])
 
                 # 2. TRANSFERIR VÍNCULOS (CORREÇÃO DA INTROSPECÇÃO)
                 links_migrados = 0
@@ -769,7 +769,8 @@ class UnificarMunicipesView(APIView):
                         # Busca objetos do modelo relacionado que apontam para o duplicado
                         try:
                             filtro = {remote_field_name: duplicado}
-                            objetos = related_model.objects.filter(**filtro)
+                            # Usar select_for_update para evitar problemas de concorrência dentro da transação
+                            objetos = list(related_model.objects.filter(**filtro).select_for_update())
                             
                             for obj in objetos:
                                 # Tenta mover para o principal
@@ -780,11 +781,16 @@ class UnificarMunicipesView(APIView):
                                 except IntegrityError:
                                     # CONFLITO: O principal JÁ TEM esse vínculo (ex: convidado 2x na mesma agenda)
                                     # Como não podemos ter dois iguais, e o duplicado vai sumir, deletamos o vínculo duplicado.
-                                    # Recarrega o objeto original antes de deletar para evitar inconsistência
-                                    # Mas como setattr alterou em memória, é melhor buscar o ID direto para deletar
-                                    related_model.objects.filter(pk=obj.pk).delete()
+                                    # Captura o ID antes de tentar modificar para evitar problemas de transação
+                                    obj_id = obj.pk
+                                    # Usa delete() direto no objeto já carregado (sem refresh_from_db que causa erro de transação)
+                                    obj.delete()
+                                    links_migrados += 1  # Conta como migrado (foi removido)
                         except Exception as e:
-                            print(f"Erro ao migrar {related_model}: {e}")
+                            # Log do erro mas continua processamento
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.error(f"Erro ao migrar {related_model}: {e}", exc_info=True)
                             continue
 
                 # 3. MIGRAR RELAÇÕES MANY-TO-MANY (Ex: Listas de Distribuição)
@@ -795,15 +801,23 @@ class UnificarMunicipesView(APIView):
                         remote_field_name = rel.field.name 
                         
                         # Para M2M, o filtro é um pouco diferente
-                        filtro = {remote_field_name: duplicado}
-                        objetos_m2m = related_model.objects.filter(**filtro)
-                        
-                        for obj in objetos_m2m:
-                            # Pega o manager do campo M2M no objeto relacionado
-                            m2m_manager = getattr(obj, remote_field_name)
-                            m2m_manager.remove(duplicado)
-                            m2m_manager.add(principal)
-                            links_migrados += 1
+                        try:
+                            filtro = {remote_field_name: duplicado}
+                            # Converter para lista para evitar problemas de lazy evaluation dentro da transação
+                            objetos_m2m = list(related_model.objects.filter(**filtro).select_for_update())
+                            
+                            for obj in objetos_m2m:
+                                # Pega o manager do campo M2M no objeto relacionado
+                                m2m_manager = getattr(obj, remote_field_name)
+                                m2m_manager.remove(duplicado)
+                                m2m_manager.add(principal)
+                                links_migrados += 1
+                        except Exception as e:
+                            # Log do erro mas continua processamento
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.error(f"Erro ao migrar relação M2M {related_model}: {e}", exc_info=True)
+                            continue
 
                 # 4. EXCLUIR O DUPLICADO
                 # Agora que movemos Atendimentos, Solicitacoes, Agendas, etc., ele deve estar "limpo".
