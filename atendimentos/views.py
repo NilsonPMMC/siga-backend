@@ -833,24 +833,30 @@ class UnificarMunicipesView(APIView):
                         try:
                             logger.debug(f"Processando relação M2M: {related_model.__name__}.{remote_field_name}")
                             filtro = {remote_field_name: duplicado}
+                            # IMPORTANTE: Não usar select_for_update() e fazer query dentro de try/except
                             # Converter para lista para evitar problemas de lazy evaluation dentro da transação
-                            objetos_m2m = list(related_model.objects.filter(**filtro).select_for_update())
-                            logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
+                            try:
+                                objetos_m2m = list(related_model.objects.filter(**filtro))
+                                logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
+                            except Exception as query_error:
+                                logger.error(f"Erro ao buscar objetos M2M de {related_model.__name__}: {query_error}", exc_info=True)
+                                continue  # Pula esta relação e continua com a próxima
                             
                             for idx, obj in enumerate(objetos_m2m):
+                                obj_id = obj.pk  # Captura ID antes de qualquer modificação
                                 try:
                                     # Pega o manager do campo M2M no objeto relacionado
                                     m2m_manager = getattr(obj, remote_field_name)
                                     m2m_manager.remove(duplicado)
                                     m2m_manager.add(principal)
                                     links_migrados += 1
-                                    logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj.pk})")
+                                    logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj_id})")
                                 except Exception as obj_error:
-                                    logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj.pk}): {obj_error}", exc_info=True)
+                                    logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
                                     # NÃO re-raise aqui - apenas loga e continua para não quebrar a transação
                                     # O objeto problemático pode ser corrigido manualmente depois
                         except Exception as e:
-                            # Log do erro mas continua processamento
+                            # Log do erro mas continua processamento - NUNCA re-raise aqui!
                             logger.error(f"Erro ao migrar relação M2M {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
                             continue
 
