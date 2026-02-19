@@ -182,8 +182,9 @@ class Command(BaseCommand):
             self.stdout.write(f"\nProcessando lote {offset // batch_size + 1} (registros {offset + 1} a {min(offset + batch_size, total)})...")
             
             # Adicionar delay entre lotes para evitar rate limit da API (versão gratuita/padrão)
+            # Nota: O delay principal agora é de 5 segundos entre registros individuais
             if offset > 0 and not skip_ai:
-                time.sleep(1)  # 1 segundo entre batches para respeitar limites da API
+                time.sleep(2)  # Delay adicional entre batches
             
             for municipe in batch:
                 try:
@@ -261,8 +262,24 @@ class Command(BaseCommand):
                         
                         # Tratar retorno de erro da IA graciosamente
                         if resultado:
+                            # Verificar se é um retry_later (cota atingida)
+                            if resultado.get('status') == 'retry_later':
+                                # Cota atingida: pular registro e marcar como pendente
+                                self.stdout.write(self.style.WARNING(f"  Cota atingida para {municipe.nome_completo}. Marcando como pendente para próxima rodada."))
+                                auditoria = {
+                                    'classificacao': 'OK',
+                                    'nota_qualidade': 7,
+                                    'sugestao_correcao': 'Análise por IA pendente - cota do Google atingida. Será processado na próxima rodada.',
+                                    'problemas_detectados': [],
+                                    'metodo_deteccao': 'pendente_cota',
+                                    'status': 'retry_later'
+                                }
+                                municipe.auditoria_ia = auditoria
+                                municipe.save(update_fields=['auditoria_ia'])
+                                # Não incrementar contadores, apenas marcar como pendente
+                                continue
                             # Verificar se é um objeto de erro padrão retornado pela IA
-                            if resultado.get('status') == 'erro_ia':
+                            elif resultado.get('status') == 'erro_ia':
                                 # IA retornou erro estruturado (404, ResourceExhausted, etc)
                                 self.stdout.write(self.style.WARNING(f"  IA retornou erro para {municipe.nome_completo}: {resultado.get('detalhes')}"))
                                 resultado['metodo_deteccao'] = 'ia_erro'
@@ -295,6 +312,9 @@ class Command(BaseCommand):
                             sem_problemas += 1
                         
                         processados += 1
+                        
+                        # Delay de 5 segundos entre registros para evitar rate limiting
+                        time.sleep(5)
                     
                     if processados % 10 == 0:
                         self.stdout.write(f"  Processados: {processados}/{total}")
