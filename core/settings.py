@@ -25,30 +25,54 @@ dotenv.load_dotenv(os.path.join(BASE_DIR, '.env'))
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# Obtém SECRET_KEY do ambiente, com fallback para desenvolvimento
-SECRET_KEY = config('SECRET_KEY', default='django-insecure--7hk=jn*vw$wm*sd*6t=l0tkh(k5brj)_+un79yc)e9(805k4l')
+# SECRET_KEY DEVE estar no .env - sem fallback inseguro
+SECRET_KEY = config('SECRET_KEY', default=None)
 
-# Validação crítica: SECRET_KEY não pode ser o valor padrão inseguro em produção
-if SECRET_KEY == 'django-insecure--7hk=jn*vw$wm*sd*6t=l0tkh(k5brj)_+un79yc)e9(805k4l':
-    import warnings
-    warnings.warn(
-        "⚠️ ATENÇÃO: SECRET_KEY está usando o valor padrão inseguro! "
-        "Configure SECRET_KEY no arquivo .env antes de fazer deploy em produção.",
-        UserWarning
-    )
+# Validação crítica: SECRET_KEY é obrigatória
+if not SECRET_KEY:
+    import sys
+    print("=" * 80)
+    print("ERRO CRÍTICO: SECRET_KEY não encontrada no arquivo .env!")
+    print("Configure SECRET_KEY no arquivo .env antes de executar o projeto.")
+    print("Gere uma nova chave com: python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())'")
+    print("=" * 80)
+    sys.exit(1)
+
+# Validação adicional: SECRET_KEY não pode ser o valor padrão inseguro conhecido
+SECRET_KEY_INSECURE_DEFAULT = 'django-insecure--7hk=jn*vw$wm*sd*6t=l0tkh(k5brj)_+un79yc)e9(805k4l'
+if SECRET_KEY == SECRET_KEY_INSECURE_DEFAULT:
+    import sys
+    print("=" * 80)
+    print("ERRO CRÍTICO: SECRET_KEY está usando valor padrão inseguro!")
+    print("Configure uma SECRET_KEY segura no arquivo .env.")
+    print("Gere uma nova chave com: python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())'")
+    print("=" * 80)
+    sys.exit(1)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-# DEBUG deve ser False em produção!
-DEBUG = config('DEBUG', default=False, cast=bool)
+# DEBUG DEVE estar no .env - default False para segurança
+DEBUG_STR = config('DEBUG', default='False')
+if DEBUG_STR.lower() in ('true', '1', 'yes', 'on'):
+    DEBUG = True
+elif DEBUG_STR.lower() in ('false', '0', 'no', 'off', ''):
+    DEBUG = False
+else:
+    import sys
+    print("=" * 80)
+    print(f"ERRO: Valor inválido para DEBUG no .env: '{DEBUG_STR}'")
+    print("Use 'True' ou 'False' (string) no arquivo .env")
+    print("=" * 80)
+    sys.exit(1)
 
-# Validação: Em produção, DEBUG deve ser False
-if DEBUG and 'gabinete.mogidascruzes.sp.gov.br' in config('ALLOWED_HOSTS', default=''):
-    import warnings
-    warnings.warn(
-        "⚠️ ATENÇÃO: DEBUG está True em ambiente de produção! "
-        "Configure DEBUG=False no arquivo .env para produção.",
-        UserWarning
-    )
+# Validação adicional: DEBUG não pode ser True em produção
+if DEBUG:
+    allowed_hosts_str = config('ALLOWED_HOSTS', default='')
+    if 'gabinete.mogidascruzes.sp.gov.br' in allowed_hosts_str or not allowed_hosts_str:
+        import warnings
+        warnings.warn(
+            "⚠️ ATENÇÃO: DEBUG está True! Configure DEBUG=False no arquivo .env para produção.",
+            UserWarning
+        )
 
 # ALLOWED_HOSTS: Lista de hosts permitidos
 ALLOWED_HOSTS_STR = config('ALLOWED_HOSTS', default='gabinete.mogidascruzes.sp.gov.br,192.168.10.50,localhost,127.0.0.1')

@@ -17,14 +17,18 @@ class AIService:
         if not api_key:
             logger.warning("GEMINI_API_KEY não configurada. Funcionalidades de IA não estarão disponíveis.")
             self.model = None
+            self.model_name = None
         else:
             try:
                 genai.configure(api_key=api_key)
-                self.model = genai.GenerativeModel('gemini-pro')
-                logger.info("AIService inicializado com sucesso.")
+                # Usar gemini-1.5-flash (mais rápido e econômico) ou gemini-1.5-pro (mais preciso)
+                self.model_name = 'gemini-1.5-flash'
+                self.model = genai.GenerativeModel(self.model_name)
+                logger.info(f"AIService inicializado com sucesso usando modelo {self.model_name}.")
             except Exception as e:
-                logger.error(f"Erro ao inicializar AIService: {e}")
+                logger.error(f"Erro ao inicializar AIService: {e}", exc_info=True)
                 self.model = None
+                self.model_name = None
     
     def gerar_resumo_atendimento(self, titulo, descricao, tramitacoes):
         """
@@ -93,7 +97,14 @@ Gere o resumo agora:"""
                 return None
                 
         except Exception as e:
-            logger.error(f"Erro ao gerar resumo com Gemini AI: {e}", exc_info=True)
+            error_msg = str(e)
+            # Tratamento específico para erros comuns da API
+            if '404' in error_msg or 'NotFound' in error_msg:
+                logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
+            elif '500' in error_msg or 'InternalServerError' in error_msg:
+                logger.error("Erro interno do servidor Gemini (500). Tente novamente mais tarde.")
+            else:
+                logger.error(f"Erro ao gerar resumo com Gemini AI: {error_msg}")
             return None
     
     def analisar_qualidade_registro(self, dados_json):
@@ -168,12 +179,16 @@ Responda APENAS em formato JSON válido, sem markdown, com a seguinte estrutura:
                 import re
                 # Extrair JSON da resposta (pode vir com markdown ou texto extra)
                 texto = response.text.strip()
-                # Tentar encontrar JSON no texto
-                json_match = re.search(r'\{[^{}]*\}', texto, re.DOTALL)
+                # Tentar encontrar JSON no texto (suporta JSON aninhado)
+                json_match = re.search(r'\{.*\}', texto, re.DOTALL)
                 if json_match:
-                    resultado = json.loads(json_match.group())
-                    logger.info(f"Análise de qualidade concluída. Classificação: {resultado.get('classificacao')}, Nota: {resultado.get('nota_qualidade')}")
-                    return resultado
+                    try:
+                        resultado = json.loads(json_match.group())
+                        logger.info(f"Análise de qualidade concluída. Classificação: {resultado.get('classificacao')}, Nota: {resultado.get('nota_qualidade')}")
+                        return resultado
+                    except json.JSONDecodeError:
+                        logger.warning("Resposta do Gemini contém JSON inválido.")
+                        return None
                 else:
                     logger.warning("Resposta do Gemini não contém JSON válido.")
                     return None
@@ -182,7 +197,17 @@ Responda APENAS em formato JSON válido, sem markdown, com a seguinte estrutura:
                 return None
                 
         except Exception as e:
-            logger.error(f"Erro ao analisar qualidade do registro com Gemini AI: {e}", exc_info=True)
+            error_msg = str(e)
+            # Tratamento específico para erros da API - não expor traceback completo
+            if '404' in error_msg or 'NotFound' in error_msg:
+                logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
+            elif '500' in error_msg or 'InternalServerError' in error_msg:
+                logger.error("Erro interno do servidor Gemini (500). API temporariamente indisponível.")
+            elif '429' in error_msg or 'QuotaExceeded' in error_msg:
+                logger.error("Quota da API Gemini excedida. Aguarde antes de tentar novamente.")
+            else:
+                logger.error(f"Erro ao analisar qualidade do registro com Gemini AI: {error_msg}")
+            # Retornar None para permitir fallback para detecção regex
             return None
     
     def sugerir_fusao(self, registro_a, lista_possiveis):
@@ -264,11 +289,15 @@ Responda APENAS em formato JSON válido, sem markdown:
                 import json
                 import re
                 texto = response.text.strip()
-                json_match = re.search(r'\{[^{}]*\}', texto, re.DOTALL)
+                json_match = re.search(r'\{.*\}', texto, re.DOTALL)
                 if json_match:
-                    resultado = json.loads(json_match.group())
-                    logger.info(f"Sugestão de fusão gerada. Deve fundir: {resultado.get('deve_fundir')}, Confiança: {resultado.get('confianca')}")
-                    return resultado
+                    try:
+                        resultado = json.loads(json_match.group())
+                        logger.info(f"Sugestão de fusão gerada. Deve fundir: {resultado.get('deve_fundir')}, Confiança: {resultado.get('confianca')}")
+                        return resultado
+                    except json.JSONDecodeError:
+                        logger.warning("Resposta do Gemini contém JSON inválido para sugestão de fusão.")
+                        return None
                 else:
                     logger.warning("Resposta do Gemini não contém JSON válido para sugestão de fusão.")
                     return None
@@ -277,5 +306,14 @@ Responda APENAS em formato JSON válido, sem markdown:
                 return None
                 
         except Exception as e:
-            logger.error(f"Erro ao sugerir fusão com Gemini AI: {e}", exc_info=True)
+            error_msg = str(e)
+            # Tratamento específico para erros da API
+            if '404' in error_msg or 'NotFound' in error_msg:
+                logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
+            elif '500' in error_msg or 'InternalServerError' in error_msg:
+                logger.error("Erro interno do servidor Gemini (500). API temporariamente indisponível.")
+            elif '429' in error_msg or 'QuotaExceeded' in error_msg:
+                logger.error("Quota da API Gemini excedida. Aguarde antes de tentar novamente.")
+            else:
+                logger.error(f"Erro ao sugerir fusão com Gemini AI: {error_msg}")
             return None
