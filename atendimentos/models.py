@@ -185,6 +185,7 @@ class Atendimento(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='atendimentos_criados')
     data_criacao = models.DateTimeField(auto_now_add=True, verbose_name="Data de Criação")
     data_atualizacao = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")
+    resumo_ia = models.TextField(blank=True, null=True, verbose_name="Resumo Gerado por IA", help_text="Resumo automático gerado pelo Gemini AI")
     class Meta: verbose_name = "Atendimento"; verbose_name_plural = "Atendimentos"; ordering = ['-data_criacao']
     def __str__(self): return f"{self.protocolo} - {self.titulo}"
     def save(self, *args, **kwargs):
