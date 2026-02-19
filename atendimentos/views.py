@@ -728,6 +728,9 @@ class UnificarMunicipesView(APIView):
         try:
             logger.info(f"Iniciando unificação: principal={id_principal}, duplicado={id_duplicado}")
             
+            # Inicializar lista para objetos que serão deletados após commit
+            objetos_para_deletar_apos_commit = []
+            
             # Buscar objetos ANTES da transação para evitar problemas
             principal = get_object_or_404(Municipe, pk=id_principal)
             duplicado = get_object_or_404(Municipe, pk=id_duplicado)
@@ -834,8 +837,8 @@ class UnificarMunicipesView(APIView):
                             logger.debug(f"Processando relação M2M: {related_model.__name__}.{remote_field_name}")
                             filtro = {remote_field_name: duplicado}
                             
-                            # Usar savepoint para isolar cada relação M2M
-                            with transaction.savepoint():
+                            # Usar atomic() aninhado para isolar cada relação M2M (cria savepoint automaticamente)
+                            with transaction.atomic():
                                 try:
                                     objetos_m2m = list(related_model.objects.filter(**filtro))
                                     logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
@@ -846,14 +849,14 @@ class UnificarMunicipesView(APIView):
                                 for idx, obj in enumerate(objetos_m2m):
                                     obj_id = obj.pk  # Captura ID antes de qualquer modificação
                                     try:
-                                        # Usar savepoint individual para cada objeto M2M
-                                        with transaction.savepoint():
+                                        # Usar atomic() aninhado para cada objeto M2M (cria savepoint automaticamente)
+                                        with transaction.atomic():
                                             # Pega o manager do campo M2M no objeto relacionado
                                             m2m_manager = getattr(obj, remote_field_name)
                                             m2m_manager.remove(duplicado)
                                             m2m_manager.add(principal)
-                                            links_migrados += 1
-                                            logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj_id})")
+                                        links_migrados += 1
+                                        logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj_id})")
                                     except Exception as obj_error:
                                         logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
                                         # NÃO re-raise aqui - apenas loga e continua para não quebrar a transação
