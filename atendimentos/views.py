@@ -527,7 +527,16 @@ class MunicipeLookupView(generics.ListAPIView):
             else:
                 return Municipe.objects.none()
 
-        # --- 2. FILTRO POR NOME DA CATEGORIA ---
+        # --- 2. FILTRO PARA EXCLUIR IDS (útil para unificação de municipes) ---
+        exclude_id = self.request.query_params.get('exclude_id', None)
+        if exclude_id:
+            try:
+                exclude_id_int = int(exclude_id)
+                queryset = queryset.exclude(id=exclude_id_int)
+            except (ValueError, TypeError):
+                pass  # Se não for um ID válido, ignora o filtro
+        
+        # --- 3. FILTRO POR NOME DA CATEGORIA ---
         categorias_str = self.request.query_params.get('categorias_nome', None)
         if categorias_str:
             nomes = [n.strip() for n in categorias_str.split(',')]
