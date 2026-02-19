@@ -257,19 +257,42 @@ class Command(BaseCommand):
                         municipe.save(update_fields=['auditoria_ia'])
                         sem_problemas += 1
                     else:
+                        # Delay de 10 segundos antes de chamar a IA para evitar rate limiting
+                        time.sleep(10)
+                        
                         # Chamar IA para análise completa (regex não detectou problemas óbvios)
-                        resultado = ai_service.analisar_qualidade_registro(dados)
+                        try:
+                            resultado = ai_service.analisar_qualidade_registro(dados)
+                        except Exception as e:
+                            # Capturar qualquer exceção não tratada e retornar mensagem amigável
+                            error_msg = str(e)
+                            self.stdout.write(self.style.ERROR(f"  Erro ao processar {municipe.nome_completo}: {error_msg}"))
+                            logger.error(f"Erro ao chamar IA para munícipe {municipe.id}: {error_msg}", exc_info=True)
+                            
+                            # Marcar como pendente em caso de erro
+                            auditoria = {
+                                'classificacao': 'OK',
+                                'nota_qualidade': 7,
+                                'sugestao_correcao': f'Erro ao processar com IA: {error_msg}. Será processado na próxima rodada.',
+                                'problemas_detectados': [],
+                                'metodo_deteccao': 'erro_processamento',
+                                'status': 'erro'
+                            }
+                            municipe.auditoria_ia = auditoria
+                            municipe.save(update_fields=['auditoria_ia'])
+                            continue
                         
                         # Tratar retorno de erro da IA graciosamente
                         if resultado:
                             # Verificar se é um retry_later (cota atingida)
                             if resultado.get('status') == 'retry_later':
                                 # Cota atingida: pular registro e marcar como pendente
-                                self.stdout.write(self.style.WARNING(f"  Cota atingida para {municipe.nome_completo}. Marcando como pendente para próxima rodada."))
+                                msg_amigavel = resultado.get('msg', 'Cota do Google atingida')
+                                self.stdout.write(self.style.WARNING(f"  ⚠️  {msg_amigavel} - Registro {municipe.nome_completo} será processado na próxima rodada."))
                                 auditoria = {
                                     'classificacao': 'OK',
                                     'nota_qualidade': 7,
-                                    'sugestao_correcao': 'Análise por IA pendente - cota do Google atingida. Será processado na próxima rodada.',
+                                    'sugestao_correcao': f'Análise por IA pendente - {msg_amigavel}. Será processado na próxima rodada.',
                                     'problemas_detectados': [],
                                     'metodo_deteccao': 'pendente_cota',
                                     'status': 'retry_later'
@@ -312,9 +335,6 @@ class Command(BaseCommand):
                             sem_problemas += 1
                         
                         processados += 1
-                        
-                        # Delay de 5 segundos entre registros para evitar rate limiting
-                        time.sleep(5)
                     
                     if processados % 10 == 0:
                         self.stdout.write(f"  Processados: {processados}/{total}")

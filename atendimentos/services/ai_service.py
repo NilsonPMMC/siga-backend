@@ -24,8 +24,8 @@ class AIService:
             try:
                 # Usar o novo cliente unificado do google-genai
                 self.client = genai.Client(api_key=api_key.strip())
-                # Usar gemini-1.5-flash (mais rápido e econômico) - nome exato do modelo
-                self.model_name = 'gemini-1.5-flash'
+                # Usar gemini-2.0-flash (sem prefixo models/)
+                self.model_name = 'gemini-2.0-flash'
                 logger.info(f"AIService inicializado com sucesso usando modelo {self.model_name}.")
             except Exception as e:
                 logger.error(f"Erro ao inicializar AIService: {e}", exc_info=True)
@@ -112,10 +112,10 @@ Gere o resumo agora:"""
                 # Tratamento específico para erros de cota (429) e sobrecarga (503)
                 if '429' in error_msg or 'ResourceExhausted' in error_type or 'QuotaExceeded' in error_type:
                     logger.warning("Quota da API Gemini excedida (429). Retornando retry_later.")
-                    return {"status": "retry_later", "msg": "Cota do Google atingida"}
+                    return {"status": "retry_later", "msg": "Cota do Google atingida. Aguarde alguns minutos antes de tentar novamente."}
                 elif '503' in error_msg or 'ServiceUnavailable' in error_type or 'ServerOverloaded' in error_type:
                     logger.warning("Servidor Gemini sobrecarregado (503). Retornando retry_later.")
-                    return {"status": "retry_later", "msg": "Cota do Google atingida"}
+                    return {"status": "retry_later", "msg": "Servidor do Google sobrecarregado. Aguarde alguns minutos antes de tentar novamente."}
                 elif '404' in error_msg or 'NotFound' in error_msg or '404' in error_type:
                     logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
                 elif '500' in error_msg or 'InternalServerError' in error_msg:
@@ -234,10 +234,10 @@ Responda APENAS em formato JSON válido, sem markdown, com a seguinte estrutura:
                 # Tratamento específico para erros de cota (429) e sobrecarga (503)
                 if '429' in error_msg or 'ResourceExhausted' in error_type or 'QuotaExceeded' in error_type:
                     logger.warning("Quota da API Gemini excedida (429). Retornando retry_later.")
-                    return {"status": "retry_later", "msg": "Cota do Google atingida"}
+                    return {"status": "retry_later", "msg": "Cota do Google atingida. Aguarde alguns minutos antes de tentar novamente."}
                 elif '503' in error_msg or 'ServiceUnavailable' in error_type or 'ServerOverloaded' in error_type:
                     logger.warning("Servidor Gemini sobrecarregado (503). Retornando retry_later.")
-                    return {"status": "retry_later", "msg": "Cota do Google atingida"}
+                    return {"status": "retry_later", "msg": "Servidor do Google sobrecarregado. Aguarde alguns minutos antes de tentar novamente."}
                 elif '404' in error_msg or 'NotFound' in error_msg or '404' in error_type:
                     logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
                     # Retornar objeto padrão para evitar que o comando trave
@@ -373,10 +373,10 @@ Responda APENAS em formato JSON válido, sem markdown:
                 # Tratamento específico para erros de cota (429) e sobrecarga (503)
                 if '429' in error_msg or 'ResourceExhausted' in error_type or 'QuotaExceeded' in error_type:
                     logger.warning("Quota da API Gemini excedida (429). Retornando retry_later.")
-                    return {"status": "retry_later", "msg": "Cota do Google atingida"}
+                    return {"status": "retry_later", "msg": "Cota do Google atingida. Aguarde alguns minutos antes de tentar novamente."}
                 elif '503' in error_msg or 'ServiceUnavailable' in error_type or 'ServerOverloaded' in error_type:
                     logger.warning("Servidor Gemini sobrecarregado (503). Retornando retry_later.")
-                    return {"status": "retry_later", "msg": "Cota do Google atingida"}
+                    return {"status": "retry_later", "msg": "Servidor do Google sobrecarregado. Aguarde alguns minutos antes de tentar novamente."}
                 elif '404' in error_msg or 'NotFound' in error_msg or '404' in error_type:
                     logger.error(f"Modelo Gemini não encontrado (404). Verifique se o modelo {self.model_name} está disponível.")
                 elif '500' in error_msg or 'InternalServerError' in error_msg:
