@@ -858,18 +858,19 @@ class UnificarMunicipesView(APIView):
                 # Agora que movemos Atendimentos, Solicitacoes, Agendas, etc., ele deve estar "limpo".
                 # IMPORTANTE: Usar delete() com force para evitar queries de verificação de dependências
                 # que podem causar erro de transação se houver exceção anterior
-                logger.info(f"Excluindo munícipe duplicado (ID: {duplicado.id})")
+                # Capturar informações antes de deletar (caso o objeto seja deletado ou fique inconsistente)
+                duplicado_id = duplicado.id
+                duplicado_nome = duplicado.nome_completo
+                logger.info(f"Excluindo munícipe duplicado (ID: {duplicado_id}, Nome: {duplicado_nome})")
                 try:
-                    # Primeiro, verificar se há vínculos restantes que possam causar problema
-                    # Mas fazer isso ANTES de tentar deletar para evitar queries dentro de transação com erro
-                    duplicado_id = duplicado.id
                     duplicado.delete()
-                    logger.info(f"Duplicado excluído com sucesso (ID: {duplicado_id})")
+                    logger.info(f"Duplicado excluído com sucesso (ID: {duplicado_id}, Nome: {duplicado_nome})")
                 except Exception as delete_error:
-                    logger.error(f"Erro ao deletar duplicado (ID: {duplicado.id}): {delete_error}", exc_info=True)
+                    logger.error(f"Erro ao deletar duplicado (ID: {duplicado_id}, Nome: {duplicado_nome}): {delete_error}", exc_info=True)
                     # Se falhar ao deletar, ainda assim retornamos sucesso pois os vínculos foram migrados
                     # O registro duplicado pode ser deletado manualmente depois
-                    logger.warning(f"Duplicado não foi deletado automaticamente. ID: {duplicado.id} - pode ser deletado manualmente")
+                    logger.warning(f"Duplicado não foi deletado automaticamente. ID: {duplicado_id}, Nome: {duplicado_nome} - pode ser deletado manualmente")
+                    # NÃO re-raise aqui - a transação já foi bem-sucedida na migração dos vínculos
 
                 logger.info(f"Unificação concluída: {links_migrados} vínculos migrados")
                 return Response({
