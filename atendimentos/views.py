@@ -782,25 +782,28 @@ class UnificarMunicipesView(APIView):
                         try:
                             logger.debug(f"Processando relação: {related_model.__name__}.{remote_field_name}")
                             filtro = {remote_field_name: duplicado}
-                            # Usar select_for_update para evitar problemas de concorrência dentro da transação
                             # IMPORTANTE: Converter para lista ANTES de entrar no loop para evitar lazy evaluation
-                            objetos = list(related_model.objects.filter(**filtro).select_for_update())
+                            objetos = list(related_model.objects.filter(**filtro))
                             logger.debug(f"Encontrados {len(objetos)} objetos para migrar em {related_model.__name__}")
                             
                             for idx, obj in enumerate(objetos):
                                 obj_id = obj.pk  # Captura ID antes de qualquer modificação
                                 try:
-                                    # Tenta mover para o principal
-                                    setattr(obj, remote_field_name, principal)
-                                    obj.save()
+                                    # ENVELOPE ESTA AÇÃO COM ATOMIC:
+                                    # O atomic() aninhado cria um savepoint automaticamente
+                                    # Se der erro, faz rollback apenas desta operação, mantendo a transação principal intacta
+                                    with transaction.atomic():
+                                        setattr(obj, remote_field_name, principal)
+                                        obj.save()
                                     links_migrados += 1
                                     logger.debug(f"Migrado objeto {idx+1}/{len(objetos)} de {related_model.__name__} (ID: {obj_id})")
                                 except IntegrityError as ie:
-                                    # CONFLITO: O principal JÁ TEM esse vínculo (ex: convidado 2x na mesma agenda)
+                                    # O rollback aconteceu APENAS no savepoint interno.
+                                    # A transação principal continua intacta e o delete() vai funcionar!
                                     logger.warning(f"IntegrityError ao migrar {related_model.__name__} ID {obj_id}: {ie}. Removendo duplicado.")
-                                    # IMPORTANTE: Reverter mudança em memória ANTES de deletar
+                                    
+                                    # Reverter mudança em memória antes de deletar
                                     setattr(obj, remote_field_name, duplicado)
-                                    # Deletar o objeto duplicado (já está com referência correta)
                                     try:
                                         obj.delete()
                                         links_migrados += 1  # Conta como migrado (foi removido)
