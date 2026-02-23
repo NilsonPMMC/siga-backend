@@ -111,6 +111,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django.contrib.sites',
+    'corsheaders',
     'rest_framework',
     'rest_framework_simplejwt',
     'import_export',
@@ -126,6 +127,7 @@ MIDDLEWARE = [
     'atendimentos.request_middleware.RequestMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',  # CORS antes de CommonMiddleware
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -179,20 +181,27 @@ if not DB_PASSWORD and not DEBUG:
         "Configure DB_PASSWORD no arquivo .env antes de fazer deploy."
     )
 
-DATABASES = {
-    'default': {
+# Configuração do banco: OPTIONS com init_command só para MySQL (SQLite não entende SET)
+if DB_ENGINE == 'django.db.backends.sqlite3':
+    _default_db = {
+        'ENGINE': DB_ENGINE,
+        'NAME': str(BASE_DIR / DB_NAME) if DB_NAME and not os.path.isabs(DB_NAME) else (DB_NAME or str(BASE_DIR / 'db.sqlite3')),
+    }
+else:
+    _default_db = {
         'ENGINE': DB_ENGINE,
         'NAME': DB_NAME,
         'USER': DB_USER,
         'PASSWORD': DB_PASSWORD,
         'HOST': DB_HOST,
         'PORT': DB_PORT,
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-        },
     }
-}
+    if DB_ENGINE == 'django.db.backends.mysql':
+        _default_db['OPTIONS'] = {
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'; SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci",
+        }
+
+DATABASES = {'default': _default_db}
 
 
 # Password validation
@@ -241,9 +250,20 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CSRF Trusted Origins: Domínios confiáveis para requisições CSRF
-CSRF_TRUSTED_ORIGINS_STR = config('CSRF_TRUSTED_ORIGINS', default='https://gabinete.mogidascruzes.sp.gov.br')
+# CSRF Trusted Origins: Domínios confiáveis para requisições CSRF (inclui localhost para dev)
+CSRF_TRUSTED_ORIGINS_STR = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='https://gabinete.mogidascruzes.sp.gov.br,http://localhost:5173,http://127.0.0.1:5173'
+)
 CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_STR.split(',') if origin.strip()]
+
+# CORS: permitir frontend em localhost (dev) e produção
+CORS_ALLOWED_ORIGINS_STR = config(
+    'CORS_ALLOWED_ORIGINS',
+    default='https://gabinete.mogidascruzes.sp.gov.br,http://localhost:5173,http://127.0.0.1:5173'
+)
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_STR.split(',') if origin.strip()]
+CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
