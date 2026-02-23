@@ -101,7 +101,6 @@ class Command(BaseCommand):
             'SMTP_PASSWORD',
             'GOOGLE_CLIENT_ID',
             'GOOGLE_CLIENT_SECRET',
-            'GEMINI_API_KEY',
         ]
 
         # Verificar variáveis obrigatórias

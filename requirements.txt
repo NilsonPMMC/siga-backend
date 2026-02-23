@@ -23,14 +23,6 @@ redis>=5.0.0
 # Geração de PDFs
 weasyprint>=60.0
 
-# Google Gemini AI (nova biblioteca unificada)
-google-genai>=0.2.0
-
-# Deep Learning Local (Sentence-Transformers)
-sentence-transformers>=2.2.0
-scikit-learn>=1.3.0
-rapidfuzz>=3.0.0
-
 # Utilitários
 Pillow>=10.0.0
 python-dateutil>=2.8.0

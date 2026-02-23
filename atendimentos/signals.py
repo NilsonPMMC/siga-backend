@@ -168,17 +168,6 @@ def handle_tramitacao_save(sender, instance, created, **kwargs):
             detalhes=f"O usuário '{user.username if user else 'Sistema'}' adicionou o andamento: '{instance.despacho[:50]}...' ao protocolo {atendimento.protocolo}.",
             content_object=atendimento
         )
-        
-        # Disparar task assíncrona para gerar/atualizar resumo com IA
-        # Importação lazy para evitar importação circular
-        try:
-            from .tasks import task_gerar_resumo_atendimento
-            task_gerar_resumo_atendimento.delay(atendimento.id)
-        except Exception as e:
-            # Log do erro mas não interrompe o fluxo normal
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Erro ao disparar task de geração de resumo para atendimento {atendimento.id}: {e}")
 
 # Sinal para Tramitação (Deleção)
 @receiver(post_delete, sender=Tramitacao)

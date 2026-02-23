@@ -350,18 +350,6 @@ CELERY_TASK_SERIALIZER = 'json'
 # Serializador dos resultados.
 CELERY_RESULT_SERIALIZER = 'json'
 
-# --- API KEY DO GEMINI AI ---
-# GEMINI_API_KEY: Chave da API do Google Gemini (opcional, mas necessária para funcionalidades de IA)
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip().strip('"').strip("'")
-
-# Validação: Se a API key estiver vazia, emite aviso
-if not GEMINI_API_KEY:
-    import warnings
-    warnings.warn(
-        "⚠️ GEMINI_API_KEY não configurada. Funcionalidades que dependem do Gemini podem não funcionar.",
-        UserWarning
-    )
-
 # --- CONFIGURAÇÕES DA API SINAPSE ---
 SINAPSE_API_BASE_URL = config('SINAPSE_API_BASE_URL', default='https://api.mogidascruzes.sp.gov.br/api')
 SINAPSE_API_TOKEN = config('SINAPSE_API_TOKEN', default='')

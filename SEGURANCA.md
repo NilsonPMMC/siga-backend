@@ -32,7 +32,6 @@ Certifique-se de preencher **TODAS** as variáveis no arquivo `.env`:
 #### 🔐 APIs Externas (Opcionais, mas recomendadas):
 - `GOOGLE_CLIENT_ID` - Para integração com Google Calendar
 - `GOOGLE_CLIENT_SECRET` - Para integração com Google Calendar
-- `GEMINI_API_KEY` - Para funcionalidades de IA
 
 ## 🛡️ Configurações de Segurança
 
@@ -73,8 +72,6 @@ O sistema agora valida automaticamente:
 1. ✅ **SECRET_KEY**: Emite aviso se estiver usando o valor padrão inseguro
 2. ✅ **DEBUG**: Emite aviso se DEBUG=True em ambiente de produção
 3. ✅ **DB_PASSWORD**: Bloqueia inicialização se senha estiver vazia em produção
-4. ✅ **GEMINI_API_KEY**: Emite aviso se não estiver configurada
-
 ## 🚨 Checklist de Deploy em Produção
 
 Antes de fazer deploy em produção, verifique:
@@ -117,9 +114,6 @@ DEFAULT_FROM_EMAIL=comunicacao.gabinete@mogidascruzes.sp.gov.br
 # Google API
 GOOGLE_CLIENT_ID=seu-client-id
 GOOGLE_CLIENT_SECRET=seu-client-secret
-
-# Gemini AI
-GEMINI_API_KEY=sua-api-key
 
 # Celery
 CELERY_BROKER_URL=redis://localhost:6379/0

@@ -459,33 +459,11 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
             if not municipe.cpf or not municipe.cpf.strip():
                 problemas.append('CPF não informado')
             
-            # Se detectou problemas, disparar análise assíncrona e retornar aviso
+            # Se detectou problemas, retornar aviso
             if telefone_genérico or telefone_duplicado or not municipe.cpf:
-                # Preparar dados para análise
-                bairro = ''
-                if municipe.endereco and isinstance(municipe.endereco, dict):
-                    bairro = municipe.endereco.get('bairro', '')
-                
-                dados = {
-                    'nome_completo': municipe.nome_completo or '',
-                    'telefone': telefone_principal,
-                    'cpf': municipe.cpf or '',
-                    'categoria': municipe.categoria.nome if municipe.categoria else '',
-                    'orgao': municipe.orgao or '',
-                    'bairro': bairro,
-                }
-                
-                # Disparar análise assíncrona (task do Celery)
-                try:
-                    from .tasks import task_auditar_qualidade_municipe
-                    task_auditar_qualidade_municipe.delay(municipe.id)
-                except Exception as e:
-                    logger.warning(f"Erro ao disparar auditoria para munícipe {municipe.id}: {e}")
-                
-                # Retornar aviso para incluir no response
                 return {
                     'tipo': 'baixa_qualidade',
-                    'mensagem': 'Este registro apresenta indicadores de baixa qualidade de dados e será auditado automaticamente.',
+                    'mensagem': 'Este registro apresenta indicadores de baixa qualidade de dados.',
                     'problemas': problemas,
                     'acao_recomendada': 'Verifique os dados informados e complete as informações faltantes quando possível.'
                 }
