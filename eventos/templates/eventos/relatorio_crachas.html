@@ -122,22 +122,22 @@
                             <img src="{{ convidado.foto_url_absoluta }}" class="foto-perfil" alt="Foto">
                         {% else %}
                             <div class="foto-placeholder">
-                                {{ convidado.municipe.nome_completo|slice:":1" }}
+                                {{ convidado.perfil.municipe.nome_completo|slice:":1" }}
                             </div>
                         {% endif %}
                     </div>
                     <div class="content-container">
                         <div class="name">
-                            {% if convidado.municipe.tratamento %}<span style="font-size: 0.6em; display:block; margin-bottom:2px; font-weight:normal;">{{ convidado.municipe.tratamento }}</span>{% endif %}
-                            {{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}
+                            {% if convidado.perfil.municipe.tratamento %}<span style="font-size: 0.6em; display:block; margin-bottom:2px; font-weight:normal;">{{ convidado.perfil.municipe.tratamento }}</span>{% endif %}
+                            {{ convidado.perfil.municipe.nome_de_guerra|default:convidado.perfil.municipe.nome_completo }}
                         </div>
 
                         <div class="details">
-                            {% if convidado.municipe.cargo %}
-                                <strong>{{ convidado.municipe.cargo }}</strong><br>
+                            {% if convidado.perfil.cargo %}
+                                <strong>{{ convidado.perfil.cargo }}</strong><br>
                             {% endif %}
-                            {% if convidado.municipe.orgao %}
-                                <span>{{ convidado.municipe.orgao }}</span>
+                            {% if convidado.perfil.instituicao %}
+                                <span>{{ convidado.perfil.instituicao }}</span>
                             {% endif %}
                         </div>
                     </div>

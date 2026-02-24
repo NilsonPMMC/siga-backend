@@ -18,7 +18,7 @@ from datetime import datetime
 from django import forms
 from django.utils import timezone as tz
 from .models import (
-    Conta, Municipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
+    Conta, Municipe, PerfilMunicipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
     SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato,
     Espaco, RegistroVisita, Lembrete, TramitacaoAgenda, SinapseSecretaria
 )
@@ -273,6 +273,14 @@ class MunicipeAdmin(ImportExportModelAdmin):
     def listar_contas(self, obj):
         return ", ".join([conta.nome for conta in obj.contas.all()])
     listar_contas.short_description = 'Contas'
+
+
+@admin.register(PerfilMunicipe)
+class PerfilMunicipeAdmin(admin.ModelAdmin):
+    list_display = ('municipe', 'conta', 'cargo', 'instituicao', 'ativo')
+    list_filter = ('conta', 'ativo')
+    search_fields = ('municipe__nome_completo', 'cargo', 'instituicao', 'conta__nome')
+    autocomplete_fields = ('municipe', 'conta')
 
 
 # --- Admin para outros modelos ---

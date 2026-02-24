@@ -88,48 +88,38 @@ class CanViewAgendaReports(BasePermission):
     
 # Adicione esta nova classe ao final de permissions.py
 
+def _grupos_crud_contatos():
+    """Grupos que têm CRUD em contatos por conta compartilhada."""
+    return ['Recepção', 'Membro do Gabinete', 'Secretária']
+
+
 class CanAccessContacts(BasePermission):
     """
-    REGRA DE ACESSO À PÁGINA "AGENDA DE CONTATOS".
-    - Permite acesso a todos, EXCETO ao grupo 'Recepção'.
+    Acesso à página/recursos de Contatos (Agenda de Contatos).
+    Superadmin: acesso total. Recepção, Membro do Gabinete e Secretária: acesso
+    aos contatos vinculados a pelo menos uma Conta do perfil do usuário.
     """
     def has_permission(self, request, view):
         user = request.user
         if user.is_superuser:
             return True
-        # Nega o acesso se o usuário estiver no grupo 'Recepção'.
-        return not is_in_group(user, 'Recepção')
-    
+        return is_in_group(user, _grupos_crud_contatos())
+
+
 class CanEditMunicipeDetails(BasePermission):
     """
-    REGRA DE EDIÇÃO para um contato específico (botão de lápis).
+    Permissão de edição (CRUD) para um contato específico.
+    Superadmin: sempre. Demais: apenas se compartilhar pelo menos uma Conta com o Munícipe.
     """
     def has_object_permission(self, request, view, obj):
         user = request.user
-
         if user.is_superuser:
             return True
-
-        # --- NOVA LÓGICA DE PERMISSÃO UNIFICADA ---
-        if hasattr(user, 'perfil'):
-            user_contas = set(user.perfil.contas.all())
-            municipe_contas = set(obj.contas.all())
-            
-            # 1. CONDIÇÃO BÁSICA: O usuário compartilha pelo menos uma conta com o contato?
-            if user_contas.isdisjoint(municipe_contas):
-                return False # Se não, nega o acesso para todos os perfis.
-
-            # 2. CONDIÇÃO ESPECÍFICA PARA RECEPÇÃO:
-            # Se já passou na condição 1, agora verifica a categoria.
-            if is_in_group(user, 'Recepção'):
-                return obj.categoria is not None and obj.categoria.nome == 'MUNÍCIPE'
-
-            # 3. PERMISSÃO PARA OUTROS PERFIS:
-            # Se for Membro ou Secretária e passou na condição 1, a permissão é concedida.
-            if is_in_group(user, ['Membro do Gabinete', 'Secretária']):
-                return True
-
-        return False
+        if not hasattr(user, 'perfil') or not is_in_group(user, _grupos_crud_contatos()):
+            return False
+        user_contas = set(user.perfil.contas.all())
+        municipe_contas = set(obj.contas.all())
+        return not user_contas.isdisjoint(municipe_contas)
 
 class CanManageCheckIn(BasePermission):
     """

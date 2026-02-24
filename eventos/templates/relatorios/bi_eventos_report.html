@@ -178,8 +178,8 @@
                         <tbody>
                             {% for p in data.top_convidados %}
                             <tr>
-                                <td>{{ p.municipe__nome_completo|truncatechars:25 }}</td>
-                                <td><span class="badge">{{ p.municipe__categoria__nome|default:"-" }}</span></td>
+                                <td>{{ p.perfil__municipe__nome_completo|truncatechars:25 }}</td>
+                                <td><span class="badge">{{ p.perfil__municipe__categoria__nome|default:"-" }}</span></td>
                                 <td class="text-right"><strong>{{ p.frequencia }}</strong></td>
                             </tr>
                             {% endfor %}

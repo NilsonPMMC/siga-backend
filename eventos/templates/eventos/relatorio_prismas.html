@@ -61,25 +61,25 @@
         <div class="prisma-container">
             <!-- Face de Cima -->
             <div class="face top">
-                <div class="name">{% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
+                <div class="name">{% if convidado.perfil.municipe.tratamento %}{{ convidado.perfil.municipe.tratamento }} {% endif %}{{ convidado.perfil.municipe.nome_de_guerra|default:convidado.perfil.municipe.nome_completo }}</div>
                 <div class="details">
-                    {% if convidado.municipe.cargo %}
-                        <strong>{{ convidado.municipe.cargo }}</strong><br>
+                    {% if convidado.perfil.cargo %}
+                        <strong>{{ convidado.perfil.cargo }}</strong><br>
                     {% endif %}
-                    {% if convidado.municipe.orgao %}
-                        <span>{{ convidado.municipe.orgao }}</span>
+                    {% if convidado.perfil.instituicao %}
+                        <span>{{ convidado.perfil.instituicao }}</span>
                     {% endif %}
                 </div>
             </div>
             <!-- Face de Baixo (Espelhada) -->
             <div class="face bottom">
-                <div class="name">{% if convidado.municipe.tratamento %}{{ convidado.municipe.tratamento }} {% endif %}{{ convidado.municipe.nome_de_guerra|default:convidado.municipe.nome_completo }}</div>
+                <div class="name">{% if convidado.perfil.municipe.tratamento %}{{ convidado.perfil.municipe.tratamento }} {% endif %}{{ convidado.perfil.municipe.nome_de_guerra|default:convidado.perfil.municipe.nome_completo }}</div>
                 <div class="details">
-                    {% if convidado.municipe.cargo %}
-                        <strong>{{ convidado.municipe.cargo }}</strong><br>
+                    {% if convidado.perfil.cargo %}
+                        <strong>{{ convidado.perfil.cargo }}</strong><br>
                     {% endif %}
-                    {% if convidado.municipe.orgao %}
-                        <span>{{ convidado.municipe.orgao }}</span>
+                    {% if convidado.perfil.instituicao %}
+                        <span>{{ convidado.perfil.instituicao }}</span>
                     {% endif %}
                 </div>
             </div>

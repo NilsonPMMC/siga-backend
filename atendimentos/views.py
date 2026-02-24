@@ -139,7 +139,7 @@ class RegistroVisitaListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         queryset = RegistroVisita.objects.select_related(
-            'municipe', 'conta_destino', 'registrado_por'
+            'municipe', 'conta_destino', 'usuario_destino', 'registrado_por'
         )
 
         # --- LÓGICA DE PERMISSÃO COM INDENTAÇÃO CORRIGIDA ---
@@ -170,8 +170,21 @@ class RegistroVisitaListCreateView(generics.ListCreateAPIView):
         
         return queryset.order_by('-data_checkin')
 
+    @transaction.atomic
     def perform_create(self, serializer):
-        serializer.save(registrado_por=self.request.user)
+        registro = serializer.save(registrado_por=self.request.user)
+        nome_municipe = registro.municipe.nome_completo
+        mensagem = f"O Munícipe {nome_municipe} acabou de chegar para uma visita/reunião."
+        link = f"/contatos/{registro.municipe_id}"
+        usuarios_notificar = []
+        if registro.usuario_destino_id:
+            usuarios_notificar = [registro.usuario_destino]
+        else:
+            usuarios_notificar = list(
+                User.objects.filter(perfil__contas=registro.conta_destino).distinct()
+            )
+        for usuario in usuarios_notificar:
+            Notificacao.objects.create(usuario=usuario, mensagem=mensagem, link=link)
 
 class RegistroVisitaDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
@@ -316,7 +329,7 @@ class CategoriaContatoViewSet(viewsets.ModelViewSet):
 # -----------------------------------------------------------------------------
 
 class MunicipeListCreateView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContacts]
     serializer_class = MunicipeSerializer
 
     def get_queryset(self):
@@ -329,7 +342,7 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
 
         filtro_aplicado = bool(termo_busca or letra_inicial or categoria_ids)
 
-        base_queryset = Municipe.objects.prefetch_related('contas', 'categoria')
+        base_queryset = Municipe.objects.prefetch_related('contas', 'categoria', 'perfis')
 
         if grupo_id:
             return base_queryset.filter(grupo_duplicado=grupo_id).order_by('nome_completo')
@@ -337,15 +350,12 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
         if tem_grupo_duplicado == 'true':
             return base_queryset.exclude(grupo_duplicado__isnull=True).order_by('grupo_duplicado', 'nome_completo')
 
-        if hasattr(user, 'perfil'):
+        if user.is_superuser:
+            pass
+        elif hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
             contas_usuario = user.perfil.contas.all()
-            base_queryset = base_queryset.filter(
-                Q(contas__isnull=True) | Q(contas__in=contas_usuario)
-            ).distinct()
-            
-            if is_in_group(user, 'Recepção'):
-                base_queryset = base_queryset.filter(categoria__nome='MUNÍCIPE')
-        elif not user.is_superuser:
+            base_queryset = base_queryset.filter(contas__in=contas_usuario).distinct()
+        else:
             return Municipe.objects.none()
         
         if categoria_ids:
@@ -362,7 +372,9 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
                 Q(cargo__icontains=termo_busca) |
                 Q(orgao__icontains=termo_busca) |
                 Q(categoria__nome__icontains=termo_busca) |
-                Q(endereco__icontains=termo_busca)
+                Q(endereco__icontains=termo_busca) |
+                Q(perfis__cargo__icontains=termo_busca) |
+                Q(perfis__instituicao__icontains=termo_busca)
             )
 
             final_query = query_palavras_nome | query_outros_campos
@@ -476,34 +488,52 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
 
 class MunicipeDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
-    queryset = Municipe.objects.all()
     serializer_class = MunicipeSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Municipe.objects.prefetch_related('contas', 'categoria', 'perfis')
+        if user.is_superuser:
+            return qs
+        if hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
+            return qs.filter(contas__in=user.perfil.contas.all()).distinct()
+        return Municipe.objects.none()
 
 
 class MunicipeDetailDataView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated, CanAccessContacts]
     serializer_class = MunicipeDetailSerializer
-    queryset = Municipe.objects.all()
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Municipe.objects.prefetch_related(
+            'contas', 'categoria', 'perfis',
+            'visitas', 'visitas__conta_destino', 'visitas__usuario_destino',
+            'agendas_participantes', 'agendas_participantes__compromisso', 'agendas_participantes__compromisso__conta'
+        )
+        if user.is_superuser:
+            return qs
+        if hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
+            return qs.filter(contas__in=user.perfil.contas.all()).distinct()
+        return Municipe.objects.none()
 
 
 class MunicipeLookupView(generics.ListAPIView):
     serializer_class = MunicipeLookupSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContacts]
 
     def get_queryset(self):
         user = self.request.user
         queryset = Municipe.objects.all()
 
-        # --- 1. FILTRO DE PERMISSÃO (VERSÃO ESTÁVEL) ---
-        # Só mostra contatos da minha conta ou públicos (sem conta)
+        # Filtro de segurança: só contatos vinculados a pelo menos uma conta do perfil
         if not user.is_superuser:
-            if hasattr(user, 'perfil'):
-                contas_usuario = user.perfil.contas.all()
-                queryset = queryset.filter(
-                    Q(contas__isnull=True) | Q(contas__in=contas_usuario)
-                ).distinct()
+            if hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
+                queryset = queryset.filter(contas__in=user.perfil.contas.all()).distinct()
             else:
                 return Municipe.objects.none()
+
+        queryset = queryset.prefetch_related('contas', 'categoria', 'perfis')
 
         # --- 2. FILTRO PARA EXCLUIR IDS (útil para unificação de municipes) ---
         exclude_id = self.request.query_params.get('exclude_id', None)
@@ -530,18 +560,16 @@ class MunicipeLookupView(generics.ListAPIView):
             return queryset.filter(id=termo_busca)
 
         palavras = termo_busca.split()
-        
         query_parts = [
-            Q(nome_completo__icontains=palavra) | Q(nome_de_guerra__icontains=palavra)
+            (Q(nome_completo__icontains=palavra) | Q(nome_de_guerra__icontains=palavra) |
+             Q(perfis__cargo__icontains=palavra) | Q(perfis__instituicao__icontains=palavra))
             for palavra in palavras
         ]
-        
         if query_parts:
             final_query = reduce(operator.and_, query_parts)
-            resultados = queryset.filter(final_query)
+            resultados = queryset.filter(final_query).distinct()
         else:
             resultados = queryset
-            
         return resultados.order_by('nome_completo')[:100]
     
 class VerificarDependenciasMunicipeView(APIView):
@@ -2473,7 +2501,8 @@ class GerarDossieMunicipePdfView(APIView):
             # QuerySets Base
             qs_atendimentos = municipe.atendimentos.all()
             qs_agendas = municipe.solicitacoes_agenda.all()
-            qs_convites = municipe.convites.select_related('evento').all()
+            from eventos.models import Convidado
+            qs_convites = Convidado.objects.filter(perfil__municipe=municipe).select_related('evento').all()
 
             # --- FILTRO 1: SEGURANÇA GERAL (Isolamento de Contas) ---
             if not user.is_superuser:
@@ -2649,30 +2678,24 @@ class BuscaGlobalView(APIView):
                     'url': f"/atendimentos/{atendimento.id}"
                 })
 
-        # Lógica de permissão para Munícipes (sem alteração)
+        # Munícipes: superuser vê todos; demais só os vinculados às contas do perfil
         if user.is_superuser:
             municipe_qs = Municipe.objects.all()
-        # REGRA NOVA: Recepção busca APENAS contatos da categoria 'Munícipe'.
-        elif hasattr(user, 'perfil'):
-            contas_usuario = user.perfil.contas.all()
-            municipe_qs = Municipe.objects.filter(contas__in=contas_usuario).distinct()
-            
-            # Se for da Recepção, aplica o filtro adicional de categoria
-            if is_in_group(user, 'Recepção'):
-                municipe_qs = municipe_qs.filter(categoria__nome='MUNÍCIPE')
-        elif hasattr(user, 'perfil'):
-            contas_usuario = user.perfil.contas.all()
-            municipe_qs = Municipe.objects.filter(
-                Q(contas__isnull=True) | Q(contas__in=contas_usuario)
-            ).distinct()
+        elif hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
+            municipe_qs = Municipe.objects.filter(contas__in=user.perfil.contas.all()).distinct()
         else:
             municipe_qs = Municipe.objects.none()
 
         # --- AQUI ESTÁ A CORREÇÃO DA BUSCA POR MUNÍCIPES ---
         query_palavras = Q()
         for palavra in termo_busca.split():
-            # Agora, cada palavra é buscada no nome completo OU no nome de guerra
-            query_palavras &= (Q(nome_completo__icontains=palavra) | Q(nome_de_guerra__icontains=palavra))
+            # Nome, nome de guerra ou cargo/instituição nos perfis
+            query_palavras &= (
+                Q(nome_completo__icontains=palavra) |
+                Q(nome_de_guerra__icontains=palavra) |
+                Q(perfis__cargo__icontains=palavra) |
+                Q(perfis__instituicao__icontains=palavra)
+            )
         
         # A busca por CPF continua separada
         query_cpf = Q(cpf__icontains=termo_busca)

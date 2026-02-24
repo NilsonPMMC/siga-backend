@@ -115,6 +115,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'import_export',
+    'pgvector',
     'atendimentos',
     'eventos',
     'oficios',

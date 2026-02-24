@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Evento, Convidado, EventoChecklist, Comunicacao, Destinatario, LogDeEnvio, ListaPresenca, ChecklistItem, EventoChecklistItemStatus, MailingList
-from atendimentos.models import Municipe 
+from atendimentos.models import Municipe, PerfilMunicipe 
 
 class EventoChecklistSerializer(serializers.ModelSerializer):
     class Meta:
@@ -21,22 +21,33 @@ class MunicipeForConvidadoSerializer(serializers.ModelSerializer):
         model = Municipe
         fields = ['id', 'nome_completo', 'nome_de_guerra', 'cargo', 'orgao', 'telefones', 'emails']
 
-class ConvidadoSerializer(serializers.ModelSerializer):
+
+class PerfilMunicipeConvidadoSerializer(serializers.ModelSerializer):
+    """Perfil no convite (cargo/órgão) + munícipe aninhado para exibição."""
+    conta_nome = serializers.CharField(source='conta.nome', read_only=True)
     municipe = MunicipeForConvidadoSerializer(read_only=True)
-    municipe_id = serializers.PrimaryKeyRelatedField(
-        queryset=Municipe.objects.all(),
-        source='municipe',
+
+    class Meta:
+        model = PerfilMunicipe
+        fields = ['id', 'conta', 'conta_nome', 'cargo', 'instituicao', 'departamento', 'tratamento', 'municipe']
+
+
+class ConvidadoSerializer(serializers.ModelSerializer):
+    perfil = PerfilMunicipeConvidadoSerializer(read_only=True)
+    perfil_id = serializers.PrimaryKeyRelatedField(
+        queryset=PerfilMunicipe.objects.filter(ativo=True).select_related('municipe', 'conta'),
+        source='perfil',
         write_only=True
     )
 
     class Meta:
         model = Convidado
-        fields = ['id', 'evento', 'municipe', 'municipe_id', 'status',  'data_checkin']
+        fields = ['id', 'evento', 'perfil', 'perfil_id', 'municipe', 'status', 'data_checkin', 'ordem']
         validators = [
             serializers.UniqueTogetherValidator(
                 queryset=Convidado.objects.all(),
-                fields=('evento', 'municipe'), # Uses the actual model fields
-                message="Este munícipe já foi convidado para o evento."
+                fields=('evento', 'perfil'),
+                message="Este perfil já foi convidado para o evento."
             )
         ]
 

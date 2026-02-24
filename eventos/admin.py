@@ -44,9 +44,8 @@ class ComunicacaoInline(admin.TabularInline):
 
 class ConvidadoInline(admin.TabularInline):
     model = Convidado
-    raw_id_fields = ('municipe',)
     extra = 1
-    autocomplete_fields = ('municipe',)
+    autocomplete_fields = ('perfil',)
 
 # -----------------------------------------------------------------------------
 # 2. DEFINIÇÃO DAS CLASSES "ADMIN" PRINCIPAIS
@@ -86,10 +85,10 @@ class EventoAdmin(admin.ModelAdmin):
 
 @admin.register(Convidado)
 class ConvidadoAdmin(admin.ModelAdmin):
-    list_display = ('evento', 'municipe', 'status', 'data_checkin')
+    list_display = ('evento', 'perfil', 'status', 'data_checkin')
     list_filter = ('status', 'evento')
-    search_fields = ('municipe__nome_completo', 'evento__nome')
-    autocomplete_fields = ('municipe', 'evento')
+    search_fields = ('perfil__municipe__nome_completo', 'evento__nome')
+    autocomplete_fields = ('perfil', 'evento')
 
 
 @admin.register(ChecklistItem)

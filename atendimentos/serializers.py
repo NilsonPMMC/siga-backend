@@ -82,6 +82,20 @@ class TramitacaoSerializer(serializers.ModelSerializer):
         full_name = obj.usuario.get_full_name()
         return full_name if full_name else obj.usuario.username
 
+class PerfilMunicipeSerializer(serializers.ModelSerializer):
+    conta_nome = serializers.CharField(source='conta.nome', read_only=True)
+
+    class Meta:
+        model = PerfilMunicipe
+        fields = [
+            'id', 'conta', 'conta_nome', 'cargo', 'instituicao', 'departamento', 'tratamento', 'ativo'
+        ]
+        extra_kwargs = {
+            'conta': {'required': True},
+            'id': {'read_only': False, 'required': False},
+        }
+
+
 class MunicipeSerializer(serializers.ModelSerializer):
     pode_editar = serializers.SerializerMethodField()
     contas = serializers.PrimaryKeyRelatedField(
@@ -89,6 +103,7 @@ class MunicipeSerializer(serializers.ModelSerializer):
         queryset=Conta.objects.all(),
         required=False
     )
+    perfis = PerfilMunicipeSerializer(many=True, required=False)
     categoria_nome = serializers.CharField(source='categoria.nome', read_only=True, default='MUNÍCIPE')
     qualidade_dados = serializers.SerializerMethodField()
     alerta_atualizacao = serializers.SerializerMethodField()
@@ -98,7 +113,7 @@ class MunicipeSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'foto', 'nome_completo', 'tratamento', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
             'telefones', 'endereco', 'observacoes', 'cargo', 'orgao',
-            'contas',
+            'contas', 'perfis',
             'categoria', 'categoria_nome', 'data_cadastro', 'data_atualizacao',
             'qualidade_dados', 'alerta_atualizacao',
             'pode_editar', 'grupo_duplicado', 'dados_etiqueta'
@@ -131,38 +146,13 @@ class MunicipeSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request:
             return False
-        
         user = request.user
-
         if user.is_superuser:
             return True
-
-        if is_in_group(user, 'Recepção'):
-            # Regra 1: O contato DEVE ser da categoria 'Munícipe'.
-            if not (obj.categoria is not None and obj.categoria.nome == 'MUNÍCIPE'):
-                return False
-            
-            # Regra 2: Pode editar se o munícipe for público (sem conta vinculada).
-            if not obj.contas.exists():
-                return True
-            
-            # Regra 3: Se tiver conta, pode editar se houver uma conta em comum.
-            if hasattr(user, 'perfil'):
-                user_contas = set(user.perfil.contas.all())
-                municipe_contas = set(obj.contas.all())
-                return not user_contas.isdisjoint(municipe_contas)
-            
-            return False
-
-        if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
-            if not obj.contas.exists():
-                return True
-            
-            if hasattr(user, 'perfil'):
-                user_contas = set(user.perfil.contas.all())
-                municipe_contas = set(obj.contas.all())
-                return not user_contas.isdisjoint(municipe_contas)
-        
+        if is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']) and hasattr(user, 'perfil'):
+            user_contas = set(user.perfil.contas.all())
+            municipe_contas = set(obj.contas.all())
+            return not user_contas.isdisjoint(municipe_contas)
         return False
 
     def get_qualidade_dados(self, obj):
@@ -186,6 +176,29 @@ class MunicipeSerializer(serializers.ModelSerializer):
             data['cpf'] = None
         return super().to_internal_value(data)
 
+    def create(self, validated_data):
+        perfis_data = validated_data.pop('perfis', [])
+        instance = super().create(validated_data)
+        for item in perfis_data:
+            item = {k: v for k, v in item.items() if k != 'id'}
+            PerfilMunicipe.objects.create(municipe=instance, **item)
+        return instance
+
+    def update(self, instance, validated_data):
+        perfis_data = validated_data.pop('perfis', None)
+        instance = super().update(instance, validated_data)
+        if perfis_data is not None:
+            ids_manter = {p.get('id') for p in perfis_data if p.get('id')}
+            instance.perfis.exclude(id__in=ids_manter).delete()
+            for item in perfis_data:
+                perfil_id = item.pop('id', None)
+                payload = {k: v for k, v in item.items() if k != 'id'}
+                if perfil_id and instance.perfis.filter(pk=perfil_id).exists():
+                    PerfilMunicipe.objects.filter(pk=perfil_id).update(**payload)
+                else:
+                    PerfilMunicipe.objects.create(municipe=instance, **payload)
+        return instance
+
 class AtendimentoSerializer(serializers.ModelSerializer):
     # Seus campos de leitura, que já estavam corretos
     nome_municipe = serializers.CharField(source='municipe.nome_completo', read_only=True)
@@ -206,15 +219,16 @@ class AtendimentoSerializer(serializers.ModelSerializer):
 
     responsavel_nome = serializers.SerializerMethodField()
 
+    origem_display = serializers.CharField(source='get_origem_display', read_only=True)
+
     class Meta:
         model = Atendimento
         fields = [
-            'id', 'protocolo', 'titulo', 'descricao', 'status', 'conta', 'nome_conta',
+            'id', 'protocolo', 'origem', 'origem_display', 'titulo', 'descricao', 'status', 'conta', 'nome_conta',
             'municipe', 'nome_municipe',
             'responsavel', 'responsavel_obj', 'responsavel_nome', 'data_criacao',
             'data_atualizacao', 'tramitacoes', 'categorias', 'categorias_ids', 'anexos'
         ]
-        # Status agora é read-only - deve ser alterado apenas via tramitação
         read_only_fields = ('protocolo', 'status', 'data_criacao', 'data_atualizacao')
 
     def get_responsavel_nome(self, obj):
@@ -322,23 +336,49 @@ class CategoriaContatoSerializer(serializers.ModelSerializer):
     
 class MunicipeDetailSerializer(serializers.ModelSerializer):
     atendimentos = AtendimentoSerializer(many=True, read_only=True)
+    visitas = serializers.SerializerMethodField()
+    presencas_agenda_institucional = serializers.SerializerMethodField()
     solicitacoes_agenda = SolicitacaoAgendaSerializer(many=True, read_only=True)
     contas = ContaSerializer(many=True, read_only=True)
+    perfis = PerfilMunicipeSerializer(many=True, read_only=True)
     categoria = CategoriaContatoSerializer(read_only=True)
     historico_eventos = serializers.SerializerMethodField()
 
     class Meta:
         model = Municipe
         fields = [
-            'id', 'nome_completo', 'foto', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails', 
-            'telefones', 'endereco', 'observacoes', 'cargo', 'orgao', 
-            'contas', 'categoria', 
-            'atendimentos', 'solicitacoes_agenda', 'historico_eventos'
+            'id', 'nome_completo', 'foto', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
+            'telefones', 'endereco', 'observacoes', 'cargo', 'orgao',
+            'contas', 'perfis', 'categoria',
+            'atendimentos', 'visitas', 'presencas_agenda_institucional',
+            'solicitacoes_agenda', 'historico_eventos'
         ]
 
+    def get_visitas(self, obj):
+        return RegistroVisitaSerializer(obj.visitas.all().order_by('-data_checkin'), many=True, context=self.context).data
+
+    def get_presencas_agenda_institucional(self, obj):
+        from .models import AgendaConvidado
+        participacoes = AgendaConvidado.objects.filter(
+            municipe=obj
+        ).select_related('compromisso', 'compromisso__conta').order_by('-compromisso__data_inicio')
+        resultado = []
+        for p in participacoes:
+            resultado.append({
+                'id': p.id,
+                'compromisso_id': p.compromisso_id,
+                'titulo': p.compromisso.titulo,
+                'data_inicio': p.compromisso.data_inicio.isoformat() if p.compromisso.data_inicio else None,
+                'conta_nome': p.compromisso.conta.nome,
+                'chegou': p.chegou,
+                'horario_chegada': p.horario_chegada.isoformat() if p.horario_chegada else None,
+                'confirmado': p.confirmado,
+            })
+        return resultado
+
     def get_historico_eventos(self, obj):
-        convites = obj.convites.select_related('evento').order_by('-evento__data_evento')
-        
+        from eventos.models import Convidado
+        convites = Convidado.objects.filter(perfil__municipe=obj).select_related('evento').order_by('-evento__data_evento')
         resultado = []
         for convite in convites:
             resultado.append({
@@ -376,46 +416,20 @@ class MunicipeLookupSerializer(serializers.ModelSerializer):
     qualidade_dados = serializers.SerializerMethodField()
     alerta_atualizacao = serializers.SerializerMethodField()
     contas = ContaSerializer(many=True, read_only=True)
-    #cargo = serializers.ReadOnlyField(source='cargo_funcao')
+    perfis = PerfilMunicipeSerializer(many=True, read_only=True)
 
     class Meta:
         model = Municipe
-        fields = ['id', 'nome_completo', 'nome_de_guerra', 'contas', 'categoria', 'cargo', 'emails', 'telefones', 'pode_editar', 'qualidade_dados', 'alerta_atualizacao']
+        fields = ['id', 'nome_completo', 'nome_de_guerra', 'contas', 'perfis', 'categoria', 'cargo', 'emails', 'telefones', 'pode_editar', 'qualidade_dados', 'alerta_atualizacao']
 
     def get_pode_editar(self, obj):
         user = self.context['request'].user
-
         if user.is_superuser:
             return True
-
-        if is_in_group(user, 'Recepção'):
-            # Regra 1: O contato DEVE ser da categoria 'Munícipe'.
-            if not (obj.categoria is not None and obj.categoria.nome == 'MUNÍCIPE'):
-                return False
-            
-            # Regra 2: Pode editar se o munícipe for público (sem conta vinculada).
-            if not obj.contas.exists():
-                return True
-            
-            # Regra 3: Se tiver conta, pode editar se houver uma conta em comum.
-            if hasattr(user, 'perfil'):
-                user_contas = set(user.perfil.contas.all())
-                municipe_contas = set(obj.contas.all())
-                return not user_contas.isdisjoint(municipe_contas)
-            
-            return False
-
-        if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
-            # Pode editar se for público
-            if not obj.contas.exists():
-                return True
-            
-            # Pode editar se houver intersecção entre as contas do usuário e as do munícipe
-            if hasattr(user, 'perfil'):
-                user_contas = set(user.perfil.contas.all())
-                municipe_contas = set(obj.contas.all())
-                return not user_contas.isdisjoint(municipe_contas) # Retorna True se houver pelo menos uma conta em comum
-
+        if is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']) and hasattr(user, 'perfil'):
+            user_contas = set(user.perfil.contas.all())
+            municipe_contas = set(obj.contas.all())
+            return not user_contas.isdisjoint(municipe_contas)
         return False
     
     def get_qualidade_dados(self, obj):
@@ -451,14 +465,21 @@ class EspacoAgendaSerializer(serializers.ModelSerializer):
 class RegistroVisitaSerializer(serializers.ModelSerializer):
     municipe_nome = serializers.CharField(source='municipe.nome_completo', read_only=True)
     conta_destino_nome = serializers.CharField(source='conta_destino.nome', read_only=True)
+    usuario_destino_nome = serializers.SerializerMethodField()
     registrado_por_nome = serializers.CharField(source='registrado_por.username', read_only=True)
 
     class Meta:
         model = RegistroVisita
         fields = [
             'id', 'municipe', 'municipe_nome', 'conta_destino', 'conta_destino_nome',
+            'usuario_destino', 'usuario_destino_nome',
             'data_checkin', 'observacao', 'registrado_por', 'registrado_por_nome'
         ]
+
+    def get_usuario_destino_nome(self, obj):
+        if obj.usuario_destino:
+            return obj.usuario_destino.get_full_name() or obj.usuario_destino.username
+        return None
 
 class ReservaEspacoSerializer(serializers.ModelSerializer):
     espaco_nome = serializers.CharField(source='espaco.nome', read_only=True)

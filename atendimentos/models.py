@@ -172,6 +172,45 @@ class Municipe(UppercaseFieldsMixin, models.Model):
     class Meta: verbose_name = "Munícipe"; verbose_name_plural = "Munícipes"; ordering = ['nome_completo']
     def __str__(self): return self.nome_completo
 
+
+class PerfilMunicipe(UppercaseFieldsMixin, models.Model):
+    """
+    Perfil do munícipe por conta (cargo/órgão). Permite múltiplos cargos/órgãos
+    para a mesma pessoa, evitando duplicidade de registros.
+    """
+    municipe = models.ForeignKey(
+        Municipe,
+        on_delete=models.CASCADE,
+        related_name='perfis',
+        verbose_name="Munícipe"
+    )
+    conta = models.ForeignKey(
+        Conta,
+        on_delete=models.PROTECT,
+        related_name='perfis_municipe',
+        verbose_name="Conta/Gabinete"
+    )
+    cargo = models.CharField(max_length=150, blank=True, null=True, verbose_name="Cargo")
+    instituicao = models.CharField(max_length=150, blank=True, null=True, verbose_name="Instituição/Órgão")
+    departamento = models.CharField(max_length=150, blank=True, null=True, verbose_name="Departamento")
+    tratamento = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        verbose_name="Tratamento",
+        help_text="Ex: Sr., Dr., Vossa Excelência"
+    )
+    ativo = models.BooleanField(default=True, verbose_name="Ativo")
+
+    class Meta:
+        verbose_name = "Perfil do Munícipe"
+        verbose_name_plural = "Perfis do Munícipe"
+        ordering = ['conta', 'cargo']
+
+    def __str__(self):
+        return f"{self.municipe.nome_completo} — {self.cargo or '-'} @ {self.instituicao or '-'}"
+
+
 class CategoriaAtendimento(UppercaseFieldsMixin, models.Model):
     nome = models.CharField(max_length=100, unique=True, verbose_name="Nome da Categoria")
     descricao = models.TextField(blank=True, null=True, verbose_name="Descrição")
@@ -181,7 +220,14 @@ class CategoriaAtendimento(UppercaseFieldsMixin, models.Model):
 
 class Atendimento(models.Model):
     STATUS_CHOICES = [('ABERTO', 'Aberto'), ('EM_ANALISE', 'Em Análise'), ('ENCAMINHADO', 'Encaminhado'), ('CONCLUIDO', 'Concluído'), ('ARQUIVADO', 'Arquivado')]
+    ORIGEM_CHOICES = [
+        ('PRESENCIAL', 'Presencial'),
+        ('TELEFONE', 'Telefone'),
+        ('EMAIL', 'E-mail'),
+        ('WHATSAPP', 'WhatsApp'),
+    ]
     protocolo = models.CharField(max_length=20, unique=True, blank=True, editable=False, verbose_name="Protocolo")
+    origem = models.CharField(max_length=20, choices=ORIGEM_CHOICES, default='PRESENCIAL', verbose_name="Origem do Atendimento")
     titulo = models.CharField(max_length=255, verbose_name="Título do Atendimento")
     descricao = models.TextField(verbose_name="Descrição Detalhada")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ABERTO', verbose_name="Status")
@@ -372,11 +418,15 @@ class GoogleApiToken(models.Model):
 
 class RegistroVisita(UppercaseFieldsMixin, models.Model):
     """
-    Modelo para registrar um check-in/visita rápida, 
+    Modelo para registrar um check-in/visita rápida,
     sem a complexidade de um Atendimento.
     """
     municipe = models.ForeignKey(Municipe, on_delete=models.CASCADE, related_name="visitas")
     conta_destino = models.ForeignKey(Conta, on_delete=models.PROTECT, verbose_name="Gabinete de Destino")
+    usuario_destino = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="visitas_destino", verbose_name="Responsável / Usuário Destino"
+    )
     data_checkin = models.DateTimeField(auto_now_add=True, verbose_name="Data do Check-in")
     observacao = models.TextField(blank=True, null=True, verbose_name="Observação")
     registrado_por = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="visitas_registradas")

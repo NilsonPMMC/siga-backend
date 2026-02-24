@@ -1,7 +1,7 @@
 import uuid
 from django.db import models
 from django.core.exceptions import ValidationError
-from atendimentos.models import Conta, Municipe
+from atendimentos.models import Conta, Municipe, PerfilMunicipe
 
 class UppercaseFieldsMixin:
     """
@@ -63,6 +63,7 @@ class Evento(UppercaseFieldsMixin, models.Model):
         return self.nome
 
 class Convidado(models.Model):
+    """Convite vinculado ao Perfil (cargo/órgão). Fonte da verdade: perfil; municipe opcional para fallback."""
     STATUS_CHOICES = [
         ('convidado', 'Convidado'),
         ('confirmado', 'Confirmado'),
@@ -74,23 +75,32 @@ class Convidado(models.Model):
         on_delete=models.CASCADE,
         related_name='convidados'
     )
+    perfil = models.ForeignKey(
+        PerfilMunicipe,
+        on_delete=models.PROTECT,
+        related_name='convites',
+        verbose_name="Perfil (Cargo/Órgão) no convite"
+    )
     municipe = models.ForeignKey(
         Municipe,
-        on_delete=models.PROTECT,
-        related_name='convites'
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='convites_legado',
+        verbose_name="Munícipe (fallback)"
     )
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='convidado')
     data_checkin = models.DateTimeField(null=True, blank=True, verbose_name="Data do Check-in")
     ordem = models.PositiveIntegerField(default=0, help_text="Campo para ordenação manual.")
 
     class Meta:
-        unique_together = ('evento', 'municipe')
+        unique_together = ('evento', 'perfil')
         verbose_name = "Convidado"
         verbose_name_plural = "Convidados"
         ordering = ['ordem']
 
     def __str__(self):
-        return f"{self.municipe.nome_completo} no evento {self.evento.nome}"
+        return f"{self.perfil.municipe.nome_completo} no evento {self.evento.nome}"
 
 class ListaPresenca(UppercaseFieldsMixin, models.Model):
     evento = models.ForeignKey(Evento, on_delete=models.CASCADE, related_name='presentes')

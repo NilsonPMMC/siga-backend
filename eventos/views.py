@@ -85,25 +85,21 @@ class EventoViewSet(viewsets.ModelViewSet):
             )
 
         try:
-            convidados_existentes_ids = Convidado.objects.filter(evento=evento).values_list('municipe_id', flat=True)
-
-            # --- CORREÇÃO FINAL E EXPLÍCITA ---
-            # Usamos 'categoria__id' que é a forma padrão do Django para buscar em chaves estrangeiras.
-            # O traceback nos confirmou que o campo se chama 'categoria'.
-            municipes_para_adicionar = Municipe.objects.filter(
-                categoria__id=categoria_id
-            ).exclude(
-                id__in=convidados_existentes_ids
+            from atendimentos.models import PerfilMunicipe
+            perfis_ja_convidados = set(
+                Convidado.objects.filter(evento=evento).values_list('perfil_id', flat=True)
             )
-            # ------------------------------------
-
-            print(f"Encontrados {municipes_para_adicionar.count()} novos munícipes para adicionar.")
-
-            novos_convidados = [
-                Convidado(evento=evento, municipe=municipe)
-                for municipe in municipes_para_adicionar
-            ]
-            
+            municipes_para_adicionar = Municipe.objects.filter(categoria__id=categoria_id)
+            novos_convidados = []
+            for municipe in municipes_para_adicionar:
+                perfil, _ = PerfilMunicipe.objects.get_or_create(
+                    municipe=municipe,
+                    conta=evento.conta,
+                    defaults={'cargo': municipe.cargo, 'instituicao': municipe.orgao, 'ativo': True}
+                )
+                if perfil.id not in perfis_ja_convidados:
+                    novos_convidados.append(Convidado(evento=evento, perfil=perfil))
+                    perfis_ja_convidados.add(perfil.id)
             if novos_convidados:
                 Convidado.objects.bulk_create(novos_convidados)
 
@@ -210,13 +206,13 @@ class EventoViewSet(viewsets.ModelViewSet):
         try:
             evento = self.get_object()
             conta = evento.conta
-            todos_convidados = evento.convidados.all().order_by('ordem', 'municipe__nome_completo')            
+            todos_convidados = evento.convidados.select_related('perfil__municipe').order_by('ordem', 'perfil__municipe__nome_completo')
             logo_url = get_image_path(conta.logo_conta) or ''
             brasao_url = get_image_path(conta.brasao_instituicao) or ''
 
             convidados_com_foto = []
             for convidado in todos_convidados:
-                convidado.foto_url_absoluta = get_image_path(convidado.municipe.foto)
+                convidado.foto_url_absoluta = get_image_path(convidado.perfil.municipe.foto)
                 convidados_com_foto.append(convidado)
 
             context = {
@@ -249,14 +245,13 @@ class EventoViewSet(viewsets.ModelViewSet):
 
         try:
             evento = self.get_object()
-            convidados_selecionados = Convidado.objects.select_related('municipe').filter(id__in=convidado_ids, evento=evento).order_by('ordem')
-            
+            convidados_selecionados = Convidado.objects.select_related('perfil__municipe').filter(id__in=convidado_ids, evento=evento).order_by('ordem')
             conta = evento.conta
             logo_url = get_image_path(conta.logo_conta) or ''
             brasao_url = get_image_path(conta.brasao_instituicao) or ''
             convidados_com_foto = []
             for convidado in convidados_selecionados:
-                convidado.foto_url_absoluta = get_image_path(convidado.municipe.foto)
+                convidado.foto_url_absoluta = get_image_path(convidado.perfil.municipe.foto)
                 convidados_com_foto.append(convidado)
 
             context = {
@@ -408,10 +403,8 @@ class ConvidadoViewSet(viewsets.ModelViewSet):
         
         evento_id = self.request.query_params.get('evento')
         if evento_id:
-            # Ordena acessando o nome dentro da relação com municipe
-            return qs.filter(evento_id=evento_id).order_by('municipe__nome_completo')
-            
-        return qs.select_related('municipe').order_by('municipe__nome_completo')
+            return qs.filter(evento_id=evento_id).select_related('perfil__municipe', 'perfil__conta').order_by('perfil__municipe__nome_completo')
+        return qs.select_related('perfil__municipe', 'perfil__conta').order_by('perfil__municipe__nome_completo')
 
     def perform_create(self, serializer):
         # Define a ordem inicial do novo convidado
@@ -1310,7 +1303,7 @@ class EventoAnalyticsView(APIView):
 
         # Aplica Filtro de Categoria Global (se selecionado)
         if categoria_id:
-            all_convidados_qs = all_convidados_qs.filter(municipe__categoria_id=categoria_id)
+            all_convidados_qs = all_convidados_qs.filter(perfil__municipe__categoria_id=categoria_id)
             all_publico_qs = all_publico_qs.filter(municipe__categoria_id=categoria_id)
 
         # 3. Totais Gerais
@@ -1336,12 +1329,12 @@ class EventoAnalyticsView(APIView):
         # 5. Top Convidados (VIP) - Mais Frequentes nas Listas
         top_convidados = (
             all_convidados_qs
-            .values('municipe__nome_completo', 'municipe__categoria__nome')
+            .values('perfil__municipe__nome_completo', 'perfil__municipe__categoria__nome')
             .annotate(frequencia=Count('id'))
             .order_by('-frequencia')[:10]
         )
 
-        # 6. Top Público (QR Code) - CORREÇÃO: Agora respeita filtro de categoria
+        # 6. Top Público (QR Code)
         top_publico = (
             all_publico_qs
             .values('municipe__nome_completo', 'municipe__categoria__nome')
@@ -1350,17 +1343,15 @@ class EventoAnalyticsView(APIView):
         )
 
         # 7. Perfil Unificado
-        perfis_vip = all_convidados_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+        perfis_vip = all_convidados_qs.values('perfil__municipe__categoria__nome').annotate(qtd=Count('id'))
         perfis_publico = all_publico_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
-        
         mapa_perfis = {}
         for item in perfis_vip:
-            cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+            cat = item['perfil__municipe__categoria__nome'] or 'Sem Categoria'
             mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
         for item in perfis_publico:
             cat = item['municipe__categoria__nome'] or 'Sem Categoria'
             mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
-            
         lista_top_perfis = [{'municipe__categoria__nome': k, 'qtd': v} for k, v in mapa_perfis.items()]
         lista_top_perfis = sorted(lista_top_perfis, key=lambda x: x['qtd'], reverse=True)[:5]
 
@@ -1455,7 +1446,7 @@ def get_bi_eventos_data(user, params):
     all_publico_qs = ListaPresenca.objects.filter(evento__in=eventos_qs)
 
     if categoria_id:
-        all_convidados_qs = all_convidados_qs.filter(municipe__categoria_id=categoria_id)
+        all_convidados_qs = all_convidados_qs.filter(perfil__municipe__categoria_id=categoria_id)
         all_publico_qs = all_publico_qs.filter(municipe__categoria_id=categoria_id)
 
     total_vip_geral = all_convidados_qs.count()
@@ -1472,7 +1463,7 @@ def get_bi_eventos_data(user, params):
     # Top Convidados (VIP)
     top_convidados = (
         all_convidados_qs
-        .values('municipe__nome_completo', 'municipe__categoria__nome')
+        .values('perfil__municipe__nome_completo', 'perfil__municipe__categoria__nome')
         .annotate(frequencia=Count('id'))
         .order_by('-frequencia')[:10]
     )
@@ -1484,19 +1475,16 @@ def get_bi_eventos_data(user, params):
         .annotate(frequencia=Count('id'))
         .order_by('-frequencia')[:10]
     )
-    
     # Perfil Unificado Global
-    perfis_vip = all_convidados_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+    perfis_vip = all_convidados_qs.values('perfil__municipe__categoria__nome').annotate(qtd=Count('id'))
     perfis_publico = all_publico_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
-    
     mapa_perfis = {}
     for item in perfis_vip:
-        cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+        cat = item['perfil__municipe__categoria__nome'] or 'Sem Categoria'
         mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
     for item in perfis_publico:
         cat = item['municipe__categoria__nome'] or 'Sem Categoria'
         mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
-        
     lista_top_perfis = [{'categoria': k, 'qtd': v} for k, v in mapa_perfis.items()]
     lista_top_perfis = sorted(lista_top_perfis, key=lambda x: x['qtd'], reverse=True)
 
