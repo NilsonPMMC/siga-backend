@@ -114,11 +114,11 @@ class Municipe(UppercaseFieldsMixin, models.Model):
     )
     nome_completo = models.CharField(max_length=255, verbose_name="Nome Completo")
     tratamento = models.CharField(
-        max_length=50, 
-        blank=True, 
-        null=True, 
-        verbose_name="Pronome de Tratamento",
-        help_text="Ex: Senhor, Senhora, Dr., Dra., Vossa Excelência"
+        max_length=50,
+        blank=True,
+        null=True,
+        verbose_name="Pronome de Tratamento (legado)",
+        help_text="Ex: Senhor, Senhora, Dr., Dra., Vossa Excelência. Migrado para PerfilMunicipe.",
     )
     nome_de_guerra = models.CharField(
         max_length=100, 
@@ -142,8 +142,10 @@ class Municipe(UppercaseFieldsMixin, models.Model):
     cpf = models.CharField(max_length=14, unique=True, blank=True, null=True, default=None, verbose_name="CPF")
     data_nascimento = models.DateField(blank=True, null=True, verbose_name="Data de Nascimento")
     emails = models.JSONField(default=list, blank=True, null=True, verbose_name="Emails")
-    cargo = models.CharField(max_length=150, blank=True, null=True, verbose_name="Cargo")
-    orgao = models.CharField(max_length=150, blank=True, null=True, verbose_name="Órgão/Empresa")
+    # Campos legados: mantidos temporariamente; dados migrados para PerfilMunicipe (ver migração 0034).
+    # Após garantir que todo o código lê de perfis, aplicar migração de remoção (0035).
+    cargo = models.CharField(max_length=150, blank=True, null=True, verbose_name="Cargo (legado)")
+    orgao = models.CharField(max_length=150, blank=True, null=True, verbose_name="Órgão/Empresa (legado)")
     telefones = models.JSONField(default=list, blank=True, null=True, verbose_name="Telefones")
     endereco = models.JSONField(default=dict, blank=True, null=True, verbose_name="Endereço")
     dados_etiqueta = models.TextField(
