@@ -6,7 +6,7 @@ import pyodbc
 from datetime import datetime, date
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from atendimentos.models import Municipe, CategoriaContato, Conta
+from atendimentos.models import Municipe, CategoriaContato, Conta, PerfilMunicipe
 
 # --- Importações para a barra de progresso e remoção de acentos ---
 try:
@@ -74,8 +74,10 @@ class Command(BaseCommand):
         categoria_servidor, _ = CategoriaContato.objects.get_or_create(nome="SERVIDOR(A)")
         categoria_secretario, _ = CategoriaContato.objects.get_or_create(nome="SECRETÁRIO(A) MUNICIPAL")
         gabinete_prefeita, _ = Conta.objects.get_or_create(nome="GABINETE DA PREFEITA")
-        gabinete_vice, _ = Conta.objects.get_or_create(nome="VICE-PREFEITO")
-        contas_para_vincular = [gabinete_prefeita, gabinete_vice]
+        # Conta principal para perfis do RH
+        conta_perfil = gabinete_prefeita
+        # Contas para vínculo M2M (mantém gabinete da prefeita; vice pode ser adicionado se necessário)
+        contas_para_vincular = [gabinete_prefeita]
 
         cont_criados, cont_atualizados, erros = 0, 0, []
         matriculas_rh_encontradas = set()
@@ -103,12 +105,14 @@ class Command(BaseCommand):
                     # --- INÍCIO DA LÓGICA DE ATUALIZAÇÃO AJUSTADA ---
                     # -----------------------------------------------------------------
                     if municipe:
-                        # Atualiza os campos que devem ser sempre sobrescritos
+                        # Atualiza os campos de pessoa (dados básicos do munícipe)
                         municipe.nome_completo = str(servidor_data.Nome_Funcionario or '').strip()
                         municipe.data_nascimento = servidor_data.DtNascto if isinstance(servidor_data.DtNascto, (datetime, date)) else None
-                        municipe.cargo = cargo_servidor
-                        municipe.orgao = 'Prefeitura Municipal de Mogi das Cruzes'
-                        municipe.endereco = {'cep': str(servidor_data.CEP or '').strip(), 'logradouro': str(servidor_data.Endereco or '').strip(), 'bairro': str(servidor_data.Bairro or '').strip()}
+                        municipe.endereco = {
+                            'cep': str(servidor_data.CEP or '').strip(),
+                            'logradouro': str(servidor_data.Endereco or '').strip(),
+                            'bairro': str(servidor_data.Bairro or '').strip()
+                        }
                         municipe.categoria = categoria_a_ser_usada
                         municipe.ativo = True
                         municipe.matricula_rh = matricula
@@ -151,10 +155,12 @@ class Command(BaseCommand):
                             'nome_completo': str(servidor_data.Nome_Funcionario or '').strip(),
                             'data_nascimento': servidor_data.DtNascto if isinstance(servidor_data.DtNascto, (datetime, date)) else None,
                             'emails': [{'tipo': 'corporativo', 'email': str(servidor_data.Email or '').strip().lower()}] if servidor_data.Email else [],
-                            'cargo': cargo_servidor,
-                            'orgao': 'Prefeitura Municipal de Mogi das Cruzes',
                             'telefones': [{'tipo': 'celular', 'numero': formatar_telefone(servidor_data.Celular)}] if servidor_data.Celular else [],
-                            'endereco': {'cep': str(servidor_data.CEP or '').strip(), 'logradouro': str(servidor_data.Endereco or '').strip(), 'bairro': str(servidor_data.Bairro or '').strip()},
+                            'endereco': {
+                                'cep': str(servidor_data.CEP or '').strip(),
+                                'logradouro': str(servidor_data.Endereco or '').strip(),
+                                'bairro': str(servidor_data.Bairro or '').strip()
+                            },
                             'categoria': categoria_a_ser_usada,
                             'ativo': True,
                             'matricula_rh': matricula,
@@ -162,8 +168,23 @@ class Command(BaseCommand):
                         }
                         municipe = Municipe.objects.create(**dados_para_criar)
                         cont_criados += 1
-                    
+
+                    # Garante vínculo de contas (gabinete/vice) no M2M de Municipe
                     municipe.contas.set(contas_para_vincular)
+
+                    # -----------------------------------------------------------------
+                    # PERFIL POR CONTA (PerfilMunicipe) - arquitetura pós-migração 0034
+                    # Sempre vincula o servidor à conta \"GABINETE DA PREFEITA\"
+                    # -----------------------------------------------------------------
+                    PerfilMunicipe.objects.update_or_create(
+                        municipe=municipe,
+                        conta=conta_perfil,
+                        defaults={
+                            'cargo': cargo_servidor,
+                            'instituicao': 'PREFEITURA MUNICIPAL DE MOGI DAS CRUZES',
+                            'ativo': True,
+                        }
+                    )
 
                 except Exception as e:
                     erros.append(f"Erro ao processar matrícula {matricula}: {e}")

@@ -6,6 +6,7 @@ import operator
 import traceback
 import logging
 import uuid
+import threading
 
 # Imports de bibliotecas padrão
 from datetime import datetime, time, timedelta
@@ -40,6 +41,7 @@ from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.db import transaction, models, IntegrityError
 from django.db.models.fields.related import ManyToManyField, ForeignKey
 from django.apps import apps
+from django.core.management import call_command
 from itertools import chain
 
 # Imports do Django REST Framework
@@ -62,6 +64,7 @@ from oficios.models import Oficio
 # Configurar logger
 logger = logging.getLogger(__name__)
 from .models import *
+from .utils_dados import is_data_dirty
 from .permissions import (CanAccessContacts, CanAccessObjectByConta, CanViewSharedAgenda, CanAccessEspaco,
                           CanInteractWithAtendimento, CanManageAgendas, CanCreateGoogleEvent, CanManageReservas,
                           CanViewAgendaReports, CanViewAtendimentoReports, CanEditMunicipeDetails, CanManageCheckIn, CanManageLembretes,
@@ -626,28 +629,50 @@ class MesclarDuplicatasView(APIView):
 
         try:
             with transaction.atomic():
-                # --- LÓGICA DE TRANSFERÊNCIA DE VÍNCULOS ROBUSTA ---
+                # Contagens para feedback (antes de transferir)
+                n_atendimentos = municipe_duplicado.atendimentos.count()
+                n_visitas = municipe_duplicado.visitas.count()
+                n_solicitacoes_agenda = municipe_duplicado.solicitacoes_agenda.count()
+                n_perfis = municipe_duplicado.perfis.count()
+                n_reservas = getattr(municipe_duplicado, 'reservas_solicitadas', None)
+                n_reservas = n_reservas.count() if n_reservas is not None else 0
 
-                # 1. Transfere relações ManyToMany que estão NO PRÓPRIO modelo Municipe (ex: municipe.contas)
+                # --- 1. DADOS COMPLEMENTARES: foto, observações, data_cadastro ---
+                if not municipe_principal.foto and municipe_duplicado.foto:
+                    municipe_principal.foto = municipe_duplicado.foto
+                if municipe_duplicado.observacoes and (municipe_duplicado.observacoes or '').strip():
+                    obs_dup = (municipe_duplicado.observacoes or '').strip()
+                    if not (municipe_principal.observacoes or '').strip():
+                        municipe_principal.observacoes = obs_dup
+                    else:
+                        municipe_principal.observacoes = (municipe_principal.observacoes or '').strip() + '\n\n[Unificado]\n' + obs_dup
+                # Manter a data de cadastro mais antiga
+                if municipe_duplicado.data_cadastro and municipe_principal.data_cadastro:
+                    if municipe_duplicado.data_cadastro < municipe_principal.data_cadastro:
+                        municipe_principal.data_cadastro = municipe_duplicado.data_cadastro
+                elif municipe_duplicado.data_cadastro and not municipe_principal.data_cadastro:
+                    municipe_principal.data_cadastro = municipe_duplicado.data_cadastro
+
+                # --- 2. PERFIS (CARGO/ÓRGÃO): herdar todos do duplicado vinculando ao principal ---
+                PerfilMunicipe.objects.filter(municipe=municipe_duplicado).update(municipe=municipe_principal)
+
+                # --- 3. M2M no próprio Municipe (ex: contas) ---
                 for field in Municipe._meta.many_to_many:
                     manager_duplicado = getattr(municipe_duplicado, field.name)
                     manager_principal = getattr(municipe_principal, field.name)
                     related_objs = manager_duplicado.all()
                     if related_objs.exists():
                         manager_principal.add(*related_objs)
-                
-                # 2. Transfere todas as relações de outros modelos que apontam PARA Municipe
+
+                # --- 4. Todas as relações reversas (ForeignKey/OneToOne) que apontam para Municipe ---
                 all_related_objects = [
                     f for f in Municipe._meta.get_fields(include_hidden=True)
                     if (f.one_to_many or f.one_to_one or f.many_to_many) and f.auto_created and not f.concrete
                 ]
 
                 for rel in all_related_objects:
-                    # Se a relação M2M é definida no próprio Municipe, ela já foi tratada no loop anterior.
-                    # Isso evita o erro '...+' em relações reversas de M2M.
                     if rel.many_to_many and rel.field.model == Municipe:
                         continue
-
                     try:
                         accessor_name = rel.get_accessor_name()
                         if not hasattr(municipe_duplicado, accessor_name):
@@ -655,39 +680,27 @@ class MesclarDuplicatasView(APIView):
                     except AttributeError:
                         continue
 
-                    # Caso de ForeignKey e OneToOne (ex: Atendimento -> Municipe)
                     if rel.one_to_many or rel.one_to_one:
                         related_queryset = getattr(municipe_duplicado, accessor_name).all()
                         unique_constraints = getattr(rel.related_model._meta, 'unique_together', [])
                         constraint_fields_to_check = []
-                        
-                        # Verifica se alguma das constraints de unicidade envolve a relação com Municipe
                         for constraint in unique_constraints:
                             if rel.field.name in constraint:
-                                # Pega os outros campos da constraint (ex: 'comunicacao' ou 'evento')
                                 constraint_fields_to_check = [f for f in constraint if f != rel.field.name]
                                 break
-
-                        # Se encontrou uma constraint, faz o tratamento individual para evitar erros
                         if constraint_fields_to_check:
                             for obj_duplicado in related_queryset:
-                                # Monta um filtro para checar se o munícipe principal já tem um vínculo "igual"
                                 lookup_filter = {rel.field.name: municipe_principal}
                                 for field_name in constraint_fields_to_check:
                                     lookup_filter[field_name] = getattr(obj_duplicado, field_name)
-                                
-                                # Se o vínculo já existe para o principal, apenas deletamos o do duplicado.
                                 if rel.related_model.objects.filter(**lookup_filter).exists():
                                     obj_duplicado.delete()
-                                # Senão, o vínculo é transferido para o principal.
                                 else:
                                     setattr(obj_duplicado, rel.field.name, municipe_principal)
                                     obj_duplicado.save()
                         else:
-                            # Se não há constraints de unicidade, pode fazer o update em massa, que é mais rápido.
                             related_queryset.update(**{rel.field.name: municipe_principal})
-                    
-                    # Caso de ManyToMany (ex: MailingList -> Municipe)
+
                     elif rel.many_to_many:
                         related_queryset = getattr(municipe_duplicado, accessor_name).all()
                         for related_obj in related_queryset:
@@ -695,29 +708,53 @@ class MesclarDuplicatasView(APIView):
                             m2m_field_on_related.add(municipe_principal)
                             m2m_field_on_related.remove(municipe_duplicado)
 
-                # 3. Consolida dados de contato (com tratamento para campos nulos)
-                # Garante que as listas existam antes de tentar adicionar itens a elas.
+                # --- 5. Consolida emails e telefones ---
                 if municipe_principal.emails is None:
                     municipe_principal.emails = []
                 if municipe_principal.telefones is None:
                     municipe_principal.telefones = []
 
                 emails_principais = {e['email'].lower() for e in municipe_principal.emails if isinstance(e, dict) and e.get('email')}
-                for email_info in (municipe_duplicado.emails or []): # Usa 'or []' para tratar o caso de ser None
+                for email_info in (municipe_duplicado.emails or []):
                     if isinstance(email_info, dict) and email_info.get('email') and email_info['email'].lower() not in emails_principais:
                         municipe_principal.emails.append(email_info)
 
                 telefones_principais = {t['numero'] for t in municipe_principal.telefones if isinstance(t, dict) and t.get('numero')}
-                for tel_info in (municipe_duplicado.telefones or []): # Usa 'or []' para tratar o caso de ser None
+                for tel_info in (municipe_duplicado.telefones or []):
                     if isinstance(tel_info, dict) and tel_info.get('numero') and tel_info['numero'] not in telefones_principais:
                         municipe_principal.telefones.append(tel_info)
-                
-                municipe_principal.save()
-                
-                # 4. Remove o registro duplicado
+
+                update_fields = ['foto', 'observacoes', 'data_cadastro', 'emails', 'telefones']
+                municipe_principal.save(update_fields=update_fields)
+
+                # --- 6. Remove o registro duplicado ---
                 municipe_duplicado.delete()
 
-            return Response({'status': 'Registros mesclados com sucesso!'}, status=status.HTTP_200_OK)
+            # Resposta com contagem para o toast
+            partes = []
+            if n_atendimentos:
+                partes.append(f'{n_atendimentos} atendimento(s)')
+            if n_visitas:
+                partes.append(f'{n_visitas} visita(s)')
+            if n_solicitacoes_agenda:
+                partes.append(f'{n_solicitacoes_agenda} solicitação(ões) de agenda')
+            if n_perfis:
+                partes.append(f'{n_perfis} cargo(s)/perfil(is)')
+            if n_reservas:
+                partes.append(f'{n_reservas} reserva(s)')
+            msg = ' e '.join(partes) + ' transferidos.' if partes else 'Registros mesclados com sucesso!'
+
+            return Response({
+                'status': 'Registros mesclados com sucesso!',
+                'transferidos': {
+                    'atendimentos': n_atendimentos,
+                    'visitas': n_visitas,
+                    'solicitacoes_agenda': n_solicitacoes_agenda,
+                    'perfis': n_perfis,
+                    'reservas': n_reservas,
+                },
+                'mensagem': msg,
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response(
@@ -791,6 +828,34 @@ class UnificarMunicipesView(APIView):
                     if rel.one_to_many and rel.auto_created:
                         related_model = rel.related_model
                         remote_field_name = rel.field.name # Ex: 'municipe' ou 'solicitante'
+
+                        # Tratamento ESPECÍFICO para PerfilMunicipe, evitando conflitos de unicidade:
+                        # - Se o principal já tiver um perfil com mesmo cargo+conta, descarta o perfil do duplicado.
+                        # - Caso contrário, transfere o perfil alterando o municipe_id.
+                        if related_model.__name__ == 'PerfilMunicipe':
+                            try:
+                                objetos = list(related_model.objects.filter(**{remote_field_name: duplicado}))
+                                logger.debug(f"Processando {len(objetos)} perfis de PerfilMunicipe para migrar")
+                                for perfil in objetos:
+                                    existe = related_model.objects.filter(
+                                        municipe=principal,
+                                        conta=perfil.conta,
+                                        cargo=perfil.cargo,
+                                    ).exists()
+                                    if existe:
+                                        logger.debug(
+                                            "Descartando PerfilMunicipe duplicado (principal já possui mesmo cargo/conta): "
+                                            f"perfil_id={perfil.id}, conta_id={perfil.conta_id}, cargo={perfil.cargo}"
+                                        )
+                                        perfil.delete()
+                                    else:
+                                        perfil.municipe = principal
+                                        perfil.save()
+                                        links_migrados += 1
+                            except Exception as e:
+                                logger.error(f"Erro ao migrar perfis de PerfilMunicipe: {e}", exc_info=True)
+                            # Já tratamos PerfilMunicipe, segue para a próxima relação
+                            continue
                         
                         # Busca objetos do modelo relacionado que apontam para o duplicado
                         try:
@@ -941,7 +1006,120 @@ class UnificarMunicipesView(APIView):
                 "principal_id": id_principal,
                 "duplicado_id": id_duplicado
             }, status=500)
-        
+
+
+class RodarAuditoriaDuplicidadesView(APIView):
+    """Dispara o management command auditoria_qualidade_duplicidades em background. Retorna 202 Accepted."""
+    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+
+    def post(self, request):
+        def run_command():
+            try:
+                call_command('auditoria_qualidade_duplicidades')
+            except Exception as e:
+                logger.exception('Erro ao rodar auditoria_qualidade_duplicidades: %s', e)
+
+        threading.Thread(target=run_command, daemon=True).start()
+        return Response(
+            {'message': 'Auditoria de qualidade e duplicidades iniciada em background. A lista será atualizada em alguns minutos.'},
+            status=status.HTTP_202_ACCEPTED
+        )
+
+
+class DescartarGrupoDuplicatasView(APIView):
+    """Limpa grupo_duplicado de todos os munícipes do grupo informado (UUID)."""
+    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+
+    def post(self, request):
+        grupo_uuid = request.data.get('grupo_duplicado')
+        if not grupo_uuid:
+            return Response({'error': 'grupo_duplicado (UUID) é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            uuid.UUID(str(grupo_uuid))
+        except ValueError:
+            return Response({'error': 'grupo_duplicado inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        atualizados = Municipe.objects.filter(grupo_duplicado=grupo_uuid).update(grupo_duplicado=None)
+        return Response({'message': f'Grupo ignorado. {atualizados} contato(s) removido(s) do grupo.', 'atualizados': atualizados})
+
+
+class DescartarContatoDuplicataView(APIView):
+    """Remove um único munícipe do grupo de duplicatas (limpa grupo_duplicado desse ID)."""
+    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+
+    def post(self, request, pk):
+        municipe = get_object_or_404(Municipe, pk=pk)
+        if not municipe.grupo_duplicado:
+            return Response({'message': 'Contato já não está em grupo de duplicatas.', 'atualizados': 0})
+        municipe.grupo_duplicado = None
+        municipe.save(update_fields=['grupo_duplicado'])
+        return Response({'message': 'Contato removido do grupo de duplicatas.', 'atualizados': 1})
+
+
+class SaneamentoDadosMunicipeView(APIView):
+    """
+    Retorna uma lista de problemas de qualidade de dados para munícipes,
+    permitindo filtros por tipo de problema.
+    Problemas suportados:
+      - telefone_invalido
+      - email_invalido
+      - cpf_ausente
+    """
+    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+
+    def get(self, request):
+        problemas_param = request.query_params.getlist('problema') or ['telefone_invalido', 'email_invalido', 'cpf_ausente']
+        problemas = set(problemas_param)
+
+        resultados = []
+        qs = Municipe.objects.all().only('id', 'nome_completo', 'cpf', 'telefones', 'emails', 'auditoria_ia')
+
+        for m in qs.iterator(chunk_size=500):
+            # Telefones inválidos (validação via is_data_dirty)
+            if 'telefone_invalido' in problemas and m.telefones and isinstance(m.telefones, list):
+                for tel in m.telefones:
+                    if isinstance(tel, dict) and tel.get('numero'):
+                        num = str(tel['numero'])
+                        if is_data_dirty(num, 'telefone'):
+                            resultados.append({
+                                'id': m.id,
+                                'nome_completo': m.nome_completo,
+                                'problema': 'telefone_invalido',
+                                'campo': 'telefones',
+                                'valor_atual': num,
+                            })
+                            break
+
+            # Emails inválidos (validação via is_data_dirty)
+            if 'email_invalido' in problemas and m.emails and isinstance(m.emails, list):
+                for em in m.emails:
+                    if isinstance(em, dict) and em.get('email'):
+                        addr = str(em['email'])
+                        if is_data_dirty(addr, 'email'):
+                            resultados.append({
+                                'id': m.id,
+                                'nome_completo': m.nome_completo,
+                                'problema': 'email_invalido',
+                                'campo': 'emails',
+                                'valor_atual': addr,
+                            })
+                            break
+
+            # CPF ausente
+            if 'cpf_ausente' in problemas:
+                cpf = (m.cpf or '').strip() if m.cpf else ''
+                if not cpf:
+                    resultados.append({
+                        'id': m.id,
+                        'nome_completo': m.nome_completo,
+                        'problema': 'cpf_ausente',
+                        'campo': 'cpf',
+                        'valor_atual': '',
+                    })
+
+        return Response(resultados)
+
+
 class AtualizarCategoriaEmLoteView(APIView):
     """
     View para atualizar a categoria de múltiplos Munícipes de uma só vez.
