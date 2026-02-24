@@ -265,15 +265,39 @@ class TramitacaoAgendaSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ('usuario',)
 
+def _formatar_perfis_municipe(perfis):
+    """Formata lista de perfis (cargo/instituição) para exibição em uma única string."""
+    if not perfis:
+        return ''
+    partes = []
+    for p in perfis:
+        cargo = (p.get('cargo') or '').strip()
+        inst = (p.get('instituicao') or '').strip()
+        if cargo and inst:
+            partes.append(f"{cargo} @ {inst}")
+        elif cargo:
+            partes.append(cargo)
+        elif inst:
+            partes.append(inst)
+    return '; '.join(partes) if partes else ''
+
+
 class SolicitacaoAgendaSerializer(serializers.ModelSerializer):
     tramitacoes = TramitacaoAgendaSerializer(many=True, read_only=True)
     solicitante_nome = serializers.CharField(source='solicitante.nome_completo', read_only=True)
+    solicitante_perfis_resumo = serializers.SerializerMethodField()
     conta_nome = serializers.CharField(source='conta.nome', read_only=True)
     espaco_detalhes = EspacoSerializer(source='espaco', read_only=True)
 
     class Meta:
         model = SolicitacaoAgenda
         fields = '__all__'
+
+    def get_solicitante_perfis_resumo(self, obj):
+        if not obj.solicitante_id:
+            return ''
+        perfis = obj.solicitante.perfis.filter(ativo=True).values('cargo', 'instituicao')
+        return _formatar_perfis_municipe(list(perfis))
 
     def validate(self, data):
         """
@@ -541,15 +565,22 @@ class AgendaConvidadoSerializer(serializers.ModelSerializer):
     foto_municipe = serializers.ImageField(source='municipe.foto', read_only=True)
     cargo_municipe = serializers.ReadOnlyField(source='municipe.cargo')
     empresa_municipe = serializers.ReadOnlyField(source='municipe.orgao')
+    perfis_municipe_resumo = serializers.SerializerMethodField()
     categoria_municipe = serializers.ReadOnlyField(source='municipe.categoria.nome')
 
     class Meta:
         model = AgendaConvidado
         fields = [
             'id', 'municipe', 'nome_municipe', 'foto_municipe', 
-            'cargo_municipe', 'empresa_municipe', 'categoria_municipe',
+            'cargo_municipe', 'empresa_municipe', 'perfis_municipe_resumo', 'categoria_municipe',
             'observacao', 'confirmado', 'chegou', 'horario_chegada'
         ]
+
+    def get_perfis_municipe_resumo(self, obj):
+        if not obj.municipe_id:
+            return ''
+        perfis = obj.municipe.perfis.filter(ativo=True).values('cargo', 'instituicao')
+        return _formatar_perfis_municipe(list(perfis))
 
 class AgendaCompromissoSerializer(serializers.ModelSerializer):
     convidados = AgendaConvidadoSerializer(many=True, read_only=True)

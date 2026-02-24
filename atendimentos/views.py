@@ -204,8 +204,7 @@ class SolicitacaoAgendaListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated, CanManageAgendas]
 
     def get_queryset(self):
-        # A base da sua consulta continua a mesma
-        queryset = SolicitacaoAgenda.objects.all()
+        queryset = SolicitacaoAgenda.objects.select_related('solicitante').prefetch_related('solicitante__perfis')
 
         # Seus filtros de busca por data, conta e status continuam perfeitos
         data_inicio = self.request.query_params.get('data_inicio', None)
@@ -3807,7 +3806,7 @@ class AgendaInstitucionalViewSet(viewsets.ModelViewSet):
         2. Contas que foram compartilhadas com ele (AgendaCompartilhamento).
         """
         user = self.request.user
-        queryset = AgendaCompromisso.objects.all()
+        queryset = AgendaCompromisso.objects.prefetch_related('convidados__municipe__perfis')
 
         # 1. Filtro de Segurança Híbrido (Tenant + Compartilhamento)
         if not user.is_superuser:
