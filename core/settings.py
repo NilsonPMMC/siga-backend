@@ -103,6 +103,7 @@ SITE_URL = config('SITE_URL', default='https://gabinete.mogidascruzes.sp.gov.br'
 
 # Application definition
 
+# pgvector: só carrega se o pacote estiver instalado (ex.: PostgreSQL). Com MariaDB/MySQL não instale pgvector.
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -115,7 +116,14 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'import_export',
-    'pgvector',
+]
+try:
+    import pgvector  # noqa: F401
+    INSTALLED_APPS.append('pgvector')
+except ImportError:
+    pass
+
+INSTALLED_APPS += [
     'atendimentos',
     'eventos',
     'oficios',
