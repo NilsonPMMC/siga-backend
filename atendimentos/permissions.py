@@ -124,11 +124,23 @@ class CanEditMunicipeDetails(BasePermission):
 class CanManageCheckIn(BasePermission):
     """
     Permissão para gerenciar Registros de Visita (Check-ins).
-    Apenas Recepção e Superusuários.
+    Apenas Recepção e Superusuários (listar, editar, excluir).
     """
+
     def has_permission(self, request, view):
         user = request.user
         return user.is_superuser or is_in_group(user, 'Recepção')
+
+
+class CanCreateCheckIn(BasePermission):
+    """
+    Permissão para CRIAR Registros de Visita (Check-ins).
+    Qualquer usuário autenticado pode criar (ex.: via tela de Triagem).
+    Edição e exclusão continuam restritas a Recepção/Superusuário.
+    """
+
+    def has_permission(self, request, view):
+        return request.user.is_authenticated
 
 class CanCreateGoogleEvent(BasePermission):
     """

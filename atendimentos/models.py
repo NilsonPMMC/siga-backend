@@ -6,7 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 
 class UppercaseFieldsMixin:
-    UPPERCASE_EXCEPTIONS = ('emails', 'endereco', 'dados_etiqueta', 'etiqueta_remetente')
+    UPPERCASE_EXCEPTIONS = ('emails', 'endereco', 'dados_etiqueta', 'etiqueta_remetente', 'perfil_ia_texto')
 
     def save(self, *args, **kwargs):
         for field in self._meta.fields:
@@ -171,6 +171,24 @@ class Municipe(UppercaseFieldsMixin, models.Model):
         verbose_name="Auditoria de Qualidade (IA)",
         help_text="Dados de auditoria gerados pela IA: nota de qualidade, classificação, sugestões de correção."
     )
+    perfil_ia_texto = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name="Texto consolidado para vetor IA",
+        help_text="Texto usado para gerar o embedding (debug)."
+    )
+    vetor_ia_perfil = models.JSONField(
+        null=True,
+        blank=True,
+        verbose_name="Vetor IA Perfil (Embedding)",
+        help_text="Embedding para busca semântica do perfil."
+    )
+    auditoria_ia_data = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Última atualização IA",
+        help_text="Data/hora da última geração do vetor IA."
+    )
     class Meta: verbose_name = "Munícipe"; verbose_name_plural = "Munícipes"; ordering = ['nome_completo']
     def __str__(self): return self.nome_completo
 
@@ -240,7 +258,25 @@ class Atendimento(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='atendimentos_criados')
     data_criacao = models.DateTimeField(auto_now_add=True, verbose_name="Data de Criação")
     data_atualizacao = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")
-    resumo_ia = models.TextField(blank=True, null=True, verbose_name="Resumo Gerado por IA", help_text="Resumo automático gerado pelo Gemini AI")
+    resumo_ia = models.TextField(blank=True, null=True, verbose_name="Resumo Gerado por IA", help_text="Resumo automático gerado pelo Gemini AI (legado)")
+    resumo_ia_local = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name="Resumo IA Local (Ollama)",
+        help_text="Resumo consolidado gerado pela IA local considerando triagem e tramitações."
+    )
+    vetor_ia_atendimento = models.JSONField(
+        null=True,
+        blank=True,
+        verbose_name="Vetor IA (Embedding)",
+        help_text="Embedding para busca semântica (mxbai-embed-large)."
+    )
+    auditoria_ia_status = models.CharField(
+        max_length=20,
+        default='PENDENTE',
+        verbose_name="Status Processamento IA",
+        choices=[('PENDENTE', 'Pendente'), ('PROCESSADO', 'Processado'), ('ERRO', 'Erro')]
+    )
     class Meta: verbose_name = "Atendimento"; verbose_name_plural = "Atendimentos"; ordering = ['-data_criacao']
     def __str__(self): return f"{self.protocolo} - {self.titulo}"
     def save(self, *args, **kwargs):

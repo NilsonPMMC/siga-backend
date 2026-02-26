@@ -410,3 +410,10 @@ X_FRAME_OPTIONS = 'DENY'
 # SECURE_HSTS_SECONDS = 31536000  # 1 ano
 # SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 # SECURE_HSTS_PRELOAD = True
+
+# -----------------------------------------------------------------------------
+# Ollama (IA local - resumo e busca semântica)
+# -----------------------------------------------------------------------------
+OLLAMA_BASE_URL = config('OLLAMA_BASE_URL', default='http://localhost:11434')
+OLLAMA_MODEL_TEXT = config('OLLAMA_MODEL_TEXT', default='llama3.2:3b')
+OLLAMA_MODEL_EMBED = config('OLLAMA_MODEL_EMBED', default='mxbai-embed-large')

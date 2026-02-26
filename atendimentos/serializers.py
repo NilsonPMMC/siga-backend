@@ -227,7 +227,8 @@ class AtendimentoSerializer(serializers.ModelSerializer):
             'id', 'protocolo', 'origem', 'origem_display', 'titulo', 'descricao', 'status', 'conta', 'nome_conta',
             'municipe', 'nome_municipe',
             'responsavel', 'responsavel_obj', 'responsavel_nome', 'data_criacao',
-            'data_atualizacao', 'tramitacoes', 'categorias', 'categorias_ids', 'anexos'
+            'data_atualizacao', 'tramitacoes', 'categorias', 'categorias_ids', 'anexos',
+            'resumo_ia_local', 'auditoria_ia_status'
         ]
         read_only_fields = ('protocolo', 'status', 'data_criacao', 'data_atualizacao')
 

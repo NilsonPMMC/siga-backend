@@ -15,6 +15,8 @@ from .views import (
     AtendimentoListCreateView,
     AtualizarCategoriaEmLoteView,
     BuscaGlobalView,
+    BuscaIACrmView,
+    BuscaSemanticaAtendimentosView,
     BuscarSecretariasSinapseView,
     CategoriaAtendimentoListView,
     CategoriaContatoListView,
@@ -66,6 +68,7 @@ from .views import (
     RemoverLinkGoogleView,
     ReservaEspacoListCreateView,
     ReservaEspacoDetailView,
+    RecarregarResumoAtendimentoView,
     RodarAuditoriaDuplicidadesView,
     SaneamentoDadosMunicipeView,
     SharedGoogleAgendaView,
@@ -93,6 +96,7 @@ urlpatterns = [
     # --- Munícipes ---
     path('municipes/', MunicipeListCreateView.as_view(), name='municipe-list-create'),
     path('municipes/lookup/', MunicipeLookupView.as_view(), name='municipe-lookup'),
+    path('municipes/busca-ia/', BuscaIACrmView.as_view(), name='municipes-busca-ia'),
     path('municipes/export/excel/', ExportMunicipesExcelView.as_view(), name='export-municipes-excel'),
     path('municipes/export/pdf/', GerarPdfMunicipesReportView.as_view(), name='export-municipes-pdf'),
     path('municipes/aniversariantes-do-dia/', AniversariantesDoDiaView.as_view(), name='municipes-aniversariantes-dia'),
@@ -116,8 +120,10 @@ urlpatterns = [
     
     # --- Atendimentos e sub-recursos (tramitações, anexos) ---
     path('atendimentos/', AtendimentoListCreateView.as_view(), name='atendimento-list-create'),
+    path('atendimentos/busca-ia/', BuscaSemanticaAtendimentosView.as_view(), name='atendimentos-busca-ia'),
     path('atendimentos/<int:pk>/', AtendimentoDetailView.as_view(), name='atendimento-detail'),
     path('atendimentos/<int:pk>/alterar-status/', AlterarStatusAtendimentoView.as_view(), name='atendimento-alterar-status'),
+    path('atendimentos/<int:pk>/recarregar-resumo-ia/', RecarregarResumoAtendimentoView.as_view(), name='atendimento-recarregar-resumo-ia'),
     path('atendimentos/<int:pk>/pdf/', GerarPdfAtendimentoDetailView.as_view(), name='atendimento-detalhe-pdf'),
     path('atendimentos/<int:atendimento_pk>/tramitacoes/', TramitacaoListCreateView.as_view(), name='atendimento-tramitacao-list-create'),
     path('atendimentos/<int:atendimento_pk>/anexos/', AnexoListCreateView.as_view(), name='atendimento-anexos-list-create'),

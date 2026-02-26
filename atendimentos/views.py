@@ -67,8 +67,8 @@ from .models import *
 from .utils_dados import is_data_dirty
 from .permissions import (CanAccessContacts, CanAccessObjectByConta, CanViewSharedAgenda, CanAccessEspaco,
                           CanInteractWithAtendimento, CanManageAgendas, CanCreateGoogleEvent, CanManageReservas,
-                          CanViewAgendaReports, CanViewAtendimentoReports, CanEditMunicipeDetails, CanManageCheckIn, CanManageLembretes,
-                          is_in_group)
+                          CanViewAgendaReports, CanViewAtendimentoReports, CanEditMunicipeDetails, CanManageCheckIn,
+                          CanCreateCheckIn, CanManageLembretes, is_in_group)
 from .serializers import *
 
 
@@ -135,9 +135,135 @@ class AtendimentoDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, CanInteractWithAtendimento]
 
 
+class RecarregarResumoAtendimentoView(APIView):
+    """Gera/recarrega o resumo IA e vetor do atendimento via Ollama."""
+    permission_classes = [permissions.IsAuthenticated, CanInteractWithAtendimento]
+
+    def post(self, request, pk):
+        atendimento = get_object_or_404(Atendimento, pk=pk)
+        with transaction.atomic():
+            from .services.ia_intelligence import gerar_resumo_atendimento, atualizar_vetor_atendimento
+            resumo = gerar_resumo_atendimento(atendimento)
+            if resumo is None:
+                atendimento.auditoria_ia_status = 'ERRO'
+                atendimento.save(update_fields=['auditoria_ia_status'])
+                return Response({'detail': 'Erro ao gerar resumo. Verifique se o Ollama está rodando.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            atendimento.resumo_ia_local = resumo
+            atendimento.save(update_fields=['resumo_ia_local'])
+            atualizar_vetor_atendimento(atendimento)
+            atendimento.auditoria_ia_status = 'PROCESSADO'
+            atendimento.save(update_fields=['auditoria_ia_status'])
+        serializer = AtendimentoSerializer(atendimento)
+        return Response(serializer.data)
+
+
+class BuscaSemanticaAtendimentosView(APIView):
+    """Busca semântica de atendimentos por conta (IA) - usa buscar_atendimentos_semantico_otimizado."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        q = (request.query_params.get('q') or '').strip()
+        conta_id_param = request.query_params.get('conta_id')
+
+        if not q:
+            return Response({'detail': 'Parâmetro q é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        conta_id = None
+
+        if conta_id_param:
+            try:
+                conta_id = int(conta_id_param)
+            except (TypeError, ValueError):
+                return Response({'detail': 'conta_id inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+            if not user.is_superuser and hasattr(user, 'perfil'):
+                contas_ids = list(user.perfil.contas.values_list('id', flat=True))
+                if conta_id not in contas_ids:
+                    return Response({'detail': 'Sem permissão para esta conta.'}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            # Superuser pode buscar sem conta_id (todos os atendimentos)
+            if not user.is_superuser:
+                if hasattr(user, 'perfil'):
+                    primeira_conta = user.perfil.contas.first()
+                    if primeira_conta:
+                        conta_id = primeira_conta.id
+                if conta_id is None:
+                    return Response(
+                        {'detail': 'conta_id é obrigatório ou configure seu perfil com ao menos uma conta.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        from .services.ia_intelligence import buscar_atendimentos_semantico_otimizado
+        resultados_raw = buscar_atendimentos_semantico_otimizado(q, conta_id=conta_id, top_k=10)
+
+        # Serializa cada atendimento com AtendimentoSerializer e adiciona score_match
+        payload = []
+        for item in resultados_raw:
+            data = AtendimentoSerializer(item['atendimento']).data
+            data['score_match'] = item['score_percentual']
+            data['snippet'] = item.get('snippet', '')
+            payload.append(data)
+
+        return Response(payload)
+
+
+class BuscaIACrmView(APIView):
+    """Busca semântica de munícipes (CRM) - retorna Nome, Cargo, Telefone, Bairro e score."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        q = (request.query_params.get('q') or '').strip()
+        try:
+            limite = min(int(request.query_params.get('limite', 20) or 20), 50)
+        except (TypeError, ValueError):
+            limite = 20
+
+        if not q:
+            return Response({'detail': 'Parâmetro q é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from .services.ia_intelligence import buscar_municipes_semantico
+            resultados_raw = buscar_municipes_semantico(q, limite=limite)
+        except Exception as e:
+            logger.exception("Busca IA CRM falhou: %s", e)
+            return Response(
+                {'detail': 'Erro ao gerar embedding da query. Verifique se o Ollama está rodando.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        payload = []
+        for item in resultados_raw:
+            m = item['municipe']
+            cargo = _formatar_cargo_orgao_municipe(m)
+            telefone = ''
+            if m.telefones and isinstance(m.telefones, list):
+                prim = next((t for t in m.telefones if isinstance(t, dict) and t.get('numero')), None)
+                if prim:
+                    telefone = str(prim.get('numero', ''))
+            bairro = ''
+            if m.endereco and isinstance(m.endereco, dict):
+                bairro = (m.endereco.get('bairro') or m.endereco.get('bairro_nome') or '').strip()
+
+            payload.append({
+                'id': m.id,
+                'nome': m.nome_completo or '',
+                'cargo': cargo,
+                'telefone': telefone,
+                'bairro': bairro,
+                'score_match': item['score_percentual'],
+            })
+
+        return Response(payload)
+
+
 class RegistroVisitaListCreateView(generics.ListCreateAPIView):
     serializer_class = RegistroVisitaSerializer
-    permission_classes = [permissions.IsAuthenticated, CanManageCheckIn]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [permissions.IsAuthenticated(), CanCreateCheckIn()]
+        return [permissions.IsAuthenticated(), CanManageCheckIn()]
 
     def get_queryset(self):
         user = self.request.user
@@ -1056,10 +1182,34 @@ class DescartarContatoDuplicataView(APIView):
         return Response({'message': 'Contato removido do grupo de duplicatas.', 'atualizados': 1})
 
 
+def _formatar_cargo_orgao_municipe(m):
+    """Formata cargo(s)/órgão(s) do munícipe a partir de perfis ou campos legados."""
+    perfis_list = list(m.perfis.all()) if hasattr(m, 'perfis') else []
+    if perfis_list:
+        partes = []
+        for p in perfis_list:
+            if getattr(p, 'ativo', True):
+                cargo = (p.cargo or '').strip()
+                inst = (p.instituicao or '').strip()
+                if cargo and inst:
+                    partes.append(f"{cargo} @ {inst}")
+                elif cargo:
+                    partes.append(cargo)
+                elif inst:
+                    partes.append(inst)
+        if partes:
+            return '; '.join(partes)
+    c = (m.cargo or '').strip()
+    o = (m.orgao or '').strip()
+    if c and o:
+        return f"{c} @ {o}"
+    return c or o or ''
+
+
 class SaneamentoDadosMunicipeView(APIView):
     """
     Retorna uma lista de problemas de qualidade de dados para munícipes,
-    permitindo filtros por tipo de problema.
+    permitindo filtros por tipo de problema e busca geral.
     Problemas suportados:
       - telefone_invalido
       - email_invalido
@@ -1070,9 +1220,22 @@ class SaneamentoDadosMunicipeView(APIView):
     def get(self, request):
         problemas_param = request.query_params.getlist('problema') or ['telefone_invalido', 'email_invalido', 'cpf_ausente']
         problemas = set(problemas_param)
+        q_busca = (request.query_params.get('q') or '').strip()
 
         resultados = []
-        qs = Municipe.objects.all().only('id', 'nome_completo', 'cpf', 'telefones', 'emails', 'auditoria_ia')
+        qs = Municipe.objects.prefetch_related('perfis').only(
+            'id', 'nome_completo', 'cpf', 'telefones', 'emails', 'auditoria_ia', 'cargo', 'orgao'
+        )
+
+        if q_busca:
+            qs = qs.filter(
+                Q(nome_completo__icontains=q_busca) |
+                Q(cpf__icontains=q_busca) |
+                Q(cargo__icontains=q_busca) |
+                Q(orgao__icontains=q_busca) |
+                Q(perfis__cargo__icontains=q_busca) |
+                Q(perfis__instituicao__icontains=q_busca)
+            ).distinct()
 
         for m in qs.iterator(chunk_size=500):
             # Telefones inválidos (validação via is_data_dirty)
@@ -1084,6 +1247,7 @@ class SaneamentoDadosMunicipeView(APIView):
                             resultados.append({
                                 'id': m.id,
                                 'nome_completo': m.nome_completo,
+                                'cargo_orgao': _formatar_cargo_orgao_municipe(m),
                                 'problema': 'telefone_invalido',
                                 'campo': 'telefones',
                                 'valor_atual': num,
@@ -1099,6 +1263,7 @@ class SaneamentoDadosMunicipeView(APIView):
                             resultados.append({
                                 'id': m.id,
                                 'nome_completo': m.nome_completo,
+                                'cargo_orgao': _formatar_cargo_orgao_municipe(m),
                                 'problema': 'email_invalido',
                                 'campo': 'emails',
                                 'valor_atual': addr,
@@ -1112,6 +1277,7 @@ class SaneamentoDadosMunicipeView(APIView):
                     resultados.append({
                         'id': m.id,
                         'nome_completo': m.nome_completo,
+                        'cargo_orgao': _formatar_cargo_orgao_municipe(m),
                         'problema': 'cpf_ausente',
                         'campo': 'cpf',
                         'valor_atual': '',
@@ -1834,6 +2000,22 @@ class DashboardSummaryView(APIView):
             agendas_da_secretaria = SolicitacaoAgenda.objects.filter(conta__in=user.perfil.contas.all())
             data['agendas_em_aberto'] = agendas_da_secretaria.filter(status='SOLICITADO').count()
             data['agendas_em_analise'] = agendas_da_secretaria.filter(status='EM_ANALISE').count()
+
+        # Minha Agenda Hoje: Registros de Visita/Check-in do dia (conta do usuário + filtro de responsabilidade)
+        data['visitas_hoje'] = []
+        contas_usuario = user.perfil.contas.all() if hasattr(user, 'perfil') else Conta.objects.none()
+        if user.is_superuser and not contas_usuario.exists():
+            contas_usuario = Conta.objects.all()
+        if contas_usuario.exists():
+            hoje_inicio = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+            hoje_fim = timezone.localtime().replace(hour=23, minute=59, second=59, microsecond=999999)
+            qs_visitas = RegistroVisita.objects.filter(
+                conta_destino__in=contas_usuario,
+                data_checkin__range=(hoje_inicio, hoje_fim),
+            ).filter(
+                Q(usuario_destino=user) | Q(registrado_por=user) | Q(usuario_destino__isnull=True)
+            ).select_related('municipe', 'conta_destino', 'usuario_destino', 'registrado_por').order_by('data_checkin')
+            data['visitas_hoje'] = RegistroVisitaSerializer(qs_visitas, many=True, context={'request': request}).data
 
         return Response(data)
 

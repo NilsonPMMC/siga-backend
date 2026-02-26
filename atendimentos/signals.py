@@ -157,10 +157,13 @@ def log_atendimento_delete(sender, instance, **kwargs):
 # Sinal para Tramitação (Criação e Edição)
 @receiver(post_save, sender=Tramitacao)
 def handle_tramitacao_save(sender, instance, created, **kwargs):
+    atendimento = instance.atendimento
+    # Marca atendimento para reprocessamento de IA quando novo despacho é inserido
+    Atendimento.objects.filter(pk=atendimento.pk).update(auditoria_ia_status='PENDENTE')
+
     if created:
         user = get_current_user() or User.objects.filter(is_superuser=True).first()
-        atendimento = instance.atendimento
-        
+
         # Log de atividade
         LogDeAtividade.objects.create(
             usuario=user,
