@@ -100,11 +100,12 @@ def _limpar_json_markdown(raw) -> str:
     if not isinstance(raw, str):
         return str(raw)
     s = raw.strip()
-    # Remove ```json ... ``` ou ``` ... ```
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", s)
-    if match:
-        return match.group(1).strip()
-    return s
+    # Remove todos blocos ```json ... ``` OU ``` ... ``` (pode haver múltiplos)
+    s = re.sub(r"```(?:json)?\s*([\s\S]*?)\s*```", lambda m: m.group(1).strip(), s, flags=re.MULTILINE)
+    # Remove linhas isoladas começando/terminando com ```
+    s = re.sub(r"^```(?:json)?\s*$", "", s, flags=re.MULTILINE)
+    s = re.sub(r"^```\s*$", "", s, flags=re.MULTILINE)
+    return s.strip()
 
 
 def _to_stripped_str(val: Any) -> str:
@@ -122,13 +123,25 @@ def _parsear_resumo_json(raw: str) -> Optional[Dict[str, str]]:
     """
     Tenta parsear a resposta como JSON com chaves situacao_atual, providencias, pendencias.
     Retorna dicionário ou None.
+    Protege contra respostas lixo muito curtas.
     """
     try:
         limpo = _limpar_json_markdown(raw)
+        if limpo is None or len(limpo.strip()) < 20:
+            print(f"AVISO: Resposta IA muito curta/inválida (markdown limpo <20 chars): {repr(limpo)}")
+            return None
         obj = json.loads(limpo)
         if isinstance(obj, dict):
+            # Monta texto_final para validação
+            situacao = _to_stripped_str(obj.get("situacao_atual"))
+            providencias = _to_stripped_str(obj.get("providencias"))
+            texto_final = f"{situacao} {providencias}".strip()
+            if len(texto_final) < 30:
+                print(f"AVISO: Resposta IA muito curta/inválida (situacao+providencias <30 chars): {texto_final!r}")
+                return None
             return obj
     except (json.JSONDecodeError, TypeError):
+        print("AVISO: Erro ao parsear resultado IA como JSON válido.")
         pass
     return None
 
@@ -288,7 +301,8 @@ JSON:"""
         resultado_raw = str(resultado_raw)
     resultado_raw = (resultado_raw or "").strip()
 
-    if not resultado_raw:
+    if not resultado_raw or len(resultado_raw.strip()) < 20:
+        print(f"AVISO: Resposta IA muito curta/inválida (resposta_raw <20 chars): {repr(resultado_raw)}")
         return None
 
     # Tenta parsear como JSON estruturado
@@ -312,6 +326,10 @@ JSON:"""
     # Fallback: retorna texto bruto (modelo não retornou JSON válido)
     preview = (resultado_raw[:500] + "...") if len(resultado_raw) > 500 else resultado_raw
     print(f"DEBUG IA RAW RESPONSE: {type(resultado_raw)} - {preview!r}")
+    # Última blindagem se o texto for ainda curto/lixo
+    if len(resultado_raw.strip()) < 20:
+        print(f"AVISO: Resposta IA muito curta/inválida (fallback <20 chars): {repr(resultado_raw)}")
+        return None
     return resultado_raw
 
 
@@ -371,6 +389,7 @@ def gerar_texto_perfil_municipe(municipe) -> str:
     """
     Cria uma string rica com todos os dados relevantes do munícipe para busca semântica.
     Trata campos nulos e inclui idade aproximada quando há data_nascimento.
+    Não retorna texto caso fique muito curto (blindagem para garbage).
     """
     def _s(v):
         return (v or "").strip() if v is not None else ""
@@ -431,7 +450,12 @@ def gerar_texto_perfil_municipe(municipe) -> str:
             pass
 
     texto = " | ".join(partes)
-    return texto if texto.strip() else f"Nome: {nome or '(sem nome)'}"
+    texto_final = texto if texto.strip() else f"Nome: {nome or '(sem nome)'}"
+    # Blindagem: não retorna string curta/ruim como "." ou semelhante
+    if texto_final is None or len(texto_final.strip()) < 30:
+        print(f"AVISO: Perfil de munícipe muito curto/inválido: {repr(texto_final)}")
+        return ""  # ou retorne None
+    return texto_final
 
 
 def atualizar_vetor_municipe(municipe) -> bool:
@@ -440,6 +464,9 @@ def atualizar_vetor_municipe(municipe) -> bool:
     vetor_ia_perfil e auditoria_ia_data. Retorna True se sucesso.
     """
     texto = gerar_texto_perfil_municipe(municipe)
+    if not texto or len(texto.strip()) < 30:
+        print(f"AVISO: Não atualizando vetor de munícipe para texto muito curto/inválido: {repr(texto)}")
+        return False
     vetor = _chamar_ollama_embed(texto)
     if vetor is None:
         return False
@@ -477,7 +504,7 @@ def _encontrar_melhor_snippet(
 
     # Triagem: titulo + descricao
     txt_triagem = f"ASSUNTO: {titulo}\n\n{descricao}".strip()
-    if txt_triagem:
+    if txt_triagem and len(txt_triagem) >= 20:
         vec = embed_fn(txt_triagem)
         if vec is not None:
             v = np.array(vec, dtype=np.float64)
