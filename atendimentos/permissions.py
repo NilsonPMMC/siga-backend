@@ -57,9 +57,14 @@ class CanInteractWithAtendimento(BasePermission):
             if not (hasattr(user, 'perfil') and obj.conta in user.perfil.contas.all()):
                 return False # Se não for, bloqueia.
 
-            # Se for do seu gabinete, ele pode ver/editar/excluir?
-            # Apenas se for o responsável OU se não houver responsável.
-            return obj.responsavel == user or obj.responsavel is None
+            # Se for do seu gabinete, pode ver/editar se for responsável, co-responsável OU se não houver responsável.
+            if obj.responsavel is None:
+                return True
+            if obj.responsavel == user:
+                return True
+            if hasattr(obj, 'responsaveis_compartilhados'):
+                return obj.responsaveis_compartilhados.filter(pk=user.pk).exists()
+            return False
 
         # 4. Nega todos os outros casos.
         return False

@@ -82,7 +82,9 @@ class AtendimentoListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Atendimento.objects.select_related('municipe', 'conta', 'responsavel')
+        queryset = Atendimento.objects.select_related(
+            'municipe', 'conta', 'responsavel'
+        ).prefetch_related('responsaveis_compartilhados')
 
         # REGRA 1: Superusuário vê tudo.
         if user.is_superuser:
@@ -97,8 +99,8 @@ class AtendimentoListCreateView(generics.ListCreateAPIView):
         elif hasattr(user, 'perfil'):
             atendimentos_da_conta = queryset.filter(conta__in=user.perfil.contas.all())
             queryset = atendimentos_da_conta.filter(
-                Q(responsavel=user) | Q(responsavel__isnull=True)
-            )
+                Q(responsavel=user) | Q(responsavel__isnull=True) | Q(responsaveis_compartilhados=user)
+            ).distinct()
         else:
             # REGRA 4: Se nenhuma das anteriores se aplicar, não mostra nada.
             return Atendimento.objects.none()
@@ -130,9 +132,13 @@ class AtendimentoListCreateView(generics.ListCreateAPIView):
 
 
 class AtendimentoDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Atendimento.objects.all()
     serializer_class = AtendimentoSerializer
     permission_classes = [permissions.IsAuthenticated, CanInteractWithAtendimento]
+
+    def get_queryset(self):
+        return Atendimento.objects.select_related(
+            'municipe', 'conta', 'responsavel'
+        ).prefetch_related('responsaveis_compartilhados', 'tramitacoes__usuario', 'categorias', 'anexos')
 
 
 class RecarregarResumoAtendimentoView(APIView):
@@ -372,13 +378,21 @@ class SolicitacaoAgendaDetailView(generics.RetrieveUpdateDestroyAPIView):
 class UserListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserSerializer
-    
+
     def get_queryset(self):
         queryset = User.objects.filter(is_active=True).order_by('username')
-        # Se for superuser e tiver conta_id, filtra membros da conta
         conta_id = self.request.query_params.get('conta_id', None)
-        if self.request.user.is_superuser and conta_id:
-            queryset = queryset.filter(perfil__contas__id=conta_id).distinct()
+        if conta_id:
+            try:
+                conta_id = int(conta_id)
+            except (TypeError, ValueError):
+                return queryset
+            user = self.request.user
+            if user.is_superuser:
+                queryset = queryset.filter(perfil__contas__id=conta_id).distinct()
+            elif hasattr(user, 'perfil') and user.perfil.contas.filter(id=conta_id).exists():
+                # Usuário tem acesso à conta: pode listar membros da mesma
+                queryset = queryset.filter(perfil__contas__id=conta_id).distinct()
         return queryset
 
 class EspacoListCreateView(generics.ListCreateAPIView):
@@ -1533,6 +1547,121 @@ class AlterarStatusAtendimentoView(generics.GenericAPIView):
                 {'detail': f'Erro ao alterar status: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class RedirecionarAtendimentoView(APIView):
+    """
+    Redireciona o atendimento para um novo responsável (usuário da mesma conta).
+    Gera tramitação com justificativa e notifica o novo responsável.
+    POST: { novo_responsavel_id: int, justificativa: str }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        atendimento = get_object_or_404(Atendimento, pk=pk)
+        permission_check = CanInteractWithAtendimento()
+        if not permission_check.has_object_permission(request, self, atendimento):
+            return Response({'detail': 'Sem permissão.'}, status=status.HTTP_403_FORBIDDEN)
+
+        novo_id = request.data.get('novo_responsavel_id')
+        justificativa = (request.data.get('justificativa') or '').strip()
+        if not novo_id:
+            return Response({'detail': 'novo_responsavel_id é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not justificativa:
+            return Response({'detail': 'justificativa é obrigatória.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            novo_responsavel = User.objects.get(pk=novo_id, is_active=True)
+        except User.DoesNotExist:
+            return Response({'detail': 'Usuário não encontrado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not hasattr(novo_responsavel, 'perfil') or not novo_responsavel.perfil.contas.filter(pk=atendimento.conta_id).exists():
+            return Response({'detail': 'O usuário deve pertencer à mesma conta do atendimento.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if novo_responsavel == atendimento.responsavel:
+            return Response({'detail': 'O atendimento já está sob responsabilidade deste usuário.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        antigo = atendimento.responsavel
+        nome_antigo = (antigo.get_full_name() or antigo.username) if antigo else 'Ninguém'
+        nome_novo = novo_responsavel.get_full_name() or novo_responsavel.username
+
+        with transaction.atomic():
+            atendimento.responsavel = novo_responsavel
+            atendimento.responsaveis_compartilhados.clear()
+            atendimento.save(update_fields=['responsavel'])
+
+            despacho = f"[REDIRECIONAMENTO] Atendimento redirecionado de {nome_antigo} para {nome_novo}.\n\nJustificativa: {justificativa}"
+            Tramitacao.objects.create(
+                atendimento=atendimento,
+                despacho=despacho,
+                usuario=request.user
+            )
+
+            Notificacao.objects.create(
+                usuario=novo_responsavel,
+                mensagem=f"O atendimento {atendimento.protocolo} foi atribuído a você. {atendimento.titulo[:50]}...",
+                link=f"/atendimentos/{atendimento.pk}"
+            )
+
+        data = AtendimentoSerializer(atendimento).data
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class CompartilharAtendimentoView(APIView):
+    """
+    Compartilha o atendimento com outro membro da equipe (mesma conta).
+    Ambos permanecem responsáveis. Gera tramitação e notifica o novo co-responsável.
+    POST: { usuario_id: int, justificativa: str }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        atendimento = get_object_or_404(Atendimento, pk=pk)
+        permission_check = CanInteractWithAtendimento()
+        if not permission_check.has_object_permission(request, self, atendimento):
+            return Response({'detail': 'Sem permissão.'}, status=status.HTTP_403_FORBIDDEN)
+
+        usuario_id = request.data.get('usuario_id')
+        justificativa = (request.data.get('justificativa') or '').strip()
+        if not usuario_id:
+            return Response({'detail': 'usuario_id é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not justificativa:
+            return Response({'detail': 'justificativa é obrigatória.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            novo_usuario = User.objects.get(pk=usuario_id, is_active=True)
+        except User.DoesNotExist:
+            return Response({'detail': 'Usuário não encontrado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not hasattr(novo_usuario, 'perfil') or not novo_usuario.perfil.contas.filter(pk=atendimento.conta_id).exists():
+            return Response({'detail': 'O usuário deve pertencer à mesma conta do atendimento.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if atendimento.responsaveis_compartilhados.filter(pk=novo_usuario.pk).exists():
+            return Response({'detail': 'O atendimento já está compartilhado com este usuário.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if atendimento.responsavel_id == novo_usuario.pk:
+            return Response({'detail': 'O usuário já é o responsável principal.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        nome_novo = novo_usuario.get_full_name() or novo_usuario.username
+
+        with transaction.atomic():
+            atendimento.responsaveis_compartilhados.add(novo_usuario)
+
+            despacho = f"[COMPARTILHAMENTO] Atendimento compartilhado com {nome_novo}. Ambos podem gerir.\n\nJustificativa: {justificativa}"
+            Tramitacao.objects.create(
+                atendimento=atendimento,
+                despacho=despacho,
+                usuario=request.user
+            )
+
+            Notificacao.objects.create(
+                usuario=novo_usuario,
+                mensagem=f"O atendimento {atendimento.protocolo} foi compartilhado com você. {atendimento.titulo[:50]}...",
+                link=f"/atendimentos/{atendimento.pk}"
+            )
+
+        data = AtendimentoSerializer(atendimento).data
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class BuscarSecretariasSinapseView(generics.GenericAPIView):

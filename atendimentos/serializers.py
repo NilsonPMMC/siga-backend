@@ -218,6 +218,7 @@ class AtendimentoSerializer(serializers.ModelSerializer):
     )
 
     responsavel_nome = serializers.SerializerMethodField()
+    responsaveis_compartilhados = serializers.SerializerMethodField()
 
     origem_display = serializers.CharField(source='get_origem_display', read_only=True)
 
@@ -226,17 +227,25 @@ class AtendimentoSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'protocolo', 'origem', 'origem_display', 'titulo', 'descricao', 'status', 'conta', 'nome_conta',
             'municipe', 'nome_municipe',
-            'responsavel', 'responsavel_obj', 'responsavel_nome', 'data_criacao',
+            'responsavel', 'responsavel_obj', 'responsavel_nome', 'responsaveis_compartilhados', 'data_criacao',
             'data_atualizacao', 'tramitacoes', 'categorias', 'categorias_ids', 'anexos',
             'resumo_ia_local', 'auditoria_ia_status'
         ]
         read_only_fields = ('protocolo', 'status', 'data_criacao', 'data_atualizacao')
 
     def get_responsavel_nome(self, obj):
-        # Retorna o nome completo se existir, senão o username
         if obj.responsavel:
             return obj.responsavel.get_full_name() or obj.responsavel.username
         return None
+
+    def get_responsaveis_compartilhados(self, obj):
+        compartilhados = getattr(obj, 'responsaveis_compartilhados', None)
+        if compartilhados is None:
+            return []
+        return [
+            {'id': u.id, 'username': u.username, 'first_name': u.first_name, 'last_name': u.last_name}
+            for u in compartilhados.all()
+        ]
 
     def update(self, instance, validated_data):
         # Remove status se vier no validated_data (não pode ser alterado diretamente)

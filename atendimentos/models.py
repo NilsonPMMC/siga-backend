@@ -277,6 +277,13 @@ class Atendimento(models.Model):
         verbose_name="Status Processamento IA",
         choices=[('PENDENTE', 'Pendente'), ('PROCESSADO', 'Processado'), ('ERRO', 'Erro')]
     )
+    responsaveis_compartilhados = models.ManyToManyField(
+        User,
+        blank=True,
+        related_name='atendimentos_compartilhados',
+        verbose_name="Co-responsáveis (compartilhado)",
+        help_text="Usuários que também podem gerir este atendimento (compartilhamento)."
+    )
     class Meta: verbose_name = "Atendimento"; verbose_name_plural = "Atendimentos"; ordering = ['-data_criacao']
     def __str__(self): return f"{self.protocolo} - {self.titulo}"
     def save(self, *args, **kwargs):
