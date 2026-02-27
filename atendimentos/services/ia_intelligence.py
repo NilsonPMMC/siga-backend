@@ -1,4 +1,7 @@
-"""
+from django.conf import settings
+import requests
+
+OLLAMA_HOST = getattr(settings, 'OLLAMA_HOST', 'http://localhost:11434')
 Serviço de Inteligência Artificial local (Ollama) para atendimentos.
 - Resumo executivo via DeepSeek
 - Embeddings via mxbai-embed-large
