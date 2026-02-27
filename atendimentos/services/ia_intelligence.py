@@ -50,41 +50,37 @@ def _truncar_texto_para_embedding(text: str, max_chars: int = MAX_CHARS_EMBED) -
 
 def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
     """
-    Gera embedding do texto via Ollama (mxbai-embed-large).
-    Retorna lista de floats ou None em caso de erro.
-    Timeout de 30 segundos.
-    Textos acima de 6000 caracteres são truncados silenciosamente para evitar 400 (token limit).
+    Gera o embedding (vetor) usando o endpoint /api/embed do Ollama.
+    CORREÇÃO: Usa 'input' em vez de 'prompt'.
     """
-    if not text or not isinstance(text, str):
-        logger.warning("gerar_embedding: texto vazio ou inválido")
-        return None
-
-    text = _truncar_texto_para_embedding(text)
-
-    url = _ollama_url('/api/embed')
-    payload = {"model": OLLAMA_MODEL_EMBED, "input": text}
-    timeout = OLLAMA_TIMEOUT_EMBED if isinstance(OLLAMA_TIMEOUT_EMBED, (int, float)) else 30
+    url = f"{OLLAMA_HOST}/api/embed"  # Endpoint novo
+    
+    # Payload correto para models mxbai/nomic no endpoint /api/embed
+    payload = {
+        "model": "mxbai-embed-large",  # Certifique-se que este é o nome exato do seu modelo
+        "input": text,                 # <--- O PULO DO GATO: Tem que ser 'input', não 'prompt'
+        "stream": False
+    }
 
     try:
-        resp = requests.post(url, json=payload, timeout=timeout)
-        resp.raise_for_status()
+        resp = requests.post(url, json=payload, timeout=60)
+        resp.raise_for_status() # Aqui é onde estava dando o erro 400
+        
         data = resp.json()
-        embs = data.get("embeddings") or []
-        return embs[0] if embs else None
-    except requests.exceptions.Timeout as e:
-        logger.error("gerar_embedding: timeout após %s segundos - %s", timeout, e)
+        
+        # O retorno do endpoint embed é uma lista de embeddings. Pegamos o primeiro.
+        if "embeddings" in data and len(data["embeddings"]) > 0:
+            return data["embeddings"][0]
+        
+        # Fallback para o formato antigo (caso esteja usando endpoint antigo)
+        if "embedding" in data:
+            return data["embedding"]
+            
+        print(f"[IA EMBED ERROR] Formato de resposta desconhecido: {data.keys()}")
         return None
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 404:
-            model = payload.get("model", "?")
-            logger.error("Ollama 404: modelo '%s' não encontrado. Execute: ollama pull %s", model, model)
-        logger.exception("gerar_embedding: erro HTTP - %s", e)
-        return None
-    except requests.RequestException as e:
-        logger.exception("gerar_embedding: erro na requisição - %s", e)
-        return None
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.exception("gerar_embedding: erro ao processar resposta - %s", e)
+
+    except Exception as e:
+        print(f"[IA EMBED ERROR] Falha ao gerar vetor: {e}")
         return None
 
 
