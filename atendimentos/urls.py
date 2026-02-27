@@ -26,6 +26,7 @@ from .views import (
     CustomPasswordResetView,
     CustomPasswordResetConfirmView,
     DashboardSummaryView,
+    DashboardVisitasPorDataView,
     DescartarContatoDuplicataView,
     DescartarGrupoDuplicatasView,
     EditarExcluirEventoGoogleView,
@@ -157,6 +158,7 @@ urlpatterns = [
     path('relatorios/checkins/pdf/', GerarPdfCheckinsView.as_view(), name='relatorio-checkins-pdf'),
     path('relatorios/agendas/pdf/', GerarPdfAgendasReportView.as_view(), name='relatorio-agendas-pdf'),
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('dashboard/visitas/', DashboardVisitasPorDataView.as_view(), name='dashboard-visitas'),
     path('relatorios/google-agenda/pdf/', GerarPdfGoogleAgendaView.as_view(), name='relatorio-google-agenda-pdf'),
     
 

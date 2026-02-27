@@ -148,12 +148,7 @@
             {% for reg in registros %}
             <tr>
                 <td>{{ reg.conta.nome }}</td>
-                <td>
-                    {{ reg.servidor.nome_completo }}
-                    {% if reg.cargo_funcao_plantao %}
-                        <br><small style="color:#666">({{ reg.cargo_funcao_plantao }})</small>
-                    {% endif %}
-                </td>
+                <td>{{ reg.servidor.nome_completo }}</td>
                 <td style="font-weight: bold;">{{ reg.telefone_plantao }}</td>
             </tr>
             {% empty %}

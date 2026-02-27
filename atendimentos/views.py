@@ -2020,6 +2020,48 @@ class DashboardSummaryView(APIView):
         return Response(data)
 
 
+class DashboardVisitasPorDataView(APIView):
+    """
+    Retorna os registros de visita/check-in para uma data específica.
+    Mesma regra de responsabilidade do visitas_hoje (conta + usuario_destino/registrado_por/null).
+    Query param: data (YYYY-MM-DD). Se ausente, usa hoje.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        from django.utils.dateparse import parse_date
+
+        user = request.user
+        data_str = request.query_params.get('data')
+        if data_str:
+            try:
+                data_obj = parse_date(data_str)
+                if not data_obj:
+                    return Response({'detail': 'Data inválida. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+            except (ValueError, TypeError):
+                return Response({'detail': 'Data inválida.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            data_obj = timezone.localdate()
+
+        contas_usuario = user.perfil.contas.all() if hasattr(user, 'perfil') else Conta.objects.none()
+        if user.is_superuser and not contas_usuario.exists():
+            contas_usuario = Conta.objects.all()
+
+        if not contas_usuario.exists():
+            return Response([])
+
+        inicio = timezone.make_aware(datetime.combine(data_obj, time.min))
+        fim = timezone.make_aware(datetime.combine(data_obj, time.max))
+        qs = RegistroVisita.objects.filter(
+            conta_destino__in=contas_usuario,
+            data_checkin__range=(inicio, fim),
+        ).filter(
+            Q(usuario_destino=user) | Q(registrado_por=user) | Q(usuario_destino__isnull=True)
+        ).select_related('municipe', 'conta_destino', 'usuario_destino', 'registrado_por').order_by('data_checkin')
+        data_serializada = RegistroVisitaSerializer(qs, many=True, context={'request': request}).data
+        return Response(data_serializada)
+
+
 # -----------------------------------------------------------------------------
 # Views de Geração de Documentos (PDF, Excel)
 # -----------------------------------------------------------------------------
@@ -2589,9 +2631,8 @@ class GerarPdfGoogleAgendaView(APIView):
             eventos_por_dia = defaultdict(list)
             
             # 1. DEFINE QUEM É QUEM
-            # Verifica se o usuário é Gestor (Superuser ou do grupo Secretaria/Gabinete)
-            grupos_gestores = ['Secretaria', 'Gabinete', 'Administrador']
-            is_gestor = request.user.is_superuser or request.user.groups.filter(name__in=grupos_gestores).exists()
+            # Verifica se o usuário é Gestor (Superuser ou Secretária): podem ver eventos "Particular"
+            is_gestor = request.user.is_superuser or is_in_group(request.user, 'Secretária')
 
             for event in events:
                 start = event.get('start', {})
@@ -3588,11 +3629,12 @@ class SharedGoogleAgendaView(APIView):
             events = events_result.get('items', [])
             
             # Formata os eventos para o FullCalendar
+            # Só superadmin e Secretária podem ver eventos que começam com "Particular"
+            pode_ver_particular = request.user.is_superuser or is_in_group(request.user, 'Secretária')
             eventos_formatados = []
             for event in events:
                 summary = event.get('summary', '')
-                
-                if summary.strip().startswith('Particular'):
+                if summary.strip().lower().startswith('particular') and not pode_ver_particular:
                     continue
 
                 start = event['start'].get('dateTime', event['start'].get('date'))
