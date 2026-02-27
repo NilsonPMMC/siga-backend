@@ -1,40 +1,33 @@
 from django.conf import settings
 import requests
-
-OLLAMA_HOST = getattr(settings, 'OLLAMA_HOST', 'http://localhost:11434')
-
-"""
-Serviço de Inteligência Artificial local (Ollama) para atendimentos.
-- Resumo executivo via DeepSeek
-- Embeddings via mxbai-embed-large
-- Busca semântica com similaridade de cosseno
-"""
-Serviço de Inteligência Artificial local (Ollama) para atendimentos.
-- Resumo executivo via DeepSeek
-- Embeddings via mxbai-embed-large
-- Busca semântica com similaridade de cosseno
-"""
 import json
 from datetime import date
 import re
 import logging
 from typing import List, Dict, Optional, Any, Tuple
 from urllib.parse import urljoin
-
 import numpy as np
-import requests
-from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+# --- CONFIGURAÇÕES GERAIS ---
+# Define o host principal (usado para gerar URLs completas)
+OLLAMA_HOST = getattr(settings, 'OLLAMA_HOST', 'http://localhost:11434')
+
 # Configurações defensivas com fallback
-OLLAMA_BASE_URL = getattr(settings, 'OLLAMA_BASE_URL', 'http://localhost:11434') or 'http://localhost:11434'
+OLLAMA_BASE_URL = getattr(settings, 'OLLAMA_BASE_URL', OLLAMA_HOST)
 OLLAMA_MODEL_TEXT = getattr(settings, 'OLLAMA_MODEL_TEXT', 'deepseek') or 'deepseek'
 OLLAMA_MODEL_EMBED = getattr(settings, 'OLLAMA_MODEL_EMBED', 'mxbai-embed-large') or 'mxbai-embed-large'
 OLLAMA_TIMEOUT_GENERATE = getattr(settings, 'OLLAMA_TIMEOUT_GENERATE', (5, 60))  # (connect, read)
 OLLAMA_TIMEOUT_EMBED = getattr(settings, 'OLLAMA_TIMEOUT_EMBED', 30)
 OLLAMA_TIMEOUT = getattr(settings, 'OLLAMA_TIMEOUT', 120)  # fallback legado
 
+"""
+Serviço de Inteligência Artificial local (Ollama) para atendimentos.
+- Resumo executivo via DeepSeek/Llama
+- Embeddings via mxbai-embed-large
+- Busca semântica com similaridade de cosseno
+"""
 
 def _ollama_url(path: str) -> str:
     """Monta URL do Ollama evitando barras duplas."""
@@ -61,20 +54,24 @@ def _truncar_texto_para_embedding(text: str, max_chars: int = MAX_CHARS_EMBED) -
 def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
     """
     Gera o embedding (vetor) usando o endpoint /api/embed do Ollama.
-    CORREÇÃO: Usa 'input' em vez de 'prompt'.
+    Usa 'input' em vez de 'prompt' (padrão novo do Ollama).
     """
-    url = f"{OLLAMA_HOST}/api/embed"  # Endpoint novo
+    if not text:
+        return None
+
+    # Garante que a URL esteja correta baseada no OLLAMA_HOST definido no settings
+    url = f"{OLLAMA_HOST.rstrip('/')}/api/embed"
     
     # Payload correto para models mxbai/nomic no endpoint /api/embed
     payload = {
-        "model": "mxbai-embed-large",  # Certifique-se que este é o nome exato do seu modelo
-        "input": text,                 # <--- O PULO DO GATO: Tem que ser 'input', não 'prompt'
+        "model": "mxbai-embed-large",  # Nome exato do modelo
+        "input": text,                 # <--- IMPORTANTE: 'input', não 'prompt'
         "stream": False
     }
 
     try:
         resp = requests.post(url, json=payload, timeout=60)
-        resp.raise_for_status() # Aqui é onde estava dando o erro 400
+        resp.raise_for_status()
         
         data = resp.json()
         
@@ -82,7 +79,7 @@ def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
         if "embeddings" in data and len(data["embeddings"]) > 0:
             return data["embeddings"][0]
         
-        # Fallback para o formato antigo (caso esteja usando endpoint antigo)
+        # Fallback para o formato antigo (caso esteja usando versão legada)
         if "embedding" in data:
             return data["embedding"]
             
@@ -133,19 +130,25 @@ def _parsear_resumo_json(raw: str) -> Optional[Dict[str, str]]:
     """
     try:
         limpo = _limpar_json_markdown(raw)
+        
+        # Validação 1: JSON limpo muito curto
         if limpo is None or len(limpo.strip()) < 20:
             print(f"AVISO: Resposta IA muito curta/inválida (markdown limpo <20 chars): {repr(limpo)}")
             return None
+            
         obj = json.loads(limpo)
         if isinstance(obj, dict):
-            # Monta texto_final para validação
+            # Monta texto_final para validação semântica
             situacao = _to_stripped_str(obj.get("situacao_atual"))
             providencias = _to_stripped_str(obj.get("providencias"))
             texto_final = f"{situacao} {providencias}".strip()
+            
+            # Validação 2: Conteúdo real muito curto (Vacina Anti-Ponto)
             if len(texto_final) < 30:
-                print(f"AVISO: Resposta IA muito curta/inválida (situacao+providencias <30 chars): {texto_final!r}")
+                print(f"AVISO: Resposta IA rejeitada por conteúdo insuficiente (<30 chars): {texto_final!r}")
                 return None
             return obj
+            
     except (json.JSONDecodeError, TypeError):
         print("AVISO: Erro ao parsear resultado IA como JSON válido.")
         pass
@@ -160,7 +163,6 @@ def _chamar_ollama_generate(
     """
     Chama o endpoint /api/generate do Ollama para gerar texto.
     Retorna o texto gerado ou None em caso de erro.
-    Timeout: (5s conexão, 60s leitura).
     """
     url = _ollama_url('/api/generate')
     tout = timeout or OLLAMA_TIMEOUT_GENERATE
@@ -194,24 +196,10 @@ def _chamar_ollama_generate(
             raw = str(raw)
         return (raw or "").strip()
     except requests.exceptions.Timeout as e:
-        logger.error(
-            "Ollama generate: timeout (connect=%s, read=%s) - %s",
-            connect_timeout,
-            read_timeout,
-            e,
-        )
+        logger.error(f"Ollama generate: timeout - {e}")
         return None
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 404:
-            model = payload.get("model", "?")
-            logger.error("Ollama 404: modelo '%s' não encontrado. Execute: ollama pull %s", model, model)
-        logger.exception("Ollama generate: erro HTTP - %s", e)
-        return None
-    except requests.RequestException as e:
-        logger.exception("Ollama generate: erro na requisição - %s", e)
-        return None
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.exception("Ollama generate: erro ao processar resposta - %s", e)
+    except Exception as e:
+        logger.exception(f"Ollama generate: erro - {e}")
         return None
 
 
@@ -229,11 +217,7 @@ def _texto_despatches(tramitacoes) -> str:
 def gerar_resumo_atendimento(atendimento) -> Optional[str]:
     """
     Gera resumo executivo do atendimento via DeepSeek.
-    Se houver resumo_ia_local, envia ele + apenas novas tramitações.
-    Caso contrário, envia triagem (descricao) + todas as tramitações.
-
     Retorna o texto do resumo formatado ou None em caso de erro.
-    A IA é instruída a retornar JSON com chaves: situacao_atual, providencias, pendencias.
     """
     from ..models import Tramitacao
 
@@ -245,27 +229,14 @@ def gerar_resumo_atendimento(atendimento) -> Optional[str]:
     texto_tramitacoes = _texto_despatches(tramitacoes)
 
     if resumo_atual and texto_tramitacoes:
-        contexto = f"""RESUMO ANTERIOR:
-{resumo_atual}
-
-NOVAS TRAMITAÇÕES (despachos):
-{texto_tramitacoes}"""
+        contexto = f"""RESUMO ANTERIOR:\n{resumo_atual}\n\nNOVAS TRAMITAÇÕES (despachos):\n{texto_tramitacoes}"""
     elif resumo_atual:
-        contexto = f"""RESUMO ANTERIOR:
-{resumo_atual}
-
-(Sem tramitações novas.)"""
+        contexto = f"""RESUMO ANTERIOR:\n{resumo_atual}\n\n(Sem tramitações novas.)"""
     else:
-        triagem = f"""TÍTULO: {titulo}
-
-DESCRIÇÃO INICIAL (triagem):
-{descricao}"""
+        triagem = f"""TÍTULO: {titulo}\n\nDESCRIÇÃO INICIAL (triagem):\n{descricao}"""
         contexto = triagem
         if texto_tramitacoes:
-            contexto += f"""
-
-TRAMITAÇÕES:
-{texto_tramitacoes}"""
+            contexto += f"""\n\nTRAMITAÇÕES:\n{texto_tramitacoes}"""
 
     system_prompt = (
         "Você é um assistente administrativo especializado em gestão de gabinetes públicos. "
@@ -296,22 +267,19 @@ JSON:"""
     if resultado_raw is None:
         return None
 
-    # Normaliza: API pode retornar lista em vez de string
+    # Normalização
     if isinstance(resultado_raw, list):
-        resultado_raw = (
-            "".join(str(x) for x in resultado_raw)
-            if all(isinstance(x, str) for x in resultado_raw)
-            else " ".join(str(x) for x in resultado_raw)
-        )
+        resultado_raw = "".join(str(x) for x in resultado_raw)
     elif not isinstance(resultado_raw, str):
         resultado_raw = str(resultado_raw)
     resultado_raw = (resultado_raw or "").strip()
 
-    if not resultado_raw or len(resultado_raw.strip()) < 20:
-        print(f"AVISO: Resposta IA muito curta/inválida (resposta_raw <20 chars): {repr(resultado_raw)}")
+    # Validação preliminar
+    if len(resultado_raw) < 20:
+        print(f"AVISO: Resposta IA muito curta/inválida (raw <20 chars): {repr(resultado_raw)}")
         return None
 
-    # Tenta parsear como JSON estruturado
+    # Tenta parsear JSON
     parsed = _parsear_resumo_json(resultado_raw)
     if parsed:
         partes = []
@@ -326,24 +294,19 @@ JSON:"""
             partes.append(f"Pendências: {pendencias}")
         if partes:
             out = "\n\n".join(partes)
-            print(f"DEBUG IA RAW RESPONSE: {type(resultado_raw)} - {resultado_raw[:200]!r}... -> parsed OK")
             return out
 
-    # Fallback: retorna texto bruto (modelo não retornou JSON válido)
-    preview = (resultado_raw[:500] + "...") if len(resultado_raw) > 500 else resultado_raw
-    print(f"DEBUG IA RAW RESPONSE: {type(resultado_raw)} - {preview!r}")
-    # Última blindagem se o texto for ainda curto/lixo
-    if len(resultado_raw.strip()) < 20:
-        print(f"AVISO: Resposta IA muito curta/inválida (fallback <20 chars): {repr(resultado_raw)}")
+    # Fallback (modelo não retornou JSON válido)
+    # Validação final do fallback
+    if len(resultado_raw.strip()) < 30:
+        print(f"AVISO: Resposta IA (fallback) rejeitada por ser muito curta: {repr(resultado_raw)}")
         return None
+        
     return resultado_raw
 
 
 def _construir_texto_para_embedding(atendimento) -> str:
-    """
-    Monta o texto rico para geração do embedding, incluindo assunto, descrição,
-    resumo IA, despachos das tramitações e status quando encaminhado.
-    """
+    """Monta o texto rico para geração do embedding."""
     assunto = (atendimento.titulo or "").strip()
     descricao = (atendimento.descricao or "").strip()
     partes = [f"Assunto: {assunto}", f"Descrição: {descricao}"]
@@ -376,12 +339,13 @@ def _construir_texto_para_embedding(atendimento) -> str:
 
 
 def atualizar_vetor_atendimento(atendimento) -> bool:
-    """
-    Gera o embedding do atendimento com texto rico (assunto, descrição, resumo IA,
-    tramitações e status) e salva em vetor_ia_atendimento.
-    Retorna True se sucesso, False caso contrário.
-    """
+    """Gera o embedding do atendimento e salva."""
     texto = _construir_texto_para_embedding(atendimento)
+    
+    # Vacina: não gasta processamento com texto vazio
+    if len(texto) < 10:
+        return False
+        
     vetor = _chamar_ollama_embed(texto)
     if vetor is None:
         return False
@@ -392,18 +356,13 @@ def atualizar_vetor_atendimento(atendimento) -> bool:
 
 
 def gerar_texto_perfil_municipe(municipe) -> str:
-    """
-    Cria uma string rica com todos os dados relevantes do munícipe para busca semântica.
-    Trata campos nulos e inclui idade aproximada quando há data_nascimento.
-    Não retorna texto caso fique muito curto (blindagem para garbage).
-    """
+    """Cria uma string rica com todos os dados relevantes do munícipe."""
     def _s(v):
         return (v or "").strip() if v is not None else ""
 
     nome = _s(municipe.nome_completo)
     apelido = _s(municipe.nome_de_guerra)
 
-    # Profissão/Cargo e Entidade: legado + perfis
     cargos = []
     entidades = []
     if _s(municipe.cargo):
@@ -420,7 +379,6 @@ def gerar_texto_perfil_municipe(municipe) -> str:
 
     categoria = _s(municipe.categoria.nome) if municipe.categoria else ""
 
-    # Endereço (JSONField)
     end = municipe.endereco or {}
     bairro = _s(end.get("bairro") or end.get("bairro_nome"))
     cidade = _s(end.get("cidade") or end.get("municipio") or end.get("localidade"))
@@ -457,22 +415,23 @@ def gerar_texto_perfil_municipe(municipe) -> str:
 
     texto = " | ".join(partes)
     texto_final = texto if texto.strip() else f"Nome: {nome or '(sem nome)'}"
-    # Blindagem: não retorna string curta/ruim como "." ou semelhante
+    
+    # Vacina Anti-Lixo para Munícipes
     if texto_final is None or len(texto_final.strip()) < 30:
         print(f"AVISO: Perfil de munícipe muito curto/inválido: {repr(texto_final)}")
-        return ""  # ou retorne None
+        return ""
+        
     return texto_final
 
 
 def atualizar_vetor_municipe(municipe) -> bool:
-    """
-    Gera o texto do perfil, o embedding via Ollama e persiste em perfil_ia_texto,
-    vetor_ia_perfil e auditoria_ia_data. Retorna True se sucesso.
-    """
+    """Gera o texto do perfil, o embedding via Ollama e persiste."""
     texto = gerar_texto_perfil_municipe(municipe)
+    
+    # Vacina
     if not texto or len(texto.strip()) < 30:
-        print(f"AVISO: Não atualizando vetor de munícipe para texto muito curto/inválido: {repr(texto)}")
         return False
+        
     vetor = _chamar_ollama_embed(texto)
     if vetor is None:
         return False
@@ -493,22 +452,12 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
-def _encontrar_melhor_snippet(
-    query_vec: np.ndarray,
-    titulo: str,
-    descricao: str,
-    tramitacoes,
-    embed_fn,
-) -> tuple:
-    """
-    Identifica se o match foi mais forte na triagem ou em uma tramitação.
-    Retorna (tipo, snippet) onde tipo é 'TRIAGEM' ou 'TRAMITACAO'.
-    """
+def _encontrar_melhor_snippet(query_vec, titulo, descricao, tramitacoes, embed_fn) -> tuple:
+    """Retorna (tipo, snippet) do melhor match."""
     tipo = 'TRIAGEM'
     snippet = ""
     melhor_score = -1.0
 
-    # Triagem: titulo + descricao
     txt_triagem = f"ASSUNTO: {titulo}\n\n{descricao}".strip()
     if txt_triagem and len(txt_triagem) >= 20:
         vec = embed_fn(txt_triagem)
@@ -518,12 +467,10 @@ def _encontrar_melhor_snippet(
             if sim > melhor_score:
                 melhor_score = sim
                 tipo = 'TRIAGEM'
-                # snippet: primeiros 200 chars da descrição
                 snippet = (descricao or titulo)[:200]
                 if len((descricao or titulo)) > 200:
                     snippet += "..."
 
-    # Tramitações
     for t in (tramitacoes or []):
         despacho = (t.despacho or "").strip()
         if not despacho:
@@ -543,16 +490,9 @@ def _encontrar_melhor_snippet(
     return (tipo, snippet)
 
 
-def buscar_atendimentos_semantico(
-    query: str,
-    conta_id: int,
-    top_k: int = 10,
-) -> List[Dict[str, Any]]:
-    """
-    Busca semântica de atendimentos por conta.
-    Retorna lista de dicts com: atendimento, score, snippet, match_tipo.
-    """
-    from ..models import Atendimento, Tramitacao
+def buscar_atendimentos_semantico(query: str, conta_id: int, top_k: int = 10) -> List[Dict[str, Any]]:
+    """Busca semântica padrão (com pgvector se disponível no modelo, aqui simulado via loop se necessário)."""
+    from ..models import Atendimento
 
     query = (query or "").strip()
     if not query:
@@ -564,7 +504,6 @@ def buscar_atendimentos_semantico(
 
     qv = np.array(query_vec, dtype=np.float64)
 
-    # Atendimentos da conta com vetor preenchido
     atendimentos = (
         Atendimento.objects
         .filter(conta_id=conta_id, vetor_ia_atendimento__isnull=False)
@@ -581,24 +520,13 @@ def buscar_atendimentos_semantico(
         av = np.array(vetor, dtype=np.float64)
         score = _cosine_similarity(qv, av)
 
-        # Identificar se match foi em triagem ou tramitação
-        tramitacoes = list(a.tramitacoes.all())
         match_tipo, snippet = _encontrar_melhor_snippet(
-            qv,
-            a.titulo or "",
-            a.descricao or "",
-            tramitacoes,
-            _chamar_ollama_embed,
+            qv, a.titulo or "", a.descricao or "", list(a.tramitacoes.all()), _chamar_ollama_embed
         )
-        # Evitar muitas chamadas ao embed: usar snippet da triagem se for o caso
         if match_tipo == 'TRIAGEM':
-            desc = (a.descricao or "")[:200]
-            if len(a.descricao or "") > 200:
-                desc += "..."
-            snippet = desc
-        else:
-            # Pegar o despacho mais relevante (já calculado)
-            pass
+             desc = (a.descricao or "")[:200]
+             if len(a.descricao or "") > 200: desc += "..."
+             snippet = desc
 
         resultados.append({
             "atendimento_id": a.id,
@@ -611,7 +539,6 @@ def buscar_atendimentos_semantico(
             "snippet": snippet,
         })
 
-    # Ordenar por score decrescente e pegar top_k
     resultados.sort(key=lambda x: x["score"], reverse=True)
     return resultados[:top_k]
 
@@ -622,14 +549,7 @@ def buscar_atendimentos_semantico_otimizado(
     top_k: int = 10,
     threshold: float = 0.55,
 ) -> List[Dict[str, Any]]:
-    """
-    Versão otimizada para baixo consumo de RAM (sem pgvector):
-    1. Carrega apenas id e vetor_ia_atendimento do banco.
-    2. Calcula similaridade em lote via NumPy vetorizado.
-    3. Filtra top K acima do threshold.
-    4. Só então busca os objetos Atendimento completos dos vencedores.
-    Quando conta_id é None, busca em todos os atendimentos (apenas para superuser).
-    """
+    """Versão otimizada com NumPy para busca vetorial."""
     from ..models import Atendimento
 
     query = (query or "").strip()
@@ -645,7 +565,6 @@ def buscar_atendimentos_semantico_otimizado(
     if qv_norm == 0:
         return []
 
-    # 1. Busca apenas id e vetor (evita carregar objetos completos)
     filtro = dict(vetor_ia_atendimento__isnull=False)
     if conta_id is not None:
         filtro["conta_id"] = conta_id
@@ -661,27 +580,22 @@ def buscar_atendimentos_semantico_otimizado(
     ids = [row[0] for row in id_vetores]
     vetores = [row[1] for row in id_vetores]
 
-    # 2. Matriz NumPy (n x d)
     try:
         matriz = np.array(vetores, dtype=np.float64)
     except (ValueError, TypeError):
         return []
 
-    # 3. Similaridade de cosseno vetorizada: dot(matrix, qv) / (norm(matrix, axis=1) * norm(qv))
     dots = np.dot(matriz, qv)
     norms = np.linalg.norm(matriz, axis=1)
     denom = norms * qv_norm
-    # Evita divisão por zero
     denom = np.where(denom == 0, 1.0, denom)
     scores = np.divide(dots, denom)
 
-    # 4. Top K acima do threshold
     mask = scores >= threshold
     indices = np.where(mask)[0]
     if indices.size == 0:
         return []
 
-    # Ordena por score decrescente e pega top K
     idx_scores = list(zip(indices, scores[indices]))
     idx_scores.sort(key=lambda x: x[1], reverse=True)
     top_indices = [idx_scores[i][0] for i in range(min(top_k, len(idx_scores)))]
@@ -689,21 +603,17 @@ def buscar_atendimentos_semantico_otimizado(
     ids_vencedores = [ids[i] for i in top_indices]
     scores_vencedores = [float(scores[i]) for i in top_indices]
 
-    # 5. Busca objetos Atendimento completos apenas dos vencedores
     atendimentos = (
         Atendimento.objects.filter(id__in=ids_vencedores)
         .select_related("municipe", "conta")
         .in_bulk()
     )
 
-    # Mantém ordem por score; retorna atendimento (obj) e score para serialização na view
     resultados = []
     for aid, score in zip(ids_vencedores, scores_vencedores):
         a = atendimentos.get(aid)
         if a is None:
             continue
-        txt = (a.titulo or "")[:30]
-        print(f"DEBUG BUSCA: ID {aid} - Score: {score:.4f} - Texto: {txt}...")
         snippet = (a.descricao or a.titulo or "")[:200]
         if len(a.descricao or a.titulo or "") > 200:
             snippet += "..."
@@ -723,11 +633,7 @@ def buscar_municipes_semantico(
     limite: int = 20,
     threshold: float = 0.5,
 ) -> List[Dict[str, Any]]:
-    """
-    Busca semântica de munícipes (CRM).
-    Usa vetor_ia_perfil; threshold 0.5 para maior precisão em perfis.
-    Retorna lista de dicts com: municipe (obj), score, score_percentual.
-    """
+    """Busca semântica de munícipes (CRM)."""
     from ..models import Municipe
 
     query = (query or "").strip()
