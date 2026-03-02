@@ -568,6 +568,50 @@ class ComunicacaoViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    @action(detail=True, methods=['get'], url_path='relatorio-pdf')
+    def relatorio_pdf(self, request, pk=None):
+        """
+        Gera PDF com a relação de contatos selecionados para envio da comunicação e resumo.
+        """
+        comunicacao = self.get_object()
+        from django.utils import timezone as tz
+        from django.template.loader import render_to_string
+
+        evento = comunicacao.evento
+        destinatarios_qs = comunicacao.destinatarios.select_related('municipe').all().order_by('municipe__nome_completo')
+
+        def get_email_principal(municipe):
+            emails = getattr(municipe, 'emails', None)
+            if not emails or not isinstance(emails, list):
+                return None
+            principal = next((e for e in emails if isinstance(e, dict) and e.get('tipo') == 'principal'), None)
+            if principal and principal.get('email'):
+                return principal['email']
+            return emails[0].get('email') if emails and isinstance(emails[0], dict) else None
+
+        destinatarios = [
+            {
+                'municipe': d.municipe,
+                'email_principal': get_email_principal(d.municipe),
+            }
+            for d in destinatarios_qs
+        ]
+
+        context = {
+            'comunicacao': comunicacao,
+            'evento': evento,
+            'destinatarios': destinatarios,
+            'data_emissao': tz.now(),
+        }
+
+        html_string = render_to_string('eventos/relatorio_comunicacao.html', context)
+        pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
+
+        response = HttpResponse(pdf_file, content_type='application/pdf')
+        filename = f"relatorio_comunicacao_{comunicacao.id}_{tz.now().strftime('%Y%m%d_%H%M')}.pdf"
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
     @action(detail=True, methods=['post'], url_path='enviar')
     def enviar(self, request, pk=None):
         """
