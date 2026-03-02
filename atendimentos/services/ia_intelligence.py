@@ -18,9 +18,9 @@ OLLAMA_HOST = getattr(settings, 'OLLAMA_HOST', 'http://localhost:11434')
 OLLAMA_BASE_URL = getattr(settings, 'OLLAMA_BASE_URL', OLLAMA_HOST)
 OLLAMA_MODEL_TEXT = getattr(settings, 'OLLAMA_MODEL_TEXT', 'deepseek') or 'deepseek'
 OLLAMA_MODEL_EMBED = getattr(settings, 'OLLAMA_MODEL_EMBED', 'mxbai-embed-large') or 'mxbai-embed-large'
-OLLAMA_TIMEOUT_GENERATE = getattr(settings, 'OLLAMA_TIMEOUT_GENERATE', (5, 60))  # (connect, read)
-OLLAMA_TIMEOUT_EMBED = getattr(settings, 'OLLAMA_TIMEOUT_EMBED', 30)
-OLLAMA_TIMEOUT = getattr(settings, 'OLLAMA_TIMEOUT', 120)  # fallback legado
+OLLAMA_TIMEOUT_GENERATE = getattr(settings, 'OLLAMA_TIMEOUT_GENERATE', (5, 300))  # (connect, read) 5 min
+OLLAMA_TIMEOUT_EMBED = getattr(settings, 'OLLAMA_TIMEOUT_EMBED', 120)  # 2 min para vetores
+OLLAMA_TIMEOUT = getattr(settings, 'OLLAMA_TIMEOUT', 300)  # fallback 5 min
 
 """
 Serviço de Inteligência Artificial local (Ollama) para atendimentos.
@@ -70,7 +70,7 @@ def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=60)
+        resp = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT_EMBED)
         resp.raise_for_status()
         
         data = resp.json()
