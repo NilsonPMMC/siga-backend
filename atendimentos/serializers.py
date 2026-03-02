@@ -2,6 +2,7 @@ from .models import *
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.models import User
+from django.db.models import Count
 from .permissions import is_in_group, CanEditMunicipeDetails
 from datetime import date
 from django.utils import timezone
@@ -204,7 +205,10 @@ class MunicipeSerializer(serializers.ModelSerializer):
         instance = super().update(instance, validated_data)
         if perfis_data is not None:
             ids_manter = {p.get('id') for p in perfis_data if p.get('id')}
-            instance.perfis.exclude(id__in=ids_manter).delete()
+            perfis_a_remover = instance.perfis.exclude(id__in=ids_manter)
+            # Não deleta perfis referenciados por Convidado (eventos) - PROTECT
+            perfis_deletaveis = perfis_a_remover.annotate(n_convites=Count('convites')).filter(n_convites=0)
+            perfis_deletaveis.delete()
             for item in perfis_data:
                 perfil_id = item.pop('id', None)
                 payload = {k: v for k, v in item.items() if k != 'id'}
