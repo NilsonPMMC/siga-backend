@@ -306,33 +306,76 @@ JSON:"""
 
 
 def _construir_texto_para_embedding(atendimento) -> str:
-    """Monta o texto rico para geração do embedding."""
+    """
+    Monta o texto rico para embedding (Atendimentos), incluindo metadados completos,
+    pessoas envolvidas, descrição e histórico detalhado de tramitações.
+    """
+    partes = []
+
+    # 1. Cabeçalho e Metadados
+    partes.append(f"Protocolo: {atendimento.protocolo}")
+    if atendimento.data_criacao:
+        partes.append(f"Data: {atendimento.data_criacao.strftime('%d/%m/%Y')}")
+
+    status_txt = atendimento.get_status_display() if hasattr(atendimento, 'get_status_display') else atendimento.status
+    partes.append(f"Status Atual: {status_txt}")
+
+    if atendimento.origem:
+        origem_txt = atendimento.get_origem_display() if hasattr(atendimento, 'get_origem_display') else atendimento.origem
+        partes.append(f"Origem: {origem_txt}")
+
+    # 2. Pessoas Envolvidas
+    if atendimento.municipe:
+        partes.append(f"Munícipe: {atendimento.municipe.nome_completo}")
+        if atendimento.municipe.endereco and isinstance(atendimento.municipe.endereco, dict):
+            bairro = atendimento.municipe.endereco.get('bairro') or atendimento.municipe.endereco.get('bairro_nome')
+            if bairro:
+                partes.append(f"Bairro do Munícipe: {bairro}")
+
+    if atendimento.responsavel:
+        resp_nome = getattr(atendimento.responsavel, 'get_full_name', lambda: atendimento.responsavel.username)() or atendimento.responsavel.username
+        partes.append(f"Responsável Atual: {resp_nome}")
+
+    if atendimento.conta:
+        partes.append(f"Gabinete: {atendimento.conta.nome}")
+
+    # 3. Conteúdo Principal
     assunto = (atendimento.titulo or "").strip()
     descricao = (atendimento.descricao or "").strip()
-    partes = [f"Assunto: {assunto}", f"Descrição: {descricao}"]
-    texto = " | ".join(partes)
+    partes.append(f"Assunto: {assunto}")
+    partes.append(f"Descrição Original: {descricao}")
 
+    # 4. Inteligência (Resumo existente)
     resumo = (atendimento.resumo_ia_local or "").strip()
     if resumo:
-        texto += f" | Resumo Técnico: {resumo}"
+        partes.append(f"Resumo Técnico (IA): {resumo}")
 
+    # 5. Histórico de Tramitações (Detalhado)
     tramitacoes = atendimento.tramitacoes.all().order_by('data_tramitacao')
-    if tramitacoes:
-        despachos = []
+    if tramitacoes.exists():
+        hist = []
         for t in tramitacoes:
+            data_t = t.data_tramitacao.strftime('%d/%m/%y') if t.data_tramitacao else ""
+            usuario_t = t.usuario.username if t.usuario else "Sistema"
+            trecho = f"[{data_t} - {usuario_t}]"
+            if t.status_anterior and t.status_novo and t.status_anterior != t.status_novo:
+                trecho += f" Mudou status ({t.status_anterior} -> {t.status_novo})."
+            if t.encaminhado_para_nome:
+                trecho += f" Encaminhou para: {t.encaminhado_para_nome}."
             despacho = (t.despacho or "").strip()
             if despacho:
-                despachos.append(despacho)
-            if getattr(t, 'encaminhado_para_nome', None):
-                nome_destino = (t.encaminhado_para_nome or "").strip()
-                if nome_destino:
-                    despachos.append(f"Encaminhado para {nome_destino}")
-        if despachos:
-            texto += " | Histórico: " + " | ".join(despachos)
+                trecho += f" Nota: {despacho}"
+            hist.append(trecho)
+        partes.append("Histórico de Andamento: " + " | ".join(hist))
 
-    if atendimento.status == 'ENCAMINHADO':
-        texto += " | Status: Encaminhado"
+    # 6. Anexos (Apenas nomes para contexto)
+    if hasattr(atendimento, 'anexos'):
+        anexos_list = atendimento.anexos.all()
+        if anexos_list.exists():
+            nomes = [a.descricao or str(a.arquivo).split('/')[-1] for a in anexos_list]
+            partes.append(f"Arquivos Anexos: {', '.join(nomes)}")
 
+    texto = "\n".join(partes)
     if not texto.strip():
         texto = "Assunto: (sem título) | Descrição: (sem descrição)"
     return texto
@@ -356,54 +399,24 @@ def atualizar_vetor_atendimento(atendimento) -> bool:
 
 
 def gerar_texto_perfil_municipe(municipe) -> str:
-    """Cria uma string rica com todos os dados relevantes do munícipe."""
+    """
+    Cria uma string rica com DADOS CADASTRAIS + INTERAÇÕES RECENTES para o Munícipe.
+    Tenta replicar a visão do 'Dossiê' do frontend.
+    """
     def _s(v):
         return (v or "").strip() if v is not None else ""
 
+    partes = []
+
+    # 1. Identificação Pessoal
     nome = _s(municipe.nome_completo)
     apelido = _s(municipe.nome_de_guerra)
-
-    cargos = []
-    entidades = []
-    if _s(municipe.cargo):
-        cargos.append(municipe.cargo)
-    if _s(municipe.orgao):
-        entidades.append(municipe.orgao)
-    for p in municipe.perfis.all():
-        if _s(p.cargo):
-            cargos.append(p.cargo)
-        if _s(p.instituicao):
-            entidades.append(p.instituicao)
-    profissao = ", ".join(dict.fromkeys(cargos)) if cargos else ""
-    nome_entidade = ", ".join(dict.fromkeys(entidades)) if entidades else ""
-
-    categorias = [p.categoria.nome for p in municipe.perfis.select_related('categoria') if p.categoria]
-    categoria = ", ".join(sorted(set(categorias))) if categorias else ""
-
-    end = municipe.endereco or {}
-    bairro = _s(end.get("bairro") or end.get("bairro_nome"))
-    cidade = _s(end.get("cidade") or end.get("municipio") or end.get("localidade"))
-
-    observacao = _s(municipe.observacoes)
-    etiquetas = _s(municipe.dados_etiqueta)
-
-    partes = [f"Nome: {nome}"]
+    partes.append(f"Nome: {nome}")
     if apelido:
-        partes[-1] += f" ({apelido})"
-    if profissao:
-        partes.append(f"Profissão/Cargo: {profissao}")
-    if nome_entidade:
-        partes.append(f"Entidade/Empresa: {nome_entidade}")
-    if categoria:
-        partes.append(f"Categoria: {categoria}")
-    if bairro:
-        partes.append(f"Bairro: {bairro}")
-    if cidade:
-        partes.append(f"Cidade: {cidade}")
-    if observacao:
-        partes.append(f"Observações: {observacao}")
-    if etiquetas:
-        partes.append(f"Etiquetas: {etiquetas}")
+        partes.append(f"Apelido: {apelido}")
+
+    if municipe.cpf:
+        partes.append(f"CPF: {municipe.cpf}")
 
     if municipe.data_nascimento:
         try:
@@ -414,14 +427,93 @@ def gerar_texto_perfil_municipe(municipe) -> str:
         except (TypeError, ValueError):
             pass
 
-    texto = " | ".join(partes)
-    texto_final = texto if texto.strip() else f"Nome: {nome or '(sem nome)'}"
-    
-    # Vacina Anti-Lixo para Munícipes
-    if texto_final is None or len(texto_final.strip()) < 30:
-        print(f"AVISO: Perfil de munícipe muito curto/inválido: {repr(texto_final)}")
+    # 2. Contatos (Crucial para CRM)
+    if municipe.telefones:
+        tels = []
+        for t in municipe.telefones:
+            val = t.get('numero') if isinstance(t, dict) else str(t)
+            if val:
+                tels.append(val)
+        if tels:
+            partes.append(f"Telefones: {', '.join(tels)}")
+
+    if municipe.emails:
+        ems = []
+        for e in municipe.emails:
+            val = e.get('email') if isinstance(e, dict) else str(e)
+            if val:
+                ems.append(val)
+        if ems:
+            partes.append(f"Emails: {', '.join(ems)}")
+
+    # 3. Profissional e Influência
+    cargos_str = []
+    if _s(municipe.cargo):
+        cargos_str.append(municipe.cargo)
+    if _s(municipe.orgao):
+        cargos_str.append(f"no órgão {municipe.orgao}")
+    for p in municipe.perfis.select_related('conta', 'categoria').all():
+        detalhe = [x for x in [p.cargo, p.instituicao] if x]
+        if detalhe:
+            conta_nome = p.conta.nome if p.conta else ""
+            cargos_str.append(f"{' na '.join(detalhe)} ({conta_nome})" if conta_nome else ' na '.join(detalhe))
+
+    if cargos_str:
+        partes.append(f"Ocupação/Vínculos: {', '.join(cargos_str)}")
+
+    categorias = [p.categoria.nome for p in municipe.perfis.select_related('categoria') if p.categoria]
+    categoria = ", ".join(sorted(set(categorias))) if categorias else ""
+    if categoria:
+        partes.append(f"Categoria: {categoria}")
+
+    # 4. Geografia (Endereço completo)
+    end = municipe.endereco or {}
+    endereco_parts = []
+    if end.get("logradouro"):
+        endereco_parts.append(end.get("logradouro"))
+    if end.get("bairro") or end.get("bairro_nome"):
+        endereco_parts.append(f"Bairro {end.get('bairro') or end.get('bairro_nome')}")
+    if end.get("cidade") or end.get("municipio") or end.get("localidade"):
+        endereco_parts.append(end.get("cidade") or end.get("municipio") or end.get("localidade"))
+    if endereco_parts:
+        partes.append(f"Endereço: {', '.join(endereco_parts)}")
+
+    # 5. Observações e Etiquetas
+    obs = _s(municipe.observacoes)
+    if obs:
+        partes.append(f"Observações: {obs}")
+    tags = _s(municipe.dados_etiqueta)
+    if tags:
+        partes.append(f"Etiquetas: {tags}")
+
+    # --- SESSÃO INTERAÇÕES ---
+    try:
+        ultimos_atendimentos = municipe.atendimentos.all().order_by('-data_criacao')[:5]
+        if ultimos_atendimentos:
+            resumos_at = []
+            for a in ultimos_atendimentos:
+                dt = a.data_criacao.strftime('%d/%m/%y') if a.data_criacao else "?"
+                st = a.status or "Status?"
+                tit = (a.titulo or "")[:80]
+                resumos_at.append(f"[{dt}] {tit} ({st})")
+            partes.append("Últimos Atendimentos: " + " | ".join(resumos_at))
+    except AttributeError:
+        try:
+            ultimos_atendimentos = municipe.atendimento_set.all().order_by('-data_criacao')[:5]
+            if ultimos_atendimentos:
+                resumos_at = []
+                for a in ultimos_atendimentos:
+                    if a.data_criacao:
+                        resumos_at.append(f"[{a.data_criacao.strftime('%d/%m/%y')}] {a.titulo or ''}")
+                if resumos_at:
+                    partes.append("Últimos Atendimentos: " + " | ".join(resumos_at))
+        except AttributeError:
+            pass
+
+    texto_final = "\n".join(partes)
+    if len(texto_final.strip()) < 30:
         return ""
-        
+
     return texto_final
 
 
