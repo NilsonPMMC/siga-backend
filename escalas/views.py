@@ -176,7 +176,7 @@ class ServidorLookupView(generics.ListAPIView):
         categorias_servidores = ['SERVIDOR(A)', 'SECRETÁRIO(A) MUNICIPAL', 'SERVIDOR(A) SEMAE']
         
         queryset = Municipe.objects.filter(
-            Q(categoria__nome__in=categorias_servidores) | 
+            Q(perfis__categoria__nome__in=categorias_servidores) | 
             Q(cargo__isnull=False)
         ).exclude(cargo='').distinct()
 

@@ -377,7 +377,8 @@ def gerar_texto_perfil_municipe(municipe) -> str:
     profissao = ", ".join(dict.fromkeys(cargos)) if cargos else ""
     nome_entidade = ", ".join(dict.fromkeys(entidades)) if entidades else ""
 
-    categoria = _s(municipe.categoria.nome) if municipe.categoria else ""
+    categorias = [p.categoria.nome for p in municipe.perfis.select_related('categoria') if p.categoria]
+    categoria = ", ".join(sorted(set(categorias))) if categorias else ""
 
     end = municipe.endereco or {}
     bairro = _s(end.get("bairro") or end.get("bairro_nome"))

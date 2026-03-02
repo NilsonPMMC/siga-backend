@@ -31,7 +31,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.WARNING(f"--- INICIANDO DIAGNÓSTICO PARA CATEGORIAS: {TARGET_IDS} ---"))
 
-        municipes = Municipe.objects.filter(categoria__id__in=TARGET_IDS)
+        municipes = Municipe.objects.filter(perfis__categoria__id__in=TARGET_IDS).distinct()
         
         total = municipes.count()
         validos_para_gerar = 0
@@ -75,7 +75,8 @@ class Command(BaseCommand):
 
             if problemas:
                 com_erros += 1
-                cat_nome = CAT_NAMES.get(m.categoria_id, 'Outros')
+                perfil_alvo = m.perfis.filter(categoria_id__in=TARGET_IDS).first()
+                cat_nome = CAT_NAMES.get(perfil_alvo.categoria_id, 'Outros') if perfil_alvo and perfil_alvo.categoria_id else 'Outros'
                 erros_detalhes.append(f"ID {m.id} | {nome} ({cat_nome}): {', '.join(problemas)}")
                 continue # Pula a geração se faltar dados críticos de endereço
 

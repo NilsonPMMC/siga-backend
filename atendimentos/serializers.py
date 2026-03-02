@@ -84,14 +84,16 @@ class TramitacaoSerializer(serializers.ModelSerializer):
 
 class PerfilMunicipeSerializer(serializers.ModelSerializer):
     conta_nome = serializers.CharField(source='conta.nome', read_only=True)
+    categoria_nome = serializers.CharField(source='categoria.nome', read_only=True)
 
     class Meta:
         model = PerfilMunicipe
         fields = [
-            'id', 'conta', 'conta_nome', 'cargo', 'instituicao', 'departamento', 'tratamento', 'ativo'
+            'id', 'conta', 'conta_nome', 'categoria', 'categoria_nome', 'cargo', 'instituicao', 'departamento', 'tratamento', 'ativo'
         ]
         extra_kwargs = {
             'conta': {'required': True},
+            'categoria': {'required': True},
             'id': {'read_only': False, 'required': False},
         }
 
@@ -104,7 +106,7 @@ class MunicipeSerializer(serializers.ModelSerializer):
         required=False
     )
     perfis = PerfilMunicipeSerializer(many=True, required=False)
-    categoria_nome = serializers.CharField(source='categoria.nome', read_only=True, default='MUNÍCIPE')
+    categorias_nomes = serializers.SerializerMethodField()
     qualidade_dados = serializers.SerializerMethodField()
     alerta_atualizacao = serializers.SerializerMethodField()
 
@@ -114,14 +116,23 @@ class MunicipeSerializer(serializers.ModelSerializer):
             'id', 'foto', 'nome_completo', 'tratamento', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
             'telefones', 'endereco', 'observacoes', 'cargo', 'orgao',
             'contas', 'perfis',
-            'categoria', 'categoria_nome', 'data_cadastro', 'data_atualizacao',
+            'categorias_nomes', 'data_cadastro', 'data_atualizacao',
             'qualidade_dados', 'alerta_atualizacao',
             'pode_editar', 'grupo_duplicado', 'dados_etiqueta'
         ]
         extra_kwargs = {
-            'categoria': {'required': True, 'allow_null': False},
             'cpf': {'required': False, 'allow_blank': True},
         }
+
+    def get_categorias_nomes(self, obj):
+        perfis = getattr(obj, 'perfis', None)
+        if perfis is None:
+            return []
+        nomes = set()
+        for p in perfis.all().select_related('categoria'):
+            if p.categoria:
+                nomes.add(p.categoria.nome)
+        return sorted(nomes)
     
     def validate_telefones(self, value):
         if not value or not isinstance(value, list) or len(value) == 0:
@@ -181,6 +192,10 @@ class MunicipeSerializer(serializers.ModelSerializer):
         instance = super().create(validated_data)
         for item in perfis_data:
             item = {k: v for k, v in item.items() if k != 'id'}
+            if 'categoria' not in item and 'categoria_id' not in item:
+                cat = CategoriaContato.objects.filter(nome='MUNÍCIPE').first() or CategoriaContato.objects.first()
+                if cat:
+                    item['categoria_id'] = cat.id
             PerfilMunicipe.objects.create(municipe=instance, **item)
         return instance
 
@@ -196,6 +211,10 @@ class MunicipeSerializer(serializers.ModelSerializer):
                 if perfil_id and instance.perfis.filter(pk=perfil_id).exists():
                     PerfilMunicipe.objects.filter(pk=perfil_id).update(**payload)
                 else:
+                    if 'categoria' not in payload and 'categoria_id' not in payload:
+                        cat = CategoriaContato.objects.filter(nome='MUNÍCIPE').first() or CategoriaContato.objects.first()
+                        if cat:
+                            payload['categoria_id'] = cat.id
                     PerfilMunicipe.objects.create(municipe=instance, **payload)
         return instance
 
@@ -375,7 +394,7 @@ class MunicipeDetailSerializer(serializers.ModelSerializer):
     solicitacoes_agenda = SolicitacaoAgendaSerializer(many=True, read_only=True)
     contas = ContaSerializer(many=True, read_only=True)
     perfis = PerfilMunicipeSerializer(many=True, read_only=True)
-    categoria = CategoriaContatoSerializer(read_only=True)
+    categorias_nomes = serializers.SerializerMethodField()
     historico_eventos = serializers.SerializerMethodField()
 
     class Meta:
@@ -383,7 +402,7 @@ class MunicipeDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'nome_completo', 'foto', 'nome_de_guerra', 'cpf', 'data_nascimento', 'emails',
             'telefones', 'endereco', 'observacoes', 'cargo', 'orgao',
-            'contas', 'perfis', 'categoria',
+            'contas', 'perfis', 'categorias_nomes',
             'atendimentos', 'visitas', 'presencas_agenda_institucional',
             'solicitacoes_agenda', 'historico_eventos'
         ]
@@ -409,6 +428,13 @@ class MunicipeDetailSerializer(serializers.ModelSerializer):
                 'confirmado': p.confirmado,
             })
         return resultado
+
+    def get_categorias_nomes(self, obj):
+        nomes = set()
+        for p in obj.perfis.all().select_related('categoria'):
+            if p.categoria:
+                nomes.add(p.categoria.nome)
+        return sorted(nomes)
 
     def get_historico_eventos(self, obj):
         from eventos.models import Convidado
@@ -451,10 +477,18 @@ class MunicipeLookupSerializer(serializers.ModelSerializer):
     alerta_atualizacao = serializers.SerializerMethodField()
     contas = ContaSerializer(many=True, read_only=True)
     perfis = PerfilMunicipeSerializer(many=True, read_only=True)
+    categorias_nomes = serializers.SerializerMethodField()
 
     class Meta:
         model = Municipe
-        fields = ['id', 'nome_completo', 'nome_de_guerra', 'contas', 'perfis', 'categoria', 'cargo', 'emails', 'telefones', 'pode_editar', 'qualidade_dados', 'alerta_atualizacao']
+        fields = ['id', 'nome_completo', 'nome_de_guerra', 'contas', 'perfis', 'categorias_nomes', 'cargo', 'emails', 'telefones', 'pode_editar', 'qualidade_dados', 'alerta_atualizacao']
+
+    def get_categorias_nomes(self, obj):
+        nomes = set()
+        for p in obj.perfis.all().select_related('categoria'):
+            if p.categoria:
+                nomes.add(p.categoria.nome)
+        return sorted(nomes)
 
     def get_pode_editar(self, obj):
         user = self.context['request'].user
@@ -576,7 +610,7 @@ class AgendaConvidadoSerializer(serializers.ModelSerializer):
     cargo_municipe = serializers.ReadOnlyField(source='municipe.cargo')
     empresa_municipe = serializers.ReadOnlyField(source='municipe.orgao')
     perfis_municipe_resumo = serializers.SerializerMethodField()
-    categoria_municipe = serializers.ReadOnlyField(source='municipe.categoria.nome')
+    categoria_municipe = serializers.SerializerMethodField()
 
     class Meta:
         model = AgendaConvidado
@@ -591,6 +625,16 @@ class AgendaConvidadoSerializer(serializers.ModelSerializer):
             return ''
         perfis = obj.municipe.perfis.filter(ativo=True).values('cargo', 'instituicao')
         return _formatar_perfis_municipe(list(perfis))
+
+    def get_categoria_municipe(self, obj):
+        if not obj.municipe_id:
+            return ''
+        conta_compromisso = obj.compromisso.conta_id
+        perfil = obj.municipe.perfis.filter(conta_id=conta_compromisso).select_related('categoria').first()
+        if perfil and perfil.categoria:
+            return perfil.categoria.nome
+        perfil = obj.municipe.perfis.select_related('categoria').first()
+        return perfil.categoria.nome if perfil and perfil.categoria else ''
 
 class AgendaCompromissoSerializer(serializers.ModelSerializer):
     convidados = AgendaConvidadoSerializer(many=True, read_only=True)

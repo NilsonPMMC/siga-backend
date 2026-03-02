@@ -2,7 +2,7 @@ import csv
 import re
 import html
 from django.core.management.base import BaseCommand
-from atendimentos.models import Municipe, CategoriaContato
+from atendimentos.models import Municipe, CategoriaContato, Conta, PerfilMunicipe
 
 class Command(BaseCommand):
     help = 'Importa Entidades/Escolas do CSV e gera etiquetas.'
@@ -51,8 +51,9 @@ class Command(BaseCommand):
         caminho = kwargs['caminho_do_arquivo']
         self.stdout.write(f"Lendo: {caminho}")
 
-        # 1. Cria ou Pega a Categoria Específica
+        # 1. Cria ou Pega a Categoria Específica e conta padrão
         categoria, _ = CategoriaContato.objects.get_or_create(nome='ENTIDADES SUBVENCIONADAS')
+        conta_padrao, _ = Conta.objects.get_or_create(nome='GABINETE DA PREFEITA', defaults={'nome_instituicao': 'Prefeitura Municipal'})
         
         cidade_padrao = "Mogi das Cruzes"
         uf_padrao = "SP"
@@ -112,7 +113,6 @@ class Command(BaseCommand):
 
                 # Criação/Atualização no Banco
                 defaults = {
-                    'categoria': categoria,
                     # 'email': email,  <-- CAMPO REMOVIDO
                     'emails': lista_emails, # <-- NOVO CAMPO JSON
                     'telefones': lista_telefones,
@@ -131,6 +131,11 @@ class Command(BaseCommand):
                 obj, created = Municipe.objects.update_or_create(
                     nome_completo=nome_entidade, 
                     defaults=defaults
+                )
+                obj.contas.add(conta_padrao)
+                PerfilMunicipe.objects.update_or_create(
+                    municipe=obj, conta=conta_padrao,
+                    defaults={'categoria': categoria, 'cargo': None, 'instituicao': None, 'ativo': True}
                 )
                 
                 status = "CRIADO" if created else "ATUALIZADO"

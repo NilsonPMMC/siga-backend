@@ -484,7 +484,7 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
 
         filtro_aplicado = bool(termo_busca or letra_inicial or categoria_ids)
 
-        base_queryset = Municipe.objects.prefetch_related('contas', 'categoria', 'perfis')
+        base_queryset = Municipe.objects.prefetch_related('contas', 'perfis', 'perfis__categoria')
 
         if grupo_id:
             return base_queryset.filter(grupo_duplicado=grupo_id).order_by('nome_completo')
@@ -501,7 +501,7 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
             return Municipe.objects.none()
         
         if categoria_ids:
-            base_queryset = base_queryset.filter(categoria__id__in=categoria_ids)
+            base_queryset = base_queryset.filter(perfis__categoria__id__in=categoria_ids).distinct()
 
         if termo_busca:
             query_palavras_nome = Q()
@@ -513,7 +513,7 @@ class MunicipeListCreateView(generics.ListCreateAPIView):
                 Q(emails__contains=[{'email': termo_busca}]) |
                 Q(cargo__icontains=termo_busca) |
                 Q(orgao__icontains=termo_busca) |
-                Q(categoria__nome__icontains=termo_busca) |
+                Q(perfis__categoria__nome__icontains=termo_busca) |
                 Q(endereco__icontains=termo_busca) |
                 Q(perfis__cargo__icontains=termo_busca) |
                 Q(perfis__instituicao__icontains=termo_busca)
@@ -634,7 +634,7 @@ class MunicipeDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        qs = Municipe.objects.prefetch_related('contas', 'categoria', 'perfis')
+        qs = Municipe.objects.prefetch_related('contas', 'perfis', 'perfis__categoria')
         if user.is_superuser:
             return qs
         if hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
@@ -649,7 +649,7 @@ class MunicipeDetailDataView(generics.RetrieveAPIView):
     def get_queryset(self):
         user = self.request.user
         qs = Municipe.objects.prefetch_related(
-            'contas', 'categoria', 'perfis',
+            'contas', 'perfis', 'perfis__categoria',
             'visitas', 'visitas__conta_destino', 'visitas__usuario_destino',
             'agendas_participantes', 'agendas_participantes__compromisso', 'agendas_participantes__compromisso__conta'
         )
@@ -675,7 +675,7 @@ class MunicipeLookupView(generics.ListAPIView):
             else:
                 return Municipe.objects.none()
 
-        queryset = queryset.prefetch_related('contas', 'categoria', 'perfis')
+        queryset = queryset.prefetch_related('contas', 'perfis', 'perfis__categoria')
 
         # --- 2. FILTRO PARA EXCLUIR IDS (útil para unificação de municipes) ---
         exclude_id = self.request.query_params.get('exclude_id', None)
@@ -690,7 +690,7 @@ class MunicipeLookupView(generics.ListAPIView):
         categorias_str = self.request.query_params.get('categorias_nome', None)
         if categorias_str:
             nomes = [n.strip() for n in categorias_str.split(',')]
-            queryset = queryset.filter(categoria__nome__in=nomes)
+            queryset = queryset.filter(perfis__categoria__nome__in=nomes).distinct()
 
         # --- 3. BUSCA TEXTUAL ---
         termo_busca = self.request.query_params.get('q', None)
@@ -1302,30 +1302,27 @@ class SaneamentoDadosMunicipeView(APIView):
 
 class AtualizarCategoriaEmLoteView(APIView):
     """
-    View para atualizar a categoria de múltiplos Munícipes de uma só vez.
+    View para atualizar a categoria de múltiplos perfis de munícipes.
+    Recebe perfil_ids e nova_categoria_id.
     """
-    # Use uma permissão que permita editar munícipes
     permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
 
     def post(self, request, *args, **kwargs):
-        # 1. Obter dados da requisição
-        municipe_ids = request.data.get('municipe_ids', [])
+        from .models import PerfilMunicipe
+
+        perfil_ids = request.data.get('perfil_ids', [])
         nova_categoria_id = request.data.get('nova_categoria_id', None)
 
-        # 2. Validações básicas
-        if not isinstance(municipe_ids, list) or not municipe_ids:
+        if not isinstance(perfil_ids, list) or not perfil_ids:
             return Response(
-                {'error': 'Lista de IDs de munícipes inválida ou vazia.'},
+                {'error': 'Lista de IDs de perfis inválida ou vazia.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
         if nova_categoria_id is None:
             return Response(
                 {'error': 'ID da nova categoria é obrigatório.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        # Valida se a categoria existe
         try:
             nova_categoria = CategoriaContato.objects.get(pk=nova_categoria_id)
         except CategoriaContato.DoesNotExist:
@@ -1334,39 +1331,20 @@ class AtualizarCategoriaEmLoteView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # 3. Executar a atualização em lote
         try:
-            # Filtra apenas os munícipes que o usuário tem permissão para ver/editar
-            # (Reutiliza parte da lógica de queryset da sua MunicipeListCreateView)
             user = request.user
-            queryset_base = Municipe.objects.all()
-            if hasattr(user, 'perfil'):
-                 contas_usuario = user.perfil.contas.all()
-                 queryset_base = queryset_base.filter(
-                     Q(contas__isnull=True) | Q(contas__in=contas_usuario)
-                 ).distinct()
-            elif not user.is_superuser:
-                 # Se não tem perfil e não é superuser, não pode alterar nada
-                 return Response(
-                    {'error': 'Você não tem permissão para alterar estes contatos.'},
-                    status=status.HTTP_403_FORBIDDEN
-                 )
-
-            # Filtra pelos IDs recebidos DENTRO do queryset permitido
-            municipes_para_atualizar = queryset_base.filter(id__in=municipe_ids)
-            
-            # Conta quantos serão realmente atualizados
-            num_atualizados = municipes_para_atualizar.update(categoria=nova_categoria)
-
+            qs = PerfilMunicipe.objects.filter(id__in=perfil_ids)
+            if not user.is_superuser and hasattr(user, 'perfil'):
+                contas_usuario = user.perfil.contas.all()
+                qs = qs.filter(conta__in=contas_usuario)
+            num_atualizados = qs.update(categoria=nova_categoria)
             return Response(
-                {'message': f'{num_atualizados} contato(s) atualizado(s) com sucesso para a categoria "{nova_categoria.nome}".'},
+                {'message': f'{num_atualizados} perfil(is) atualizado(s) com sucesso para a categoria "{nova_categoria.nome}".'},
                 status=status.HTTP_200_OK
             )
-
         except Exception as e:
-            # Captura qualquer erro inesperado durante o update
             return Response(
-                {'error': f'Ocorreu um erro ao atualizar os contatos: {str(e)}'},
+                {'error': f'Ocorreu um erro ao atualizar: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -2480,7 +2458,7 @@ class ExportMunicipesExcelView(APIView):
         else:
             order_fields = ['nome_completo']
         
-        queryset = Municipe.objects.prefetch_related('categoria', 'contas').all().order_by(*order_fields)
+        queryset = Municipe.objects.prefetch_related('perfis__categoria', 'contas').all().order_by(*order_fields)
 
         # 2. PERMISSÕES DE VISUALIZAÇÃO
         if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
@@ -2497,7 +2475,7 @@ class ExportMunicipesExcelView(APIView):
         # Usamos .getlist() para pegar todos os IDs enviados
         categoria_ids = request.query_params.getlist('categoria_id')
         if categoria_ids:
-            queryset = queryset.filter(categoria_id__in=categoria_ids)
+            queryset = queryset.filter(perfis__categoria__id__in=categoria_ids).distinct()
         # -----------------------------------------------
 
         # 4. BUSCA TEXTUAL (q)
@@ -2512,7 +2490,7 @@ class ExportMunicipesExcelView(APIView):
                 Q(emails__contains=[{'email': termo_busca}]) |
                 Q(cargo__icontains=termo_busca) |
                 Q(orgao__icontains=termo_busca) |
-                Q(categoria__nome__icontains=termo_busca)
+                Q(perfis__categoria__nome__icontains=termo_busca)
             )
             queryset = queryset.filter(query_palavras_nome | query_outros_campos).distinct()
 
@@ -2531,7 +2509,8 @@ class ExportMunicipesExcelView(APIView):
 
             telefone = municipe.telefones[0].get('numero', '') if municipe.telefones else ''
             data_nasc_formatada = municipe.data_nascimento.strftime('%d/%m/%Y') if municipe.data_nascimento else ''
-            categoria_nome = municipe.categoria.nome if municipe.categoria else ''
+            categorias = [p.categoria.nome for p in municipe.perfis.all().select_related('categoria') if p.categoria]
+            categoria_nome = ', '.join(sorted(set(categorias))) if categorias else ''
             contas_vinculadas = ", ".join([conta.nome for conta in municipe.contas.all()])
 
             sheet.append([
@@ -2567,7 +2546,7 @@ class GerarPdfMunicipesReportView(APIView):
         else:
             order_fields = ['nome_completo']
         
-        queryset = Municipe.objects.prefetch_related('categoria', 'contas').all().order_by(*order_fields)
+        queryset = Municipe.objects.prefetch_related('perfis__categoria', 'contas').all().order_by(*order_fields)
 
         if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
             if hasattr(user, 'perfil'):
@@ -2581,7 +2560,7 @@ class GerarPdfMunicipesReportView(APIView):
         # --- CORREÇÃO: FILTRO POR CATEGORIA AQUI TAMBÉM ---
         categoria_ids = request.query_params.getlist('categoria_id')
         if categoria_ids:
-            queryset = queryset.filter(categoria_id__in=categoria_ids)
+            queryset = queryset.filter(perfis__categoria__id__in=categoria_ids).distinct()
         # --------------------------------------------------
 
         termo_busca = request.query_params.get('q', None)
@@ -2595,7 +2574,7 @@ class GerarPdfMunicipesReportView(APIView):
                 Q(emails__contains=[{'email': termo_busca}]) |
                 Q(cargo__icontains=termo_busca) |
                 Q(orgao__icontains=termo_busca) |
-                Q(categoria__nome__icontains=termo_busca)
+                Q(perfis__categoria__nome__icontains=termo_busca)
             )
             queryset = queryset.filter(query_palavras_nome | query_outros_campos).distinct()
 
@@ -2612,13 +2591,14 @@ class GerarPdfMunicipesReportView(APIView):
                 # Pega o primeiro email da lista como principal
                 email_principal = municipe.emails[0].get('email', '') if isinstance(municipe.emails[0], dict) else str(municipe.emails[0])
 
+            categorias_pdf = [p.categoria.nome for p in municipe.perfis.all() if p.categoria]
             municipes_data.append({
                 'nome': municipe.nome_completo,
                 'telefone': telefone_principal,
                 'email': email_principal,
                 'cargo': municipe.cargo,
                 'orgao': municipe.orgao,
-                'categoria': municipe.categoria.nome if municipe.categoria else '', # Adicionei categoria no PDF tbm, útil
+                'categoria': ', '.join(sorted(set(categorias_pdf))) if categorias_pdf else '',
             })
             
         # CABEÇALHO DO PDF

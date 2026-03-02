@@ -20,7 +20,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from .relatorios import gerar_pdf_checklist, gerar_pdf_eventos_periodo
 from .models import Evento, ListaPresenca, EventoChecklist, Convidado, Comunicacao, Destinatario, LogDeEnvio, EventoChecklistItemStatus, ChecklistItem, MailingList, Municipe
-from atendimentos.models import Municipe, CategoriaContato 
+from atendimentos.models import Municipe, CategoriaContato, PerfilMunicipe 
 from .forms import ListaPresencaForm
 from .serializers import EventoSerializer, ConvidadoSerializer, ComunicacaoSerializer, DestinatarioSerializer, LogDeEnvioSerializer, ListaPresencaSerializer, EventoChecklistSerializer, EventoChecklistItemStatusSerializer, ChecklistItemSerializer, MailingListSerializer, MunicipeForConvidadoSerializer
 from .utils import gerar_e_enviar_certificado
@@ -89,14 +89,12 @@ class EventoViewSet(viewsets.ModelViewSet):
             perfis_ja_convidados = set(
                 Convidado.objects.filter(evento=evento).values_list('perfil_id', flat=True)
             )
-            municipes_para_adicionar = Municipe.objects.filter(categoria__id=categoria_id)
+            # Perfis da conta do evento com a categoria selecionada
+            perfis_para_adicionar = PerfilMunicipe.objects.filter(
+                conta=evento.conta, categoria_id=categoria_id
+            ).select_related('municipe')
             novos_convidados = []
-            for municipe in municipes_para_adicionar:
-                perfil, _ = PerfilMunicipe.objects.get_or_create(
-                    municipe=municipe,
-                    conta=evento.conta,
-                    defaults={'cargo': municipe.cargo, 'instituicao': municipe.orgao, 'ativo': True}
-                )
+            for perfil in perfis_para_adicionar:
                 if perfil.id not in perfis_ja_convidados:
                     novos_convidados.append(Convidado(evento=evento, perfil=perfil))
                     perfis_ja_convidados.add(perfil.id)
@@ -130,14 +128,15 @@ class EventoViewSet(viewsets.ModelViewSet):
             # 1. Pega os IDs dos munícipes que já são destinatários.
             destinatarios_existentes_ids = Destinatario.objects.filter(evento=evento).values_list('municipe_id', flat=True)
 
-            # 2. Encontra os munícipes da categoria que ainda não foram adicionados.
+            # 2. Encontra munícipes com perfil na conta do evento e categoria selecionada
             municipes_para_adicionar = Municipe.objects.filter(
-                categoria__id=categoria_id
+                perfis__conta=evento.conta,
+                perfis__categoria_id=categoria_id
             ).exclude(
                 id__in=destinatarios_existentes_ids
             ).filter(
                 Q(emails__isnull=False) & ~Q(emails__exact='[]')
-            )
+            ).distinct()
 
             # 3. Cria os novos objetos Destinatario em massa.
             novos_destinatarios = [
@@ -512,14 +511,16 @@ class ComunicacaoViewSet(viewsets.ModelViewSet):
         # 1. Pega os IDs dos munícipes que já são destinatários DESTA comunicação.
         destinatarios_existentes_ids = Destinatario.objects.filter(comunicacao=comunicacao).values_list('municipe_id', flat=True)
 
-        # 2. Encontra os munícipes da categoria que AINDA NÃO estão na lista e TÊM E-MAIL.
+        # 2. Encontra munícipes com perfil na conta do evento e categoria selecionada
+        evento_ref = comunicacao.evento
         municipes_para_adicionar = Municipe.objects.filter(
-            categoria__id=categoria_id
+            perfis__conta=evento_ref.conta,
+            perfis__categoria_id=categoria_id
         ).exclude(
             id__in=destinatarios_existentes_ids
         ).filter(
             Q(emails__isnull=False) & ~Q(emails__exact='[]')
-        )
+        ).distinct()
 
         # 3. Cria os novos objetos Destinatario em massa.
         novos_destinatarios = [
@@ -780,15 +781,17 @@ class PublicCheckInView(APIView):
             else:
                 # --- LÓGICA DE CRIAÇÃO (SE NENHUM CONTATO FOR ENCONTRADO) ---
                 categoria_municipe, _ = CategoriaContato.objects.get_or_create(nome="MUNÍCIPE")
-                
                 municipe = Municipe.objects.create(
                     nome_completo=nome_completo.upper(),
                     telefones=[{'tipo': 'principal', 'numero': telefone}],
                     emails=[{'tipo': 'principal', 'email': email}] if email else [],
                     orgao=orgao.upper() if orgao else None,
-                    categoria=categoria_municipe
                 )
                 municipe.contas.add(conta)
+                PerfilMunicipe.objects.get_or_create(
+                    municipe=municipe, conta=conta,
+                    defaults={'cargo': None, 'instituicao': orgao, 'categoria': categoria_municipe, 'ativo': True}
+                )
 
             # Registra a presença
             presenca, presenca_criada = ListaPresenca.objects.get_or_create(
@@ -1157,15 +1160,15 @@ class MailingListViewSet(viewsets.ModelViewSet):
         # Municipes que já estão na lista
         existing_municipes_ids = mailing_list.municipes.values_list('id', flat=True)
 
-        # Encontra novos municipes da categoria que têm email e não estão na lista
+        # Encontra municipes com perfil na conta da mailing list e categoria selecionada
         municipes_to_add = Municipe.objects.filter(
-            categoria__id=categoria_id,
-            contas__in=[mailing_list.conta]
+            perfis__conta=mailing_list.conta,
+            perfis__categoria_id=categoria_id
         ).exclude(
             id__in=existing_municipes_ids
         ).filter(
             Q(emails__isnull=False) & ~Q(emails__exact='[]')
-        )
+        ).distinct()
         
         count = municipes_to_add.count()
         
@@ -1305,15 +1308,14 @@ class EventoAnalyticsView(APIView):
             
             total_geral = total_convidados_vip + total_publico_qr
 
-            # Perfil (Mantido Unificado para análise qualitativa)
-            ids_vips = set(evento.convidados.values_list('municipe_id', flat=True))
+            # Perfil por categoria (perfis da conta do evento)
+            ids_vips = set(evento.convidados.values_list('perfil__municipe_id', flat=True))
             ids_publico = set(evento.presentes.values_list('municipe_id', flat=True))
-            todos_ids = ids_vips | ids_publico
-            
+            todos_ids = (ids_vips | ids_publico) - {None}
             lista_perfil = []
             if todos_ids:
                 por_categoria = (
-                    Municipe.objects.filter(id__in=todos_ids)
+                    PerfilMunicipe.objects.filter(conta=evento.conta, municipe_id__in=todos_ids)
                     .values('categoria__nome')
                     .annotate(qtd=Count('id'))
                     .order_by('-qtd')
@@ -1347,8 +1349,11 @@ class EventoAnalyticsView(APIView):
 
         # Aplica Filtro de Categoria Global (se selecionado)
         if categoria_id:
-            all_convidados_qs = all_convidados_qs.filter(perfil__municipe__categoria_id=categoria_id)
-            all_publico_qs = all_publico_qs.filter(municipe__categoria_id=categoria_id)
+            all_convidados_qs = all_convidados_qs.filter(perfil__categoria_id=categoria_id)
+            all_publico_qs = all_publico_qs.filter(
+                municipe__perfis__categoria_id=categoria_id,
+                municipe__perfis__conta=F('evento__conta')
+            ).distinct()
 
         # 3. Totais Gerais
         total_vip_geral = all_convidados_qs.count()
@@ -1373,28 +1378,30 @@ class EventoAnalyticsView(APIView):
         # 5. Top Convidados (VIP) - Mais Frequentes nas Listas
         top_convidados = (
             all_convidados_qs
-            .values('perfil__municipe__nome_completo', 'perfil__municipe__categoria__nome')
+            .values('perfil__municipe__nome_completo', 'perfil__categoria__nome')
             .annotate(frequencia=Count('id'))
             .order_by('-frequencia')[:10]
         )
 
-        # 6. Top Público (QR Code)
+        # 6. Top Público (QR Code) - categoria do perfil na conta do evento
         top_publico = (
-            all_publico_qs
-            .values('municipe__nome_completo', 'municipe__categoria__nome')
+            all_publico_qs.filter(municipe__perfis__conta=F('evento__conta'))
+            .values('municipe__nome_completo', 'municipe__perfis__categoria__nome')
             .annotate(frequencia=Count('id'))
             .order_by('-frequencia')[:10]
         )
 
         # 7. Perfil Unificado
-        perfis_vip = all_convidados_qs.values('perfil__municipe__categoria__nome').annotate(qtd=Count('id'))
-        perfis_publico = all_publico_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+        perfis_vip = all_convidados_qs.values('perfil__categoria__nome').annotate(qtd=Count('id'))
+        perfis_publico = all_publico_qs.filter(municipe__perfis__conta=F('evento__conta')).values(
+            'municipe__perfis__categoria__nome'
+        ).annotate(qtd=Count('id'))
         mapa_perfis = {}
         for item in perfis_vip:
-            cat = item['perfil__municipe__categoria__nome'] or 'Sem Categoria'
+            cat = item['perfil__categoria__nome'] or 'Sem Categoria'
             mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
         for item in perfis_publico:
-            cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+            cat = item['municipe__perfis__categoria__nome'] or 'Sem Categoria'
             mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
         lista_top_perfis = [{'municipe__categoria__nome': k, 'qtd': v} for k, v in mapa_perfis.items()]
         lista_top_perfis = sorted(lista_top_perfis, key=lambda x: x['qtd'], reverse=True)[:5]
@@ -1456,15 +1463,14 @@ def get_bi_eventos_data(user, params):
         total_publico_qr = evento.presentes.count()
         total_geral = total_convidados_vip + total_publico_qr
 
-        # Perfil Unificado
-        ids_vips = set(evento.convidados.values_list('municipe_id', flat=True))
+        # Perfil por categoria (perfis da conta do evento)
+        ids_vips = set(evento.convidados.values_list('perfil__municipe_id', flat=True))
         ids_publico = set(evento.presentes.values_list('municipe_id', flat=True))
-        todos_ids = ids_vips | ids_publico
-        
+        todos_ids = (ids_vips | ids_publico) - {None}
         lista_perfil = []
         if todos_ids:
             por_categoria = (
-                Municipe.objects.filter(id__in=todos_ids)
+                PerfilMunicipe.objects.filter(conta=evento.conta, municipe_id__in=todos_ids)
                 .values('categoria__nome')
                 .annotate(qtd=Count('id'))
                 .order_by('-qtd')
@@ -1490,8 +1496,11 @@ def get_bi_eventos_data(user, params):
     all_publico_qs = ListaPresenca.objects.filter(evento__in=eventos_qs)
 
     if categoria_id:
-        all_convidados_qs = all_convidados_qs.filter(perfil__municipe__categoria_id=categoria_id)
-        all_publico_qs = all_publico_qs.filter(municipe__categoria_id=categoria_id)
+        all_convidados_qs = all_convidados_qs.filter(perfil__categoria_id=categoria_id)
+        all_publico_qs = all_publico_qs.filter(
+            municipe__perfis__categoria_id=categoria_id,
+            municipe__perfis__conta=F('evento__conta')
+        ).distinct()
 
     total_vip_geral = all_convidados_qs.count()
     total_publico_geral = all_publico_qs.count()
@@ -1507,27 +1516,29 @@ def get_bi_eventos_data(user, params):
     # Top Convidados (VIP)
     top_convidados = (
         all_convidados_qs
-        .values('perfil__municipe__nome_completo', 'perfil__municipe__categoria__nome')
+        .values('perfil__municipe__nome_completo', 'perfil__categoria__nome')
         .annotate(frequencia=Count('id'))
         .order_by('-frequencia')[:10]
     )
 
-    # Top Público (QR Code)
+    # Top Público (QR Code) - categoria do perfil na conta do evento
     top_publico = (
-        all_publico_qs
-        .values('municipe__nome_completo', 'municipe__categoria__nome')
+        all_publico_qs.filter(municipe__perfis__conta=F('evento__conta'))
+        .values('municipe__nome_completo', 'municipe__perfis__categoria__nome')
         .annotate(frequencia=Count('id'))
         .order_by('-frequencia')[:10]
     )
     # Perfil Unificado Global
-    perfis_vip = all_convidados_qs.values('perfil__municipe__categoria__nome').annotate(qtd=Count('id'))
-    perfis_publico = all_publico_qs.values('municipe__categoria__nome').annotate(qtd=Count('id'))
+    perfis_vip = all_convidados_qs.values('perfil__categoria__nome').annotate(qtd=Count('id'))
+    perfis_publico = all_publico_qs.filter(municipe__perfis__conta=F('evento__conta')).values(
+        'municipe__perfis__categoria__nome'
+    ).annotate(qtd=Count('id'))
     mapa_perfis = {}
     for item in perfis_vip:
-        cat = item['perfil__municipe__categoria__nome'] or 'Sem Categoria'
+        cat = item['perfil__categoria__nome'] or 'Sem Categoria'
         mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
     for item in perfis_publico:
-        cat = item['municipe__categoria__nome'] or 'Sem Categoria'
+        cat = item['municipe__perfis__categoria__nome'] or 'Sem Categoria'
         mapa_perfis[cat] = mapa_perfis.get(cat, 0) + item['qtd']
     lista_top_perfis = [{'categoria': k, 'qtd': v} for k, v in mapa_perfis.items()]
     lista_top_perfis = sorted(lista_top_perfis, key=lambda x: x['qtd'], reverse=True)

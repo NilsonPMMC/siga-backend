@@ -7,7 +7,7 @@ from urllib.parse import quote
 from datetime import datetime
 from django.core.management.base import BaseCommand
 from django.conf import settings
-from atendimentos.models import Municipe, CategoriaContato
+from atendimentos.models import Municipe, CategoriaContato, Conta, PerfilMunicipe
 
 class Command(BaseCommand):
     help = 'Importa Entidades (CSV) e gera relatório de CEPs não encontrados.'
@@ -73,6 +73,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Lendo: {caminho}")
 
         categoria, _ = CategoriaContato.objects.get_or_create(nome='ENTIDADES FUNDO SOCIAL')
+        conta_padrao, _ = Conta.objects.get_or_create(nome='GABINETE DA PREFEITA', defaults={'nome_instituicao': 'Prefeitura Municipal'})
         cidade_padrao = "Mogi das Cruzes"
         uf_padrao = "SP"
 
@@ -186,7 +187,6 @@ class Command(BaseCommand):
                 texto_etiqueta = "\n".join(etiqueta_linhas)
 
                 defaults = {
-                    'categoria': categoria,
                     'emails': lista_emails,
                     'telefones': lista_telefones,
                     'observacoes': observacoes_final,
@@ -216,6 +216,11 @@ class Command(BaseCommand):
                     for key, value in defaults.items():
                         setattr(obj, key, value)
                     obj.save()
+                    obj.contas.add(conta_padrao)
+                    PerfilMunicipe.objects.update_or_create(
+                        municipe=obj, conta=conta_padrao,
+                        defaults={'categoria': categoria, 'cargo': 'ENTIDADE', 'instituicao': None, 'ativo': True}
+                    )
                     count += 1
 
                 except Exception as e:

@@ -113,7 +113,6 @@ class Command(BaseCommand):
                             'logradouro': str(servidor_data.Endereco or '').strip(),
                             'bairro': str(servidor_data.Bairro or '').strip()
                         }
-                        municipe.categoria = categoria_a_ser_usada
                         municipe.ativo = True
                         municipe.matricula_rh = matricula
                         municipe.cpf = cpf_formatado
@@ -161,7 +160,6 @@ class Command(BaseCommand):
                                 'logradouro': str(servidor_data.Endereco or '').strip(),
                                 'bairro': str(servidor_data.Bairro or '').strip()
                             },
-                            'categoria': categoria_a_ser_usada,
                             'ativo': True,
                             'matricula_rh': matricula,
                             'cpf': cpf_formatado
@@ -182,6 +180,7 @@ class Command(BaseCommand):
                         defaults={
                             'cargo': cargo_servidor,
                             'instituicao': 'PREFEITURA MUNICIPAL DE MOGI DAS CRUZES',
+                            'categoria': categoria_a_ser_usada,
                             'ativo': True,
                         }
                     )
@@ -193,9 +192,10 @@ class Command(BaseCommand):
         self.stdout.write('Verificando servidores para desativar...')
         with transaction.atomic():
             servidores_para_desativar = Municipe.objects.filter(
-                categoria__in=[categoria_servidor, categoria_secretario],
+                perfis__conta=conta_perfil,
+                perfis__categoria__in=[categoria_servidor, categoria_secretario],
                 ativo=True
-            ).exclude(matricula_rh__in=matriculas_rh_encontradas)
+            ).exclude(matricula_rh__in=matriculas_rh_encontradas).distinct()
             count_desativados = servidores_para_desativar.update(ativo=False)
 
         # --- 5. Relatório Final ---

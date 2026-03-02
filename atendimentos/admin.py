@@ -171,12 +171,7 @@ class ContaAdmin(admin.ModelAdmin):
 
 # --- Configuração de Importação/Exportação para Munícipe ---
 class MunicipeResource(resources.ModelResource):
-    # --- MAPEAMENTO DOS CAMPOS (JÁ ESTAVA CORRETO) ---
-    categoria = Field(
-        column_name='categoria',
-        attribute='categoria',
-        widget=ForeignKeyWidget(CategoriaContato, 'nome'))
-
+    # --- MAPEAMENTO DOS CAMPOS (categoria está em PerfilMunicipe) ---
     contas = Field(
         column_name='gabinete_proprietario', # Nome da coluna no seu arquivo CSV
         attribute='contas',
@@ -245,7 +240,7 @@ class MunicipeResource(resources.ModelResource):
         skip_unchanged = True
         report_skipped = True
         # Removemos 'import_id_fields' para dar controle total ao 'get_instance'
-        fields = ('id', 'nome_completo', 'cpf', 'data_nascimento', 'emails', 'telefones', 'cargo', 'orgao', 'categoria', 'contas')
+        fields = ('id', 'nome_completo', 'cpf', 'data_nascimento', 'emails', 'telefones', 'cargo', 'orgao', 'contas')
         export_order = fields
 
 
@@ -253,9 +248,9 @@ class MunicipeResource(resources.ModelResource):
 @admin.register(Municipe)
 class MunicipeAdmin(ImportExportModelAdmin):
     resource_class = MunicipeResource
-    list_display = ('nome_completo', 'tratamento', 'cpf', 'get_email_principal', 'get_telefone_principal', 'categoria', 'listar_contas')
+    list_display = ('nome_completo', 'tratamento', 'cpf', 'get_email_principal', 'get_telefone_principal', 'get_categorias', 'listar_contas')
     search_fields = ('nome_completo', 'cpf', 'emails__email')
-    list_filter = ('categoria', 'contas')
+    list_filter = ('perfis__categoria', 'contas')
     filter_horizontal = ('contas',)
 
     def get_telefone_principal(self, obj):
@@ -269,6 +264,11 @@ class MunicipeAdmin(ImportExportModelAdmin):
             return obj.emails[0].get('email')
         return "N/A"
     get_email_principal.short_description = 'Email Principal'
+
+    def get_categorias(self, obj):
+        cats = [p.categoria.nome for p in obj.perfis.select_related('categoria') if p.categoria]
+        return ', '.join(sorted(set(cats))) if cats else '-'
+    get_categorias.short_description = 'Categorias'
 
     def listar_contas(self, obj):
         return ", ".join([conta.nome for conta in obj.contas.all()])

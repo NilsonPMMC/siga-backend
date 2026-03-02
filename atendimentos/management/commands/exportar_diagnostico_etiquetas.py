@@ -42,7 +42,7 @@ class Command(BaseCommand):
                 'UF'
             ])
 
-            municipes = Municipe.objects.filter(categoria__id__in=TARGET_IDS).select_related('categoria')
+            municipes = Municipe.objects.filter(perfis__categoria__id__in=TARGET_IDS).prefetch_related('perfis__categoria').distinct()
             
             count_incompletos = 0
 
@@ -75,7 +75,7 @@ class Command(BaseCommand):
                     writer.writerow([
                         m.id,
                         m.nome_completo,
-                        m.categoria.nome if m.categoria else 'Sem Categoria',
+                        ', '.join(sorted({p.categoria.nome for p in m.perfis.all() if p.categoria})) or 'Sem Categoria',
                         status,
                         lista_faltantes, # Coluna fácil para ver o que precisa
                         tratamento,

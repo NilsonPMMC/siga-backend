@@ -126,13 +126,6 @@ class Municipe(UppercaseFieldsMixin, models.Model):
         null=True, 
         verbose_name="Nome de Guerra / Apelido"
     )
-    categoria = models.ForeignKey(
-        CategoriaContato, 
-        on_delete=models.PROTECT, 
-        null=False, 
-        blank=False,
-        verbose_name="Categoria do Contato"
-    )
     contas = models.ManyToManyField(
         Conta,
         blank=True,
@@ -209,6 +202,12 @@ class PerfilMunicipe(UppercaseFieldsMixin, models.Model):
         on_delete=models.PROTECT,
         related_name='perfis_municipe',
         verbose_name="Conta/Gabinete"
+    )
+    categoria = models.ForeignKey(
+        CategoriaContato,
+        on_delete=models.PROTECT,
+        related_name='perfis_municipe',
+        verbose_name="Categoria do Contato"
     )
     cargo = models.CharField(max_length=150, blank=True, null=True, verbose_name="Cargo")
     instituicao = models.CharField(max_length=150, blank=True, null=True, verbose_name="Instituição/Órgão")

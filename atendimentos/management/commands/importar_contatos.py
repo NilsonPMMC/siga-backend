@@ -2,7 +2,7 @@ import csv
 import re
 from datetime import datetime
 from django.core.management.base import BaseCommand
-from atendimentos.models import Municipe, Conta, CategoriaContato
+from atendimentos.models import Municipe, Conta, CategoriaContato, PerfilMunicipe
 
 def formatar_telefone(numero):
     """Limpa e formata um número de telefone para o padrão (99) 99999-9999."""
@@ -65,35 +65,30 @@ class Command(BaseCommand):
                             except ValueError:
                                 self.stdout.write(self.style.WARNING(f"  - Linha {total_linhas}: Formato de data inválido para '{data_nasc_str}'. Deixando em branco."))
 
+                        conta = conta_proprietaria or Conta.objects.filter(nome__icontains='GABINETE').first() or Conta.objects.first()
+                        email_val = row.get('email', '').strip()
+                        emails_list = [{'tipo': 'principal', 'email': email_val}] if email_val else []
+                        defaults_municipe = {
+                            'nome_completo': row['nome_completo'],
+                            'data_nascimento': data_nasc_obj,
+                            'cargo': row.get('cargo', ''),
+                            'orgao': row.get('orgao', ''),
+                            'emails': emails_list,
+                            'telefones': [{'tipo': 'principal', 'numero': telefone_formatado}] if telefone_formatado else []
+                        }
                         # Cria ou atualiza o munícipe baseado no CPF (se existir) ou nome completo
                         cpf = row.get('cpf', '').strip()
                         if cpf:
-                            municipe, created = Municipe.objects.update_or_create(
-                                cpf=cpf,
-                                defaults={
-                                    'nome_completo': row['nome_completo'],
-                                    'data_nascimento': data_nasc_obj,
-                                    'email': row.get('email', ''),
-                                    'cargo': row.get('cargo', ''),
-                                    'orgao': row.get('orgao', ''),
-                                    'conta_proprietaria': conta_proprietaria,
-                                    'categoria': categoria,
-                                    'telefones': [{'tipo': 'principal', 'numero': telefone_formatado}] if telefone_formatado else []
-                                }
-                            )
+                            municipe, created = Municipe.objects.update_or_create(cpf=cpf, defaults=defaults_municipe)
                         else:
-                            # Se não houver CPF, usamos o nome completo como chave
                             municipe, created = Municipe.objects.update_or_create(
-                                nome_completo=row['nome_completo'],
-                                defaults={
-                                    'data_nascimento': data_nasc_obj,
-                                    'email': row.get('email', ''),
-                                    'cargo': row.get('cargo', ''),
-                                    'orgao': row.get('orgao', ''),
-                                    'conta_proprietaria': conta_proprietaria,
-                                    'categoria': categoria,
-                                    'telefones': [{'tipo': 'principal', 'numero': telefone_formatado}] if telefone_formatado else []
-                                }
+                                nome_completo=row['nome_completo'], defaults=defaults_municipe
+                            )
+                        if conta:
+                            municipe.contas.add(conta)
+                            PerfilMunicipe.objects.update_or_create(
+                                municipe=municipe, conta=conta,
+                                defaults={'categoria': categoria, 'cargo': row.get('cargo', ''), 'instituicao': row.get('orgao', ''), 'ativo': True}
                             )
 
                         importados_sucesso += 1

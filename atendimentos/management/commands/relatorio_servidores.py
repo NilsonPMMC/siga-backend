@@ -46,16 +46,15 @@ class Command(BaseCommand):
             raise CommandError(f'Mais de uma categoria encontrada para "{nome_categoria}". Verifique seus dados.')
 
         # --- Filtros Aprimorados ---
-        # Cria uma lista de objetos Q para a consulta, um para cada termo de cargo
+        # Cria uma lista de objetos Q para a consulta (cargo em Municipe ou PerfilMunicipe)
         query_cargos = Q()
         for cargo in cargos_desejados:
-            # Usamos |= (OR) para que ele encontre munícipes que tenham QUALQUER um dos cargos
-            query_cargos |= Q(cargo__icontains=cargo)
+            query_cargos |= Q(cargo__icontains=cargo) | Q(perfis__cargo__icontains=cargo)
         
         try:
             # A consulta agora usa o objeto 'categoria' validado
             municipes = Municipe.objects.filter(
-                categoria=categoria,
+                perfis__categoria=categoria,
                 ativo=True
             ).filter(query_cargos).distinct() # .distinct() para evitar duplicatas se um cargo corresponder a múltiplos termos
         
@@ -75,9 +74,12 @@ class Command(BaseCommand):
                 primeiro_telefone = municipe.telefones[0]
                 telefone_principal = primeiro_telefone.get('numero', 'Não informado')
 
+            cargo_exibir = municipe.cargo or ''
+            if not cargo_exibir and municipe.perfis.exists():
+                cargo_exibir = municipe.perfis.first().cargo or ''
             dados_para_planilha.append({
                 'nome_completo': municipe.nome_completo,
-                'cargo': municipe.cargo,
+                'cargo': cargo_exibir,
                 'telefone': telefone_principal,
             })
 
