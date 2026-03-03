@@ -15,7 +15,13 @@ def enviar_comunicacao_em_massa(comunicacao_id):
     except Comunicacao.DoesNotExist:
         return f"Comunicação com ID {comunicacao_id} não encontrada."
 
-    destinatarios = comunicacao.destinatarios.select_related('municipe').all()
+    # only() evita carregar categoria_id (removido de Municipe; evita erro se worker estiver com código antigo)
+    destinatarios = (
+        comunicacao.destinatarios
+        .select_related('municipe')
+        .only('id', 'comunicacao_id', 'municipe_id', 'municipe__id', 'municipe__nome_completo', 'municipe__emails')
+        .all()
+    )
 
     sucessos = 0
     falhas = 0
