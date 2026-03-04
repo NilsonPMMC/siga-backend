@@ -57,7 +57,7 @@ def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
     url = f"{AI_KERNEL_URL.rstrip('/')}/embeddings"
     payload = {
         "model": AI_KERNEL_EMBEDDING_MODEL,
-        "input": text,
+        "input": [text],
     }
 
     try:
