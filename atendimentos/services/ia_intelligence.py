@@ -54,18 +54,37 @@ def _truncar_texto_para_embedding(text: str, max_chars: int = MAX_CHARS_EMBED) -
 
 
 def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
-    """Gera o vetor usando a camada de compatibilidade OpenAI do Kernel Local."""
-    if not text or not kernel_client:
+    """Gera o vetor batendo no endpoint local que exige o campo 'texts'."""
+    if not text:
         return None
 
+    url = f"{AI_KERNEL_URL.rstrip('/')}/embeddings"
+
+    # Payload ajustado conforme o erro 422: exige a chave 'texts'
+    payload = {
+        "model": AI_KERNEL_EMBEDDING_MODEL,
+        "texts": [text]
+    }
+
     try:
-        response = kernel_client.embeddings.create(
-            model=AI_KERNEL_EMBEDDING_MODEL,
-            input=text
-        )
-        return response.data[0].embedding
+        resp = requests.post(url, json=payload, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Tenta extrair o vetor nos formatos mais comuns de resposta desses kernels
+        if "data" in data and len(data["data"]) > 0:
+            item = data["data"][0]
+            return item["embedding"] if "embedding" in item else item
+        elif "embeddings" in data and len(data["embeddings"]) > 0:
+            return data["embeddings"][0]
+
+        print(f"[IA EMBED ERROR] Formato de resposta desconhecido: {data.keys()}")
+        return None
+
     except Exception as e:
-        print(f"[IA EMBED ERROR] Falha ao gerar vetor via Kernel Local: {e}")
+        print(f"[IA EMBED ERROR] Falha ao gerar vetor: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[IA EMBED ERROR DETALHES] {e.response.text}")
         return None
 
 
