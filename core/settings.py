@@ -412,8 +412,14 @@ X_FRAME_OPTIONS = 'DENY'
 # SECURE_HSTS_PRELOAD = True
 
 # -----------------------------------------------------------------------------
-# Ollama (IA local - resumo e busca semântica)
+# IA - Geração de texto (padrão OpenAI / Groq)
 # -----------------------------------------------------------------------------
-OLLAMA_BASE_URL = config('OLLAMA_BASE_URL', default='http://localhost:11434')
-OLLAMA_MODEL_TEXT = config('OLLAMA_MODEL_TEXT', default='llama3.2:3b')
-OLLAMA_MODEL_EMBED = config('OLLAMA_MODEL_EMBED', default='mxbai-embed-large')
+OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
+OPENAI_API_BASE = config('OPENAI_API_BASE', default='https://api.groq.com/openai/v1')
+LLM_MODEL = config('LLM_MODEL', default='llama-3.3-70b-versatile')
+
+# -----------------------------------------------------------------------------
+# IA - Embeddings (kernel local compatível OpenAI)
+# -----------------------------------------------------------------------------
+AI_KERNEL_URL = config('AI_KERNEL_URL', default='http://192.168.10.50:8004/v1')
+AI_KERNEL_EMBEDDING_MODEL = config('AI_KERNEL_EMBEDDING_MODEL', default='mxbai-embed-large')

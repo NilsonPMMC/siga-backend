@@ -5,34 +5,30 @@ from datetime import date
 import re
 import logging
 from typing import List, Dict, Optional, Any, Tuple
-from urllib.parse import urljoin
 import numpy as np
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURAÇÕES GERAIS ---
-# Define o host principal (usado para gerar URLs completas)
-OLLAMA_HOST = getattr(settings, 'OLLAMA_HOST', 'http://localhost:11434')
+# Geração de texto (padrão OpenAI / Groq)
+OPENAI_API_KEY = getattr(settings, 'OPENAI_API_KEY', '')
+OPENAI_API_BASE = getattr(settings, 'OPENAI_API_BASE', 'https://api.groq.com/openai/v1')
+LLM_MODEL = getattr(settings, 'LLM_MODEL', 'llama-3.3-70b-versatile')
 
-# Configurações defensivas com fallback
-OLLAMA_BASE_URL = getattr(settings, 'OLLAMA_BASE_URL', OLLAMA_HOST)
-OLLAMA_MODEL_TEXT = getattr(settings, 'OLLAMA_MODEL_TEXT', 'deepseek') or 'deepseek'
-OLLAMA_MODEL_EMBED = getattr(settings, 'OLLAMA_MODEL_EMBED', 'mxbai-embed-large') or 'mxbai-embed-large'
-OLLAMA_TIMEOUT_GENERATE = getattr(settings, 'OLLAMA_TIMEOUT_GENERATE', (5, 300))  # (connect, read) 5 min
-OLLAMA_TIMEOUT_EMBED = getattr(settings, 'OLLAMA_TIMEOUT_EMBED', 120)  # 2 min para vetores
-OLLAMA_TIMEOUT = getattr(settings, 'OLLAMA_TIMEOUT', 300)  # fallback 5 min
+# Embeddings (kernel local compatível OpenAI)
+AI_KERNEL_URL = getattr(settings, 'AI_KERNEL_URL', 'http://192.168.10.50:8004/v1')
+AI_KERNEL_EMBEDDING_MODEL = getattr(settings, 'AI_KERNEL_EMBEDDING_MODEL', 'mxbai-embed-large')
+
+# Cliente OpenAI genérico (apontando para Groq ou outro compatível)
+llm_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE) if OPENAI_API_KEY else None
 
 """
-Serviço de Inteligência Artificial local (Ollama) para atendimentos.
-- Resumo executivo via DeepSeek/Llama
-- Embeddings via mxbai-embed-large
+Serviço de Inteligência Artificial híbrido para atendimentos.
+- Resumo executivo via API compatível OpenAI (ex.: Groq)
+- Embeddings via kernel local (AI_KERNEL_URL) - padrão OpenAI /embeddings
 - Busca semântica com similaridade de cosseno
 """
-
-def _ollama_url(path: str) -> str:
-    """Monta URL do Ollama evitando barras duplas."""
-    base = (OLLAMA_BASE_URL or '').rstrip('/')
-    return urljoin(f"{base}/", path.lstrip('/'))
 
 
 MAX_CHARS_EMBED = 6000
@@ -53,41 +49,26 @@ def _truncar_texto_para_embedding(text: str, max_chars: int = MAX_CHARS_EMBED) -
 
 def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
     """
-    Gera o embedding (vetor) usando o endpoint /api/embed do Ollama.
-    Usa 'input' em vez de 'prompt' (padrão novo do Ollama).
+    Gera o embedding (vetor) usando o kernel local compatível OpenAI (/embeddings).
     """
     if not text:
         return None
 
-    # Garante que a URL esteja correta baseada no OLLAMA_HOST definido no settings
-    url = f"{OLLAMA_HOST.rstrip('/')}/api/embed"
-    
-    # Payload correto para models mxbai/nomic no endpoint /api/embed
+    url = f"{AI_KERNEL_URL.rstrip('/')}/embeddings"
     payload = {
-        "model": "mxbai-embed-large",  # Nome exato do modelo
-        "input": text,                 # <--- IMPORTANTE: 'input', não 'prompt'
-        "stream": False
+        "model": AI_KERNEL_EMBEDDING_MODEL,
+        "input": text,
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT_EMBED)
+        resp = requests.post(url, json=payload, timeout=120)
         resp.raise_for_status()
-        
         data = resp.json()
-        
-        # O retorno do endpoint embed é uma lista de embeddings. Pegamos o primeiro.
-        if "embeddings" in data and len(data["embeddings"]) > 0:
-            return data["embeddings"][0]
-        
-        # Fallback para o formato antigo (caso esteja usando versão legada)
-        if "embedding" in data:
-            return data["embedding"]
-            
-        print(f"[IA EMBED ERROR] Formato de resposta desconhecido: {data.keys()}")
+        if "data" in data and len(data["data"]) > 0:
+            return data["data"][0]["embedding"]
         return None
-
     except Exception as e:
-        print(f"[IA EMBED ERROR] Falha ao gerar vetor: {e}")
+        logger.warning("[IA EMBED] Falha ao gerar vetor: %s", e)
         return None
 
 
@@ -155,51 +136,28 @@ def _parsear_resumo_json(raw: str) -> Optional[Dict[str, str]]:
     return None
 
 
-def _chamar_ollama_generate(
-    prompt: str,
-    system: Optional[str] = None,
-    timeout: Optional[Tuple[int, int]] = None,
-) -> Optional[str]:
-    """
-    Chama o endpoint /api/generate do Ollama para gerar texto.
-    Retorna o texto gerado ou None em caso de erro.
-    """
-    url = _ollama_url('/api/generate')
-    tout = timeout or OLLAMA_TIMEOUT_GENERATE
-    if isinstance(tout, (tuple, list)) and len(tout) >= 2:
-        connect_timeout, read_timeout = tout[0], tout[1]
-    else:
-        connect_timeout = read_timeout = tout if isinstance(tout, (int, float)) else 60
+def _chamar_llm_generate(prompt: str, system: Optional[str] = None) -> Optional[str]:
+    """Chama a API (Groq/OpenAI) para geração de texto."""
+    if not llm_client:
+        logger.error("Cliente LLM não configurado.")
+        return None
 
-    payload = {
-        "model": OLLAMA_MODEL_TEXT,
-        "prompt": prompt,
-        "stream": False,
-    }
+    messages = []
     if system:
-        payload["system"] = system
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
 
     try:
-        resp = requests.post(
-            url,
-            json=payload,
-            timeout=(connect_timeout, read_timeout),
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=1024,
+            response_format={"type": "json_object"},
         )
-        resp.raise_for_status()
-        data = resp.json()
-        raw = data.get("response")
-        if raw is None:
-            return ""
-        if isinstance(raw, list):
-            raw = "".join(str(x) for x in raw) if raw else ""
-        elif not isinstance(raw, str):
-            raw = str(raw)
-        return (raw or "").strip()
-    except requests.exceptions.Timeout as e:
-        logger.error(f"Ollama generate: timeout - {e}")
-        return None
+        return response.choices[0].message.content
     except Exception as e:
-        logger.exception(f"Ollama generate: erro - {e}")
+        logger.exception("Erro no LLM: %s", e)
         return None
 
 
@@ -216,7 +174,7 @@ def _texto_despatches(tramitacoes) -> str:
 
 def gerar_resumo_atendimento(atendimento) -> Optional[str]:
     """
-    Gera resumo executivo do atendimento via DeepSeek.
+    Gera resumo executivo do atendimento via LLM (API compatível OpenAI).
     Retorna o texto do resumo formatado ou None em caso de erro.
     """
     from ..models import Tramitacao
@@ -259,7 +217,7 @@ JSON:"""
 
     resultado_raw = None
     try:
-        resultado_raw = _chamar_ollama_generate(prompt, system=system_prompt)
+        resultado_raw = _chamar_llm_generate(prompt, system=system_prompt)
     except Exception as e:
         logger.exception("gerar_resumo_atendimento: erro inesperado - %s", e)
         return None
