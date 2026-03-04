@@ -49,26 +49,43 @@ def _truncar_texto_para_embedding(text: str, max_chars: int = MAX_CHARS_EMBED) -
 
 def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
     """
-    Gera o embedding (vetor) usando o kernel local compatível OpenAI (/embeddings).
+    Gera o embedding (vetor) usando o endpoint nativo /api/embed do kernel local.
+    Removemos qualquer sufixo '/v1' da URL para garantir que bata na raiz do Ollama.
     """
     if not text:
         return None
 
-    url = f"{AI_KERNEL_URL.rstrip('/')}/embeddings"
+    # Limpa a URL base (remove o /v1 se houver) para acessar a API nativa
+    base_url = AI_KERNEL_URL.replace('/v1', '').rstrip('/')
+    url = f"{base_url}/api/embed"
+
     payload = {
         "model": AI_KERNEL_EMBEDDING_MODEL,
-        "input": [text],
+        "input": text,
+        "stream": False
     }
 
     try:
         resp = requests.post(url, json=payload, timeout=120)
         resp.raise_for_status()
+
         data = resp.json()
-        if "data" in data and len(data["data"]) > 0:
-            return data["data"][0]["embedding"]
+
+        # Padrão novo do Ollama
+        if "embeddings" in data and len(data["embeddings"]) > 0:
+            return data["embeddings"][0]
+
+        # Fallback padrão legado
+        if "embedding" in data:
+            return data["embedding"]
+
         return None
+
     except Exception as e:
-        logger.warning("[IA EMBED] Falha ao gerar vetor: %s", e)
+        print(f"[IA EMBED ERROR] Falha ao gerar vetor: {e}")
+        # Se falhar novamente, vai imprimir exatamente qual foi a reclamação do servidor
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[IA EMBED ERROR DETALHES] {e.response.text}")
         return None
 
 
