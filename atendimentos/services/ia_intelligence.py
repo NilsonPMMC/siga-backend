@@ -20,8 +20,14 @@ LLM_MODEL = getattr(settings, 'LLM_MODEL', 'llama-3.3-70b-versatile')
 AI_KERNEL_URL = getattr(settings, 'AI_KERNEL_URL', 'http://192.168.10.50:8004/v1')
 AI_KERNEL_EMBEDDING_MODEL = getattr(settings, 'AI_KERNEL_EMBEDDING_MODEL', 'mxbai-embed-large')
 
-# Cliente OpenAI genérico (apontando para Groq ou outro compatível)
+# Cliente OpenAI apontando para a nuvem (Groq)
 llm_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE) if OPENAI_API_KEY else None
+
+# Cliente OpenAI apontando para o Kernel Local (Embeddings)
+kernel_client = OpenAI(
+    api_key="sk-local-dummy",  # Maioria dos kernels locais ignora, mas a lib exige
+    base_url=AI_KERNEL_URL
+) if AI_KERNEL_URL else None
 
 """
 Serviço de Inteligência Artificial híbrido para atendimentos.
@@ -48,44 +54,18 @@ def _truncar_texto_para_embedding(text: str, max_chars: int = MAX_CHARS_EMBED) -
 
 
 def _chamar_ollama_embed(text: str) -> Optional[List[float]]:
-    """
-    Gera o embedding (vetor) usando o endpoint nativo /api/embed do kernel local.
-    Removemos qualquer sufixo '/v1' da URL para garantir que bata na raiz do Ollama.
-    """
-    if not text:
+    """Gera o vetor usando a camada de compatibilidade OpenAI do Kernel Local."""
+    if not text or not kernel_client:
         return None
-
-    # Limpa a URL base (remove o /v1 se houver) para acessar a API nativa
-    base_url = AI_KERNEL_URL.replace('/v1', '').rstrip('/')
-    url = f"{base_url}/api/embed"
-
-    payload = {
-        "model": AI_KERNEL_EMBEDDING_MODEL,
-        "input": text,
-        "stream": False
-    }
 
     try:
-        resp = requests.post(url, json=payload, timeout=120)
-        resp.raise_for_status()
-
-        data = resp.json()
-
-        # Padrão novo do Ollama
-        if "embeddings" in data and len(data["embeddings"]) > 0:
-            return data["embeddings"][0]
-
-        # Fallback padrão legado
-        if "embedding" in data:
-            return data["embedding"]
-
-        return None
-
+        response = kernel_client.embeddings.create(
+            model=AI_KERNEL_EMBEDDING_MODEL,
+            input=text
+        )
+        return response.data[0].embedding
     except Exception as e:
-        print(f"[IA EMBED ERROR] Falha ao gerar vetor: {e}")
-        # Se falhar novamente, vai imprimir exatamente qual foi a reclamação do servidor
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"[IA EMBED ERROR DETALHES] {e.response.text}")
+        print(f"[IA EMBED ERROR] Falha ao gerar vetor via Kernel Local: {e}")
         return None
 
 
