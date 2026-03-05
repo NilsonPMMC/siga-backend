@@ -616,14 +616,50 @@ def buscar_atendimentos_semantico_otimizado(
     top_k: int = 10,
     threshold: float = 0.55,
 ) -> List[Dict[str, Any]]:
-    """Versão otimizada com NumPy para busca vetorial."""
+    """Versão otimizada com NumPy para busca vetorial, turbinada com LLM Query Expansion e Prefixo Mxbai."""
     from ..models import Atendimento
+    import json
 
     query = (query or "").strip()
     if not query:
         return []
 
-    query_vec = _chamar_ollama_embed(query)
+    # 1. QUERY EXPANSION VIA LLM (Groq) com JSON obrigatório
+    system_prompt = (
+        "Você é um especialista em busca semântica para gestão de gabinetes e serviços públicos. "
+        "Sua tarefa é expandir a busca com sinônimos técnicos e populares (ex: 'buraco' -> 'tapa buraco, asfalto, recapeamento, cratera, pavimentação'), "
+        "mantendo nomes de bairros, ruas ou pessoas intactos. "
+        "Responda ESTRITAMENTE com um JSON válido contendo a chave 'termos' com a string final expandida."
+    )
+
+    prompt_expansao = f"Expanda esta busca:\n{query}\n\nJSON:"
+
+    query_expandida = query  # fallback imediato
+    resultado_raw = _chamar_llm_generate(prompt_expansao, system=system_prompt)
+
+    if resultado_raw:
+        try:
+            obj = json.loads(resultado_raw)
+            termos = obj.get("termos", "").strip()
+            if termos and len(termos) > 3:
+                query_expandida = termos
+                logger.info(
+                    "[IA SEARCH ATENDIMENTO] Query: '%s' | Expandida: '%s'",
+                    query,
+                    query_expandida,
+                )
+        except Exception as e:
+            logger.error(
+                f"[IA SEARCH ERROR] Falha ao parsear JSON de expansão (Atendimentos): {e}"
+            )
+
+    # 2. APLICA O PREFIXO OBRIGATÓRIO DO MXBAI PARA BUSCAS
+    query_formatada_para_vetor = (
+        f"Represent this sentence for searching relevant passages: {query_expandida}"
+    )
+
+    # 3. GERA O VETOR
+    query_vec = _chamar_ollama_embed(query_formatada_para_vetor)
     if query_vec is None:
         return []
 
@@ -632,9 +668,11 @@ def buscar_atendimentos_semantico_otimizado(
     if qv_norm == 0:
         return []
 
+    # Continua com a matemática otimizada já existente
     filtro = dict(vetor_ia_atendimento__isnull=False)
     if conta_id is not None:
         filtro["conta_id"] = conta_id
+
     id_vetores = list(
         Atendimento.objects.filter(**filtro)
         .exclude(vetor_ia_atendimento=[])
@@ -685,12 +723,14 @@ def buscar_atendimentos_semantico_otimizado(
         if len(a.descricao or a.titulo or "") > 200:
             snippet += "..."
 
-        resultados.append({
-            "atendimento": a,
-            "score": round(score, 4),
-            "score_percentual": round(score * 100, 2),
-            "snippet": snippet,
-        })
+        resultados.append(
+            {
+                "atendimento": a,
+                "score": round(score, 4),
+                "score_percentual": round(score * 100, 2),
+                "snippet": snippet,
+            }
+        )
 
     return resultados
 
