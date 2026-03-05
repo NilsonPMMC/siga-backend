@@ -702,40 +702,44 @@ def buscar_municipes_semantico(
 ) -> List[Dict[str, Any]]:
     """Busca semântica de munícipes turbinada com Query Expansion (LLM) e Prefixo Mxbai."""
     from ..models import Municipe
+    import json
 
     query = (query or "").strip()
     if not query:
         return []
 
-    # 1. QUERY EXPANSION VIA LLM (Groq)
-    # Pede para o Llama expandir a busca com sinônimos úteis (ex: liderança -> presidente de bairro, associação)
+    # 1. QUERY EXPANSION VIA LLM (Groq) com JSON obrigatório
     system_prompt = (
-        "Você é um especialista em banco de dados de CRM governamental. "
-        "Sua tarefa é expandir a busca do usuário com sinônimos profissionais para melhorar a busca vetorial. "
-        "Não responda com JSON. Responda APENAS com a nova string de busca expandida. "
-        "Mantenha nomes próprios, bairros e cidades intactos. "
-        "Exemplo: se o usuário digitar 'lideranças jundiapeba', retorne 'liderança, presidente de associação, líder comunitário, representante de bairro, jundiapeba'."
+        "Você é um especialista em busca semântica para CRM governamental. "
+        "Sua tarefa é expandir a busca do usuário com sinônimos de cargos e funções (ex: liderança -> presidente de associação, líder comunitário), mantendo os locais intactos. "
+        "Responda ESTRITAMENTE com um JSON válido contendo a chave 'termos' com a string final expandida."
     )
-    
-    prompt_expansao = f"Expanda esta busca adicionando sinônimos de cargos ou funções, mantendo o local:\nBusca: {query}"
-    
-    query_expandida = _chamar_llm_generate(prompt_expansao, system=system_prompt)
-    
-    # Se o LLM falhar ou não retornar nada, faz fallback para a query original
-    if not query_expandida or len(query_expandida) < 3:
-        query_expandida = query
-    else:
-        # Limpa possível formatação indesejada do LLM
-        query_expandida = query_expandida.replace('\"', '').replace('\n', ' ').strip()
-        logger.info(f"[IA SEARCH] Query original: '{query}' | Expandida: '{query_expandida}'")
 
-    # 2. APLICA O PREFIXO OBRIGATÓRIO DO MXBAI PARA BUSCAS (Queries)
-    # O modelo mxbai-embed-large exige este prefixo exato para vetorizar perguntas/buscas corretamente
+    prompt_expansao = f"Expanda esta busca:\n{query}\n\nJSON:"
+
+    query_expandida = query  # fallback imediato
+    resultado_raw = _chamar_llm_generate(prompt_expansao, system=system_prompt)
+
+    if resultado_raw:
+        try:
+            obj = json.loads(resultado_raw)
+            termos = obj.get("termos", "").strip()
+            if termos and len(termos) > 3:
+                query_expandida = termos
+                logger.info(
+                    "[IA SEARCH] Query original: '%s' | Expandida: '%s'",
+                    query,
+                    query_expandida,
+                )
+        except Exception as e:
+            logger.error(f"[IA SEARCH ERROR] Falha ao parsear JSON de expansão: {e}")
+
+    # 2. APLICA O PREFIXO OBRIGATÓRIO DO MXBAI PARA BUSCAS
     query_formatada_para_vetor = (
         f"Represent this sentence for searching relevant passages: {query_expandida}"
     )
 
-    # 3. GERA O VETOR DA BUSCA EXPANDIDA E FORMATADA
+    # 3. GERA O VETOR
     query_vec = _chamar_ollama_embed(query_formatada_para_vetor)
     if query_vec is None:
         return []
@@ -781,17 +785,23 @@ def buscar_municipes_semantico(
     ids_vencedores = [ids[i] for i in top_indices]
     scores_vencedores = [float(scores[i]) for i in top_indices]
 
-    municipes = Municipe.objects.filter(id__in=ids_vencedores).prefetch_related("perfis").in_bulk()
+    municipes = (
+        Municipe.objects.filter(id__in=ids_vencedores)
+        .prefetch_related("perfis")
+        .in_bulk()
+    )
 
     resultados = []
     for mid, score in zip(ids_vencedores, scores_vencedores):
         m = municipes.get(mid)
         if m is None:
             continue
-        resultados.append({
-            "municipe": m,
-            "score": round(score, 4),
-            "score_percentual": round(score * 100, 2),
-        })
+        resultados.append(
+            {
+                "municipe": m,
+                "score": round(score, 4),
+                "score_percentual": round(score * 100, 2),
+            }
+        )
 
     return resultados
