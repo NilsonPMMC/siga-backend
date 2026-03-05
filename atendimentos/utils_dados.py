@@ -30,6 +30,14 @@ def is_data_dirty(valor: str, tipo: str) -> bool:
         if not digits:
             return True
 
+        # Telefones explicitamente banidos (temporários) considerados inválidos
+        # Ex.: telefone geral do gabinete usado como placeholder em massa
+        telefones_banidos = {
+            "1147985000",  # (11) 4798-5000
+        }
+        if digits in telefones_banidos:
+            return True
+
         # Menos de 3 dígitos distintos (ex.: 00000000, 11111111, 99999999)
         if _count_distinct_digits(digits) < 3:
             return True
