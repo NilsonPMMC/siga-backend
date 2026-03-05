@@ -700,14 +700,41 @@ def buscar_municipes_semantico(
     limite: int = 20,
     threshold: float = 0.5,
 ) -> List[Dict[str, Any]]:
-    """Busca semântica de munícipes (CRM)."""
+    """Busca semântica de munícipes turbinada com Query Expansion (LLM) e Prefixo Mxbai."""
     from ..models import Municipe
 
     query = (query or "").strip()
     if not query:
         return []
 
-    query_vec = _chamar_ollama_embed(query)
+    # 1. QUERY EXPANSION VIA LLM (Groq)
+    # Pede para o Llama expandir a busca com sinônimos úteis (ex: liderança -> presidente de bairro, associação)
+    system_prompt = (
+        "Você é um especialista em banco de dados de CRM governamental. "
+        "Sua tarefa é expandir a busca do usuário com sinônimos profissionais para melhorar a busca vetorial. "
+        "Não responda com JSON. Responda APENAS com a nova string de busca expandida. "
+        "Mantenha nomes próprios, bairros e cidades intactos. "
+        "Exemplo: se o usuário digitar 'lideranças jundiapeba', retorne 'liderança, presidente de associação, líder comunitário, representante de bairro, jundiapeba'."
+    )
+    
+    prompt_expansao = f"Expanda esta busca adicionando sinônimos de cargos ou funções, mantendo o local:\nBusca: {query}"
+    
+    query_expandida = _chamar_llm_generate(prompt_expansao, system=system_prompt)
+    
+    # Se o LLM falhar ou não retornar nada, faz fallback para a query original
+    if not query_expandida or len(query_expandida) < 3:
+        query_expandida = query
+    else:
+        # Limpa possível formatação indesejada do LLM
+        query_expandida = query_expandida.replace('\"', '').replace('\n', ' ').strip()
+        logger.info(f"[IA SEARCH] Query original: '{query}' | Expandida: '{query_expandida}'")
+
+    # 2. APLICA O PREFIXO OBRIGATÓRIO DO MXBAI PARA BUSCAS (Queries)
+    # O modelo mxbai-embed-large exige este prefixo exato para vetorizar perguntas/buscas corretamente
+    query_formatada_para_vetor = f\"Represent this sentence for searching relevant passages: {query_expandida}\"
+
+    # 3. GERA O VETOR DA BUSCA EXPANDIDA E FORMATADA
+    query_vec = _chamar_ollama_embed(query_formatada_para_vetor)
     if query_vec is None:
         return []
 
