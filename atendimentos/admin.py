@@ -18,9 +18,24 @@ from datetime import datetime
 from django import forms
 from django.utils import timezone as tz
 from .models import (
-    Conta, Municipe, PerfilMunicipe, Atendimento, Tramitacao, CategoriaAtendimento, ReservaEspaco,
-    SolicitacaoAgenda, Anexo, LogDeAtividade, PerfilUsuario, Notificacao, CategoriaContato,
-    Espaco, RegistroVisita, Lembrete, TramitacaoAgenda, SinapseSecretaria
+    Conta,
+    Municipe,
+    PerfilMunicipe,
+    Atendimento,
+    Tramitacao,
+    CategoriaAtendimento,
+    ReservaEspaco,
+    SolicitacaoAgenda,
+    Anexo,
+    LogDeAtividade,
+    PerfilUsuario,
+    Notificacao,
+    CategoriaContato,
+    Espaco,
+    RegistroVisita,
+    Lembrete,
+    TramitacaoAgenda,
+    SinapseSecretaria,
 )
 
 
@@ -169,6 +184,52 @@ class ContaAdmin(admin.ModelAdmin):
     )
 
 
+# --- Filtros auxiliares para IA (vetores) ---
+class TemVetorPerfilIAFilter(admin.SimpleListFilter):
+    title = "Vetor IA Perfil"
+    parameter_name = "vetor_ia_perfil"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("sim", "Com vetor IA"),
+            ("nao", "Sem vetor IA"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value == "sim":
+            return queryset.exclude(vetor_ia_perfil__isnull=True).exclude(vetor_ia_perfil=[])
+        if value == "nao":
+            return queryset.filter(
+                models.Q(vetor_ia_perfil__isnull=True) | models.Q(vetor_ia_perfil=[])
+            )
+        return queryset
+
+
+class TemVetorAtendimentoIAFilter(admin.SimpleListFilter):
+    title = "Vetor IA Atendimento"
+    parameter_name = "vetor_ia_atendimento"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("sim", "Com vetor IA"),
+            ("nao", "Sem vetor IA"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value == "sim":
+            return queryset.exclude(vetor_ia_atendimento__isnull=True).exclude(
+                vetor_ia_atendimento=[]
+            )
+        if value == "nao":
+            return queryset.filter(
+                models.Q(vetor_ia_atendimento__isnull=True)
+                | models.Q(vetor_ia_atendimento=[])
+            )
+        return queryset
+
+
 # --- Configuração de Importação/Exportação para Munícipe ---
 class MunicipeResource(resources.ModelResource):
     # --- MAPEAMENTO DOS CAMPOS (categoria está em PerfilMunicipe) ---
@@ -248,31 +309,55 @@ class MunicipeResource(resources.ModelResource):
 @admin.register(Municipe)
 class MunicipeAdmin(ImportExportModelAdmin):
     resource_class = MunicipeResource
-    list_display = ('nome_completo', 'tratamento', 'cpf', 'get_email_principal', 'get_telefone_principal', 'get_categorias', 'listar_contas')
-    search_fields = ('nome_completo', 'cpf', 'emails__email')
-    list_filter = ('perfis__categoria', 'contas')
-    filter_horizontal = ('contas',)
+    list_display = (
+        "nome_completo",
+        "tratamento",
+        "cpf",
+        "get_email_principal",
+        "get_telefone_principal",
+        "get_categorias",
+        "listar_contas",
+        "tem_vetor_ia",
+        "auditoria_ia_data",
+    )
+    search_fields = ("nome_completo", "cpf", "emails__email", "perfil_ia_texto")
+    list_filter = ("perfis__categoria", "contas", TemVetorPerfilIAFilter, "auditoria_ia_data")
+    filter_horizontal = ("contas",)
 
     def get_telefone_principal(self, obj):
         if obj.telefones and len(obj.telefones) > 0:
-            return obj.telefones[0].get('numero')
+            return obj.telefones[0].get("numero")
         return "N/A"
-    get_telefone_principal.short_description = 'Telefone'
+
+    get_telefone_principal.short_description = "Telefone"
 
     def get_email_principal(self, obj):
         if obj.emails and len(obj.emails) > 0:
-            return obj.emails[0].get('email')
+            return obj.emails[0].get("email")
         return "N/A"
-    get_email_principal.short_description = 'Email Principal'
+
+    get_email_principal.short_description = "Email Principal"
 
     def get_categorias(self, obj):
-        cats = [p.categoria.nome for p in obj.perfis.select_related('categoria') if p.categoria]
-        return ', '.join(sorted(set(cats))) if cats else '-'
-    get_categorias.short_description = 'Categorias'
+        cats = [
+            p.categoria.nome
+            for p in obj.perfis.select_related("categoria")
+            if p.categoria
+        ]
+        return ", ".join(sorted(set(cats))) if cats else "-"
+
+    get_categorias.short_description = "Categorias"
 
     def listar_contas(self, obj):
         return ", ".join([conta.nome for conta in obj.contas.all()])
-    listar_contas.short_description = 'Contas'
+
+    listar_contas.short_description = "Contas"
+
+    def tem_vetor_ia(self, obj):
+        return bool(obj.vetor_ia_perfil)
+
+    tem_vetor_ia.boolean = True
+    tem_vetor_ia.short_description = "Vetor IA?"
 
 
 @admin.register(PerfilMunicipe)
@@ -287,9 +372,25 @@ class PerfilMunicipeAdmin(admin.ModelAdmin):
 @admin.register(Atendimento)
 class AtendimentoAdmin(admin.ModelAdmin):
     form = AtendimentoAdminForm
-    list_display = ('protocolo', 'titulo', 'municipe', 'conta', 'status', 'data_criacao')
-    list_filter = ('status', 'conta', 'data_criacao', 'categorias')
-    search_fields = ('protocolo', 'titulo', 'municipe__nome_completo')
+    list_display = (
+        "protocolo",
+        "titulo",
+        "municipe",
+        "conta",
+        "status",
+        "auditoria_ia_status",
+        "tem_vetor_ia",
+        "data_criacao",
+    )
+    list_filter = (
+        "status",
+        "conta",
+        "data_criacao",
+        "categorias",
+        "auditoria_ia_status",
+        TemVetorAtendimentoIAFilter,
+    )
+    search_fields = ("protocolo", "titulo", "municipe__nome_completo", "resumo_ia_local")
     filter_horizontal = ('categorias',)
     fieldsets = (
         (None, {
@@ -310,6 +411,12 @@ class AtendimentoAdmin(admin.ModelAdmin):
                 exclude.append(f)
         kwargs['exclude'] = exclude
         return super().get_form(request, obj=obj, **kwargs)
+
+    def tem_vetor_ia(self, obj):
+        return bool(obj.vetor_ia_atendimento)
+
+    tem_vetor_ia.boolean = True
+    tem_vetor_ia.short_description = "Vetor IA?"
     
 @admin.register(Tramitacao)
 class TramitacaoAdmin(admin.ModelAdmin):
