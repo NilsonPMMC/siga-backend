@@ -2,21 +2,23 @@ import os
 import re
 import string
 import secrets
+from datetime import datetime
+
+from django import forms
 from django.conf import settings
-from .utils import enviar_email_com_cid
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
+from django.db import models
 from django.template.loader import render_to_string
+from django.utils import timezone as tz
 from django.utils.crypto import get_random_string
 from import_export import resources
+from import_export.admin import ImportExportModelAdmin
 from import_export.fields import Field
 from import_export.widgets import ForeignKeyWidget, ManyToManyWidget
-from import_export.admin import ImportExportModelAdmin
-from datetime import datetime
-from django import forms
-from django.utils import timezone as tz
+from .utils import enviar_email_com_cid
 from .models import (
     Conta,
     Municipe,
@@ -391,17 +393,50 @@ class AtendimentoAdmin(admin.ModelAdmin):
         TemVetorAtendimentoIAFilter,
     )
     search_fields = ("protocolo", "titulo", "municipe__nome_completo", "resumo_ia_local")
-    filter_horizontal = ('categorias',)
+    filter_horizontal = ("categorias",)
     fieldsets = (
-        (None, {
-            'fields': ('protocolo', 'titulo', 'descricao', 'status', 'conta', 'municipe', 'responsavel', 'created_by', 'categorias')
-        }),
-        ('Datas (ajuste de registro)', {
-            'fields': ('data_criacao', 'data_atualizacao'),
-            'description': 'Use "Data de Criação" para corrigir a data de registro quando o atendimento foi inserido com data incorreta (ex.: dados retroativos).',
-        }),
+        (
+            None,
+            {
+                "fields": (
+                    "protocolo",
+                    "titulo",
+                    "descricao",
+                    "status",
+                    "conta",
+                    "municipe",
+                    "responsavel",
+                    "created_by",
+                    "categorias",
+                )
+            },
+        ),
+        (
+            "Datas (ajuste de registro)",
+            {
+                "fields": ("data_criacao", "data_atualizacao"),
+                "description": 'Use "Data de Criação" para corrigir a data de registro quando o atendimento foi inserido com data incorreta (ex.: dados retroativos).',
+            },
+        ),
+        (
+            "Inteligência Artificial",
+            {
+                "fields": (
+                    "auditoria_ia_status",
+                    "resumo_ia_local",
+                    "vetor_ia_atendimento",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
     )
-    readonly_fields = ('protocolo', 'data_atualizacao')
+    readonly_fields = (
+        "protocolo",
+        "data_atualizacao",
+        "auditoria_ia_status",
+        "resumo_ia_local",
+        "vetor_ia_atendimento",
+    )
 
     def get_form(self, request, obj=None, **kwargs):
         """Excluir do model form os campos não editáveis; data_criacao vem do form explícito; protocolo/data_atualizacao em readonly."""
