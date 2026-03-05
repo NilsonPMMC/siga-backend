@@ -731,7 +731,9 @@ def buscar_municipes_semantico(
 
     # 2. APLICA O PREFIXO OBRIGATÓRIO DO MXBAI PARA BUSCAS (Queries)
     # O modelo mxbai-embed-large exige este prefixo exato para vetorizar perguntas/buscas corretamente
-    query_formatada_para_vetor = f\"Represent this sentence for searching relevant passages: {query_expandida}\"
+    query_formatada_para_vetor = (
+        f"Represent this sentence for searching relevant passages: {query_expandida}"
+    )
 
     # 3. GERA O VETOR DA BUSCA EXPANDIDA E FORMATADA
     query_vec = _chamar_ollama_embed(query_formatada_para_vetor)
