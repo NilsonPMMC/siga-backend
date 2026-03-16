@@ -1,3 +1,4 @@
+import os
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from .models import Evento, EventoChecklist, ChecklistItem, EventoChecklistItemStatus
@@ -7,6 +8,11 @@ def criar_checklist_para_novo_evento(sender, instance, created, **kwargs):
     """
     Cria um EventoChecklist e seus itens sempre que um novo Evento é criado.
     """
+    # --- TRAVA DE SEGURANÇA PARA IMPORTAÇÃO ---
+    if os.environ.get('SILENCE_SIGNALS'):
+        return
+    # ------------------------------------------
+
     if created:
         # 1. Cria o objeto principal do checklist vinculado ao evento
         checklist_do_evento = EventoChecklist.objects.create(evento=instance)
