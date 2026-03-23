@@ -74,10 +74,10 @@ class Command(BaseCommand):
         categoria_servidor, _ = CategoriaContato.objects.get_or_create(nome="SERVIDOR(A)")
         categoria_secretario, _ = CategoriaContato.objects.get_or_create(nome="SECRETÁRIO(A) MUNICIPAL")
         gabinete_prefeita, _ = Conta.objects.get_or_create(nome="GABINETE DA PREFEITA")
-        # Conta principal para perfis do RH
-        conta_perfil = gabinete_prefeita
-        # Contas para vínculo M2M (mantém gabinete da prefeita; vice pode ser adicionado se necessário)
-        contas_para_vincular = [gabinete_prefeita]
+        gabinete_vice, _ = Conta.objects.get_or_create(nome="VICE-PREFEITO")
+        # Contas para vínculo M2M e perfis do RH
+        contas_para_vincular = [gabinete_prefeita, gabinete_vice]
+        contas_perfil = [gabinete_prefeita, gabinete_vice]
 
         cont_criados, cont_atualizados, erros = 0, 0, []
         matriculas_rh_encontradas = set()
@@ -172,18 +172,19 @@ class Command(BaseCommand):
 
                     # -----------------------------------------------------------------
                     # PERFIL POR CONTA (PerfilMunicipe) - arquitetura pós-migração 0034
-                    # Sempre vincula o servidor à conta \"GABINETE DA PREFEITA\"
+                    # Vincula/atualiza o servidor em GABINETE DA PREFEITA e VICE-PREFEITO
                     # -----------------------------------------------------------------
-                    PerfilMunicipe.objects.update_or_create(
-                        municipe=municipe,
-                        conta=conta_perfil,
-                        defaults={
-                            'cargo': cargo_servidor,
-                            'instituicao': 'PREFEITURA MUNICIPAL DE MOGI DAS CRUZES',
-                            'categoria': categoria_a_ser_usada,
-                            'ativo': True,
-                        }
-                    )
+                    for conta_perfil in contas_perfil:
+                        PerfilMunicipe.objects.update_or_create(
+                            municipe=municipe,
+                            conta=conta_perfil,
+                            defaults={
+                                'cargo': cargo_servidor,
+                                'instituicao': 'PREFEITURA MUNICIPAL DE MOGI DAS CRUZES',
+                                'categoria': categoria_a_ser_usada,
+                                'ativo': True,
+                            }
+                        )
 
                 except Exception as e:
                     erros.append(f"Erro ao processar matrícula {matricula}: {e}")
@@ -192,7 +193,7 @@ class Command(BaseCommand):
         self.stdout.write('Verificando servidores para desativar...')
         with transaction.atomic():
             servidores_para_desativar = Municipe.objects.filter(
-                perfis__conta=conta_perfil,
+                perfis__conta__in=contas_perfil,
                 perfis__categoria__in=[categoria_servidor, categoria_secretario],
                 ativo=True
             ).exclude(matricula_rh__in=matriculas_rh_encontradas).distinct()
