@@ -148,6 +148,9 @@ class EventoChecklist(UppercaseFieldsMixin, models.Model):
 
 
 class EventoChecklistItemStatus(UppercaseFieldsMixin, models.Model):
+    # Observações são texto livre: não forçar maiúsculas (preserva conteúdo legítimo).
+    UPPERCASE_EXCEPTIONS = ('emails', 'email', 'endereco', 'descricao', 'status', 'observacoes')
+
     evento_checklist = models.ForeignKey(EventoChecklist, on_delete=models.CASCADE, related_name='itens_status')
     item_mestre = models.ForeignKey(ChecklistItem, on_delete=models.PROTECT, verbose_name="Item")
     concluido = models.BooleanField(default=False, verbose_name="Concluído")
@@ -177,6 +180,12 @@ class Comunicacao(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='criado')
     data_criacao = models.DateTimeField(auto_now_add=True)
     data_envio = models.DateTimeField(null=True, blank=True)
+    grupos_inclusao = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Grupos de inclusão (categoria / mailing)",
+        help_text="Histórico de inclusões em lote por categoria ou lista de mailing.",
+    )
 
     def __str__(self):
         return f"{self.titulo} (Evento: {self.evento.nome})"
@@ -240,3 +249,127 @@ class MailingList(UppercaseFieldsMixin, models.Model):
 
     def __str__(self):
         return self.nome
+
+
+class EmailSupressao(models.Model):
+    """
+    Registra e-mails que devem ser bloqueados no envio de comunicações.
+    Permite saneamento do banco sem exclusão de dados.
+    """
+    STATUS_CHOICES = [
+        ('ativo', 'Ativo (Bloqueado)'),
+        ('liberado', 'Liberado'),
+    ]
+    MOTIVO_CHOICES = [
+        ('bounce', 'Bounce (endereço inválido ou inexistente)'),
+        ('invalid_syntax', 'Sintaxe inválida'),
+        ('manual', 'Decisão manual'),
+        ('outro', 'Outro'),
+    ]
+    ORIGEM_CHOICES = [
+        ('log_envio', 'Log de Envio (automático)'),
+        ('usuario', 'Usuário (manual)'),
+        ('import', 'Importação'),
+    ]
+
+    email = models.EmailField(
+        unique=True,
+        db_index=True,
+        help_text="E-mail normalizado (lowercase) que deve ser suprimido."
+    )
+    status = models.CharField(
+        max_length=10,
+        choices=STATUS_CHOICES,
+        default='ativo',
+        db_index=True,
+        help_text="Status da supressão."
+    )
+    motivo = models.CharField(
+        max_length=20,
+        choices=MOTIVO_CHOICES,
+        default='bounce',
+        help_text="Motivo da supressão."
+    )
+    origem = models.CharField(
+        max_length=15,
+        choices=ORIGEM_CHOICES,
+        default='log_envio',
+        help_text="Origem da supressão."
+    )
+    primeira_ocorrencia = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Data da primeira ocorrência/registro."
+    )
+    ultima_ocorrencia = models.DateTimeField(
+        auto_now=True,
+        help_text="Data da última ocorrência/atualização."
+    )
+    ocorrencias = models.PositiveIntegerField(
+        default=1,
+        help_text="Quantidade de ocorrências de erro para este e-mail."
+    )
+    conta = models.ForeignKey(
+        Conta,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='emails_suprimidos',
+        help_text="Conta relacionada (opcional). Se nulo, supressão é global."
+    )
+    observacao = models.TextField(
+        blank=True,
+        default='',
+        help_text="Observações adicionais sobre a supressão."
+    )
+    criado_por = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='supressoes_criadas',
+        help_text="Usuário que criou o registro."
+    )
+    atualizado_por = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='supressoes_atualizadas',
+        help_text="Usuário que atualizou o registro."
+    )
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Supressão de E-mail"
+        verbose_name_plural = "Supressões de E-mails"
+        ordering = ['-ultima_ocorrencia']
+        indexes = [
+            models.Index(fields=['email', 'status']),
+            models.Index(fields=['status', 'motivo']),
+        ]
+
+    def __str__(self):
+        return f"{self.email} ({self.get_status_display()})"
+
+    def incrementar_ocorrencia(self, user=None):
+        """Incrementa contador de ocorrências e atualiza última ocorrência."""
+        self.ocorrencias += 1
+        if user:
+            self.atualizado_por = user
+        self.save(update_fields=['ocorrencias', 'ultima_ocorrencia', 'atualizado_por', 'atualizado_em'])
+    
+    def get_municipes_relacionados(self):
+        """
+        Retorna queryset de Municipes que possuem este e-mail.
+        Busca em todos os e-mails armazenados no JSONField.
+        """
+        from django.db.models import Q
+        email_lower = self.email.lower()
+        
+        # Busca em municipes onde o JSONField emails contém este e-mail
+        municipes = Municipe.objects.filter(
+            Q(emails__icontains=email_lower)
+        ).distinct()
+        
+        return municipes

@@ -116,6 +116,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'import_export',
+    'django_filters',
 ]
 try:
     import pgvector  # noqa: F401
@@ -277,8 +278,36 @@ CORS_ALLOW_CREDENTIALS = True
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    )
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'enrichment_preview': config('ENRICHMENT_PREVIEW_RATE', default='30/hour'),
+        'enrichment_apply': config('ENRICHMENT_APPLY_RATE', default='60/hour'),
+        'checklist_public': config('CHECKLIST_PUBLIC_RATE', default='60/hour'),
+    },
 }
+
+# -----------------------------------------------------------------------------
+# Feature flags - Human-in-the-Loop Enrichment
+# -----------------------------------------------------------------------------
+ENRICHMENT_HITL_ENABLED = config('ENRICHMENT_HITL_ENABLED', default=True, cast=bool)
+ENRICHMENT_ALLOWED_GROUPS = [
+    g.strip() for g in config('ENRICHMENT_ALLOWED_GROUPS', default='').split(',') if g.strip()
+]
+ENRICHMENT_ALLOWED_CONTA_IDS = [
+    int(cid.strip())
+    for cid in config('ENRICHMENT_ALLOWED_CONTA_IDS', default='').split(',')
+    if cid.strip().isdigit()
+]
+
+# -----------------------------------------------------------------------------
+# Atendimentos — classificação por assunto
+# -----------------------------------------------------------------------------
+ATENDIMENTO_ASSUNTO_OBRIGATORIO = config('ATENDIMENTO_ASSUNTO_OBRIGATORIO', default=True, cast=bool)
+ATENDIMENTO_ASSUNTO_IA_POS_CRIACAO = config('ATENDIMENTO_ASSUNTO_IA_POS_CRIACAO', default=True, cast=bool)
+ATENDIMENTO_ASSUNTO_IA_AUTO_APLICAR = config('ATENDIMENTO_ASSUNTO_IA_AUTO_APLICAR', default=False, cast=bool)
+ATENDIMENTO_ASSUNTO_IA_CONFIANCA_MINIMA = config('ATENDIMENTO_ASSUNTO_IA_CONFIANCA_MINIMA', default=0.85, cast=float)
+ATENDIMENTO_VISITA_STATUS_PADRAO = config('ATENDIMENTO_VISITA_STATUS_PADRAO', default='CONCLUIDO')
+ATENDIMENTO_VISITA_TITULO_PREFIX = config('ATENDIMENTO_VISITA_TITULO_PREFIX', default='VISITA')
 
 # --- CONFIGURAÇÃO DE E-MAIL SMTP (MAILGRID - TI) ---
 # Em desenvolvimento, pode usar console backend para ver e-mails no terminal
@@ -372,12 +401,18 @@ SITE_ID = 1  # <-- 2. ADICIONE ESTA LINHA
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 # Onde o Celery armazena os resultados das tarefas.
 CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
+# Fila padrão explícita do SIGA para evitar consumo acidental.
+CELERY_TASK_DEFAULT_QUEUE = config('CELERY_TASK_DEFAULT_QUEUE', default='siga_default')
 # Formato do conteúdo aceito.
 CELERY_ACCEPT_CONTENT = ['json']
 # Serializador das tarefas.
 CELERY_TASK_SERIALIZER = 'json'
 # Serializador dos resultados.
 CELERY_RESULT_SERIALIZER = 'json'
+# Isolamento de descoberta/federação entre workers de projetos distintos.
+CELERY_WORKER_SEND_TASK_EVENTS = config('CELERY_WORKER_SEND_TASK_EVENTS', default=False, cast=bool)
+CELERY_WORKER_DISABLE_GOSSIP = config('CELERY_WORKER_DISABLE_GOSSIP', default=True, cast=bool)
+CELERY_WORKER_DISABLE_MINGLE = config('CELERY_WORKER_DISABLE_MINGLE', default=True, cast=bool)
 
 # --- CONFIGURAÇÕES DA API SINAPSE ---
 SINAPSE_API_BASE_URL = config('SINAPSE_API_BASE_URL', default='https://api.mogidascruzes.sp.gov.br/api')

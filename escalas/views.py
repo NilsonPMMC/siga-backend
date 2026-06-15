@@ -181,6 +181,8 @@ class ServidorLookupView(generics.ListAPIView):
         ).exclude(cargo='').distinct()
 
         if termo:
-            queryset = queryset.filter(nome_completo__icontains=termo)
+            from atendimentos.services.busca_textual import filtrar_queryset_municipe
+
+            queryset = filtrar_queryset_municipe(queryset, termo)
 
         return queryset.order_by('nome_completo')[:20]

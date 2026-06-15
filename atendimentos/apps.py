@@ -6,4 +6,6 @@ class AtendimentosConfig(AppConfig):
     name = 'atendimentos'
 
     def ready(self):
-        import atendimentos.signals
+        import atendimentos.signals  # noqa: F401
+        import atendimentos.signals_crm  # noqa: F401
+        import atendimentos.signals_sla  # noqa: F401

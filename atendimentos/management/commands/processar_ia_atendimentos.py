@@ -6,10 +6,8 @@ e embedding (mxbai-embed-large), marca como PROCESSADO.
 import time
 
 from django.core.management.base import BaseCommand
-from django.db import transaction
-
 from atendimentos.models import Atendimento
-from atendimentos.services.ia_intelligence import gerar_resumo_atendimento, atualizar_vetor_atendimento
+from atendimentos.services.analise_ia_atendimento import processar_analise_ia_atendimento
 
 
 class Command(BaseCommand):
@@ -57,39 +55,24 @@ class Command(BaseCommand):
 
         for i, atendimento in enumerate(atendimentos, start=1):
             self.stdout.write(f'Processando {i}/{total}: {atendimento.protocolo}...', ending=' ')
-            try:
-                with transaction.atomic():
-                    resumo = gerar_resumo_atendimento(atendimento)
-                    if resumo is None:
-                        atendimento.auditoria_ia_status = 'ERRO'
-                        atendimento.save(update_fields=['auditoria_ia_status'])
-                        erros += 1
-                        self.stdout.write(self.style.WARNING('ERRO (resumo não gerado)'))
-                        continue
-
-                    atendimento.resumo_ia_local = resumo
-                    atendimento.save(update_fields=['resumo_ia_local'])
-
-                    if not atualizar_vetor_atendimento(atendimento):
-                        atendimento.auditoria_ia_status = 'ERRO'
-                        atendimento.save(update_fields=['auditoria_ia_status'])
-                        erros += 1
-                        self.stdout.write(self.style.WARNING('ERRO (embedding não gerado)'))
-                        continue
-
-                    atendimento.auditoria_ia_status = 'PROCESSADO'
-                    atendimento.save(update_fields=['auditoria_ia_status'])
-                    ok += 1
-                    self.stdout.write(self.style.SUCCESS('OK'))
-            except Exception as e:
+            resultado = processar_analise_ia_atendimento(
+                atendimento,
+                aplicar_assunto=False,
+                forcar=False,
+            )
+            if resultado['ok'] and not resultado['detalhes']:
+                ok += 1
+                self.stdout.write(self.style.SUCCESS('OK'))
+            elif resultado['ok']:
+                ok += 1
+                self.stdout.write(
+                    self.style.WARNING(f'OK* ({", ".join(resultado["detalhes"])})')
+                )
+            else:
                 erros += 1
-                try:
-                    atendimento.auditoria_ia_status = 'ERRO'
-                    atendimento.save(update_fields=['auditoria_ia_status'])
-                except Exception:
-                    pass
-                self.stdout.write(self.style.ERROR(f'ERRO: {e}'))
-            finally:
-                time.sleep(2)
+                self.stdout.write(
+                    self.style.ERROR(f'ERRO ({", ".join(resultado["detalhes"])})')
+                )
+            time.sleep(2)
 
         self.stdout.write(self.style.SUCCESS(f'\nConcluído: {ok} processados, {erros} erros.'))

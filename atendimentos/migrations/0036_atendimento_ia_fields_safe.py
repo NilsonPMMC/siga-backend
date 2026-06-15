@@ -14,6 +14,11 @@ def column_exists(table, column):
                 """,
                 [table, column],
             )
+        elif connection.vendor == "sqlite":
+            cursor.execute("PRAGMA table_info(%s)" % table)
+            cols = cursor.fetchall()
+            # PRAGMA table_info: cid, name, type, notnull, dflt_value, pk
+            return any((len(c) > 1 and c[1] == column) for c in cols)
         else:
             cursor.execute(
                 """
@@ -39,6 +44,8 @@ def add_missing_columns(apps, schema_editor):
         if not column_exists(table, "vetor_ia_atendimento"):
             if vendor == "mysql":
                 cursor.execute("ALTER TABLE %s ADD COLUMN vetor_ia_atendimento JSON NULL" % qn(table))
+            elif vendor == "sqlite":
+                cursor.execute("ALTER TABLE %s ADD COLUMN vetor_ia_atendimento TEXT NULL" % qn(table))
             else:
                 cursor.execute("ALTER TABLE %s ADD COLUMN vetor_ia_atendimento JSONB NULL" % qn(table))
         if not column_exists(table, "auditoria_ia_status"):

@@ -6,6 +6,10 @@ from .views import (
     AgendaInstitucionalViewSet,
     AgendaConvidadoCheckinView,
     AgendaCompartilhamentoView,
+    # Múltiplas contas Google - Fase 3
+    ContaGoogleCalendarViewSet,
+    GoogleCalendarAuthViewSet,
+    GoogleCalendarEventViewSet,
     AdicionarEventoGoogleView,
     AgendasCompartilhadasListView,
     AlterarStatusAtendimentoView,
@@ -19,8 +23,10 @@ from .views import (
     BuscaSemanticaAtendimentosView,
     BuscarSecretariasSinapseView,
     CategoriaAtendimentoListView,
+    AssuntoAtendimentoListView,
     CategoriaContatoListView,
     CategoriaContatoViewSet,
+    LogDeAtividadeViewSet,
     ContaListView,
     CriarEventoGoogleView,
     CustomPasswordResetView,
@@ -29,6 +35,7 @@ from .views import (
     DashboardVisitasPorDataView,
     DescartarContatoDuplicataView,
     DescartarGrupoDuplicatasView,
+    DuplicatasContadorView,
     EditarExcluirEventoGoogleView,
     EspacoAgendaView,
     EspacoListCreateView,
@@ -38,8 +45,14 @@ from .views import (
     GerarPdfAgendasReportView,
     GerarPdfCheckinsView,
     GerarPdfGoogleAgendaView,
+    GerarPdfEspacosPeriodoView,
     GerarPdfAtendimentoDetailView,
     GerarPdfAtendimentosView,
+    GerarCsvAtendimentosView,
+    RelatorioFiltrosPerfilView,
+    RelatorioSlaAtendimentosView,
+    BiRelatorioSlaView,
+    GerarPdfAniversariantesDoDiaView,
     GerarPdfLembretesView,
     GerarPdfMunicipesReportView,
     GerarRelatorioBiPdfView,
@@ -61,15 +74,22 @@ from .views import (
     RegistroVisitaDetailView,
     RelatorioAtendimentosPorCategoriaView,
     RelatorioAtendimentosPorContaView,
+    RelatorioAtendimentosPorAssuntoView,
     RelatorioAtendimentosPorStatusView,
     RelatorioProdutividadeEquipeView,
     RelatorioTopSolicitantesView,
     RelatorioEvolucaoAtendimentosView,
     RelatorioStatusAtendimentosView,
+    RelatorioBiAtendimentosPorAssuntoView,
+    RelatorioVisitasVolumeView,
+    RelatorioVisitasTopTrendsView,
+    RelatorioVisitasTopAtendentesView,
     RemoverLinkGoogleView,
     ReservaEspacoListCreateView,
     ReservaEspacoDetailView,
     RecarregarResumoAtendimentoView,
+    SugerirAssuntoAtendimentoView,
+    SugerirAssuntoPreviewView,
     RedirecionarAtendimentoView,
     CompartilharAtendimentoView,
     RodarAuditoriaDuplicidadesView,
@@ -81,15 +101,26 @@ from .views import (
     TramitacaoDetailView,
     TramitacaoListCreateView,
     UserListView,
+    UnificarMunicipesPreviewView,
     UnificarMunicipesView,
     VerificarDependenciasMunicipeView,
 )
+from .enrichment_api import ContatoEnrichApplyView, ContatoEnrichPreviewView
 
 router = DefaultRouter()
 router.register(r'agenda-institucional', AgendaInstitucionalViewSet, basename='agenda-institucional')
 router.register(r'agenda-compartilhamentos', AgendaCompartilhamentoView, basename='agenda-compartilhamentos')
 
+# Múltiplas contas Google Calendar - Fase 3
+router.register(r'contas-google', ContaGoogleCalendarViewSet, basename='contas-google')
+router.register(r'google-calendar/auth', GoogleCalendarAuthViewSet, basename='google-calendar-auth')
+router.register(r'google-calendar/events', GoogleCalendarEventViewSet, basename='google-calendar-events')
+router.register(r'logs-crm', LogDeAtividadeViewSet, basename='logs-crm')
+
 urlpatterns = [
+    # --- OAuth Callback Genérico ---
+    path('google-calendar/auth/callback/', GoogleCalendarAuthViewSet.as_view({'get': 'callback_generic'}), name='google-calendar-auth-callback'),
+    
     # --- Autenticação e Senha ---
     path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
@@ -103,6 +134,7 @@ urlpatterns = [
     path('municipes/export/excel/', ExportMunicipesExcelView.as_view(), name='export-municipes-excel'),
     path('municipes/export/pdf/', GerarPdfMunicipesReportView.as_view(), name='export-municipes-pdf'),
     path('municipes/aniversariantes-do-dia/', AniversariantesDoDiaView.as_view(), name='municipes-aniversariantes-dia'),
+    path('municipes/aniversariantes-do-dia/pdf/', GerarPdfAniversariantesDoDiaView.as_view(), name='municipes-aniversariantes-dia-pdf'),
     path('municipes/<int:pk>/', MunicipeDetailView.as_view(), name='municipe-detail'),
     path('municipes/<int:pk>/historico/', MunicipeDetailDataView.as_view(), name='municipe-historico'),
     path('municipes/<int:pk>/dossie-pdf/', GerarDossieMunicipePdfView.as_view(), name='municipe-dossie-pdf'),
@@ -110,25 +142,36 @@ urlpatterns = [
     path('bi/top-solicitantes/', RelatorioTopSolicitantesView.as_view(), name='bi-top-solicitantes'),
     path('bi/evolucao-temporal/', RelatorioEvolucaoAtendimentosView.as_view(), name='bi-evolucao'),
     path('bi/status-distribuicao/', RelatorioStatusAtendimentosView.as_view(), name='bi-status'),
+    path('bi/atendimentos-por-assunto/', RelatorioBiAtendimentosPorAssuntoView.as_view(), name='bi-atendimentos-por-assunto'),
+    path('bi/sla/', BiRelatorioSlaView.as_view(), name='bi-sla'),
+    path('bi/visitas-volume/', RelatorioVisitasVolumeView.as_view(), name='bi-visitas-volume'),
+    path('bi/visitas-top-trends/', RelatorioVisitasTopTrendsView.as_view(), name='bi-visitas-top-trends'),
+    path('bi/visitas-top-atendentes/', RelatorioVisitasTopAtendentesView.as_view(), name='bi-visitas-top-atendentes'),
     path('bi/relatorio-pdf/', GerarRelatorioBiPdfView.as_view(), name='bi-relatorio-pdf'),
     path('municipes/check-duplicates/', MunicipeCheckDuplicatesView.as_view(), name='municipe-check-duplicates'),
     path('municipes/mesclar-duplicatas/', MesclarDuplicatasView.as_view(), name='municipe-mesclar-duplicatas'),
     path('municipes/rodar-auditoria/', RodarAuditoriaDuplicidadesView.as_view(), name='municipe-rodar-auditoria'),
+    path('municipes/duplicatas/contador/', DuplicatasContadorView.as_view(), name='municipe-duplicatas-contador'),
     path('municipes/descartar-grupo/', DescartarGrupoDuplicatasView.as_view(), name='municipe-descartar-grupo'),
     path('municipes/<int:pk>/descartar-duplicata/', DescartarContatoDuplicataView.as_view(), name='municipe-descartar-contato-duplicata'),
     path('municipes/saneamento-dados/', SaneamentoDadosMunicipeView.as_view(), name='municipes-saneamento-dados'),
     path('municipes/atualizar-categoria-lote/', AtualizarCategoriaEmLoteView.as_view(), name='atualizar-categoria-lote'),
+    path('municipes/unificar/preview/', UnificarMunicipesPreviewView.as_view(), name='unificar-municipes-preview'),
     path('municipes/unificar/', UnificarMunicipesView.as_view(), name='unificar-municipes'),
     path('municipes/<int:pk>/verificar-vinculos/', VerificarDependenciasMunicipeView.as_view(), name='verificar-vinculos'),
+    path('contatos/<int:pk>/enrich/', ContatoEnrichPreviewView.as_view(), name='contato-enrich-preview'),
+    path('contatos/<int:pk>/enrich/apply/', ContatoEnrichApplyView.as_view(), name='contato-enrich-apply'),
     
     # --- Atendimentos e sub-recursos (tramitações, anexos) ---
     path('atendimentos/', AtendimentoListCreateView.as_view(), name='atendimento-list-create'),
+    path('atendimentos/sugerir-assunto-preview/', SugerirAssuntoPreviewView.as_view(), name='atendimento-sugerir-assunto-preview'),
     path('atendimentos/busca-ia/', BuscaSemanticaAtendimentosView.as_view(), name='atendimentos-busca-ia'),
     path('atendimentos/<int:pk>/', AtendimentoDetailView.as_view(), name='atendimento-detail'),
     path('atendimentos/<int:pk>/alterar-status/', AlterarStatusAtendimentoView.as_view(), name='atendimento-alterar-status'),
     path('atendimentos/<int:pk>/redirecionar/', RedirecionarAtendimentoView.as_view(), name='atendimento-redirecionar'),
     path('atendimentos/<int:pk>/compartilhar/', CompartilharAtendimentoView.as_view(), name='atendimento-compartilhar'),
     path('atendimentos/<int:pk>/recarregar-resumo-ia/', RecarregarResumoAtendimentoView.as_view(), name='atendimento-recarregar-resumo-ia'),
+    path('atendimentos/<int:pk>/sugerir-assunto/', SugerirAssuntoAtendimentoView.as_view(), name='atendimento-sugerir-assunto'),
     path('atendimentos/<int:pk>/pdf/', GerarPdfAtendimentoDetailView.as_view(), name='atendimento-detalhe-pdf'),
     path('atendimentos/<int:atendimento_pk>/tramitacoes/', TramitacaoListCreateView.as_view(), name='atendimento-tramitacao-list-create'),
     path('atendimentos/<int:atendimento_pk>/anexos/', AnexoListCreateView.as_view(), name='atendimento-anexos-list-create'),
@@ -156,22 +199,30 @@ urlpatterns = [
 
     # --- Relatórios e Dashboards ---
     path('relatorios/atendimentos-por-status/', RelatorioAtendimentosPorStatusView.as_view(), name='relatorio-atendimentos-por-status'),
+    path('relatorios/atendimentos-por-assunto/', RelatorioAtendimentosPorAssuntoView.as_view(), name='relatorio-atendimentos-por-assunto'),
     path('relatorios/atendimentos-por-conta/', RelatorioAtendimentosPorContaView.as_view(), name='relatorio-atendimentos-por-conta'),
     path('relatorios/atendimentos-por-categoria/', RelatorioAtendimentosPorCategoriaView.as_view(), name='relatorio-atendimentos-por-categoria'),
     path('relatorios/atendimentos/pdf/', GerarPdfAtendimentosView.as_view(), name='relatorio-atendimentos-pdf'),
+    path('relatorios/atendimentos/csv/', GerarCsvAtendimentosView.as_view(), name='relatorio-atendimentos-csv'),
+    path('relatorios/filtros-perfil/', RelatorioFiltrosPerfilView.as_view(), name='relatorio-filtros-perfil'),
+    path('relatorios/sla/', RelatorioSlaAtendimentosView.as_view(), name='relatorio-sla-atendimentos'),
     path('relatorios/checkins/pdf/', GerarPdfCheckinsView.as_view(), name='relatorio-checkins-pdf'),
     path('relatorios/agendas/pdf/', GerarPdfAgendasReportView.as_view(), name='relatorio-agendas-pdf'),
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
     path('dashboard/visitas/', DashboardVisitasPorDataView.as_view(), name='dashboard-visitas'),
     path('relatorios/google-agenda/pdf/', GerarPdfGoogleAgendaView.as_view(), name='relatorio-google-agenda-pdf'),
+    path('relatorios/espacos/pdf/', GerarPdfEspacosPeriodoView.as_view(), name='relatorio-espacos-pdf'),
     
 
     # --- Listas Gerais e Utilitários ---
     path('usuarios/', UserListView.as_view(), name='usuario-list'),
     path('contas/', ContaListView.as_view(), name='conta-list'),
     path('categorias/', CategoriaAtendimentoListView.as_view(), name='categoria-list'),
+    path('assuntos-atendimento/', AssuntoAtendimentoListView.as_view(), name='assunto-atendimento-list'),
     path('contatos/categorias/', CategoriaContatoViewSet.as_view({ 'get': 'list', 'post': 'create' }), name='categoriacontato-list-create'),
     path('contatos/categorias/<int:pk>/', CategoriaContatoViewSet.as_view({ 'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy' }), name='categoriacontato-detail'),
+    path('contatos/categorias/relatorio/csv/', CategoriaContatoViewSet.as_view({'get': 'relatorio_csv'}), name='categoriacontato-relatorio-csv'),
+    path('contatos/categorias/relatorio/pdf/', CategoriaContatoViewSet.as_view({'get': 'relatorio_pdf'}), name='categoriacontato-relatorio-pdf'),
     path('notificacoes/', NotificacaoListView.as_view(), name='notificacao-list'),
     path('notificacoes/<int:pk>/marcar-lida/', MarcarNotificacaoComoLidaView.as_view(), name='notificacao-marcar-lida'),
     path('busca/', BuscaGlobalView.as_view(), name='busca-global'),

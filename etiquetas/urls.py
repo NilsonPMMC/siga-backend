@@ -2,7 +2,7 @@
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import EtiquetaTemplateViewSet, GerarEtiquetaAPIView
+from .views import EtiquetaTemplateViewSet, GerarEtiquetaAPIView, ImportarDadosEtiquetaCSVAPIView
 
 # O router cuida de gerar automaticamente as URLs para o ViewSet (list, detail, etc.)
 router = DefaultRouter()
@@ -14,4 +14,5 @@ urlpatterns = [
     
     # URL específica para a nossa ação de gerar as etiquetas
     path('gerar/', GerarEtiquetaAPIView.as_view(), name='gerar-etiqueta'),
+    path('importar-dados-etiqueta-csv/', ImportarDadosEtiquetaCSVAPIView.as_view(), name='importar-dados-etiqueta-csv'),
 ]

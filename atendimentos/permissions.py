@@ -72,7 +72,7 @@ class CanInteractWithAtendimento(BasePermission):
 class CanViewAtendimentoReports(BasePermission):
     """
     Permite acesso aos relatórios de Atendimento.
-    (Membros, Secretárias e Admin)
+    (Membros, Secretárias, Recepção e Admin)
     """
     def has_permission(self, request, view):
         user = request.user
@@ -80,6 +80,7 @@ class CanViewAtendimentoReports(BasePermission):
             user.is_superuser
             or is_in_group(user, 'Membro do Gabinete')
             or is_in_group(user, 'Secretária')
+            or is_in_group(user, 'Recepção')
         )
 
 class CanViewAgendaReports(BasePermission):
@@ -95,14 +96,22 @@ class CanViewAgendaReports(BasePermission):
 
 def _grupos_crud_contatos():
     """Grupos que têm CRUD em contatos por conta compartilhada."""
-    return ['Recepção', 'Membro do Gabinete', 'Secretária']
+    from .services.escopo_operador_crm import GRUPOS_ACESSO_CONTATOS
+    return GRUPOS_ACESSO_CONTATOS
+
+
+def _grupos_contatos_avancado():
+    """Duplicatas, saneamento, unificação — sem Operador CRM."""
+    from .services.escopo_operador_crm import GRUPOS_CONTATOS_AVANCADO
+    return GRUPOS_CONTATOS_AVANCADO
 
 
 class CanAccessContacts(BasePermission):
     """
     Acesso à página/recursos de Contatos (Agenda de Contatos).
-    Superadmin: acesso total. Recepção, Membro do Gabinete e Secretária: acesso
-    aos contatos vinculados a pelo menos uma Conta do perfil do usuário.
+    Superadmin: acesso total. Recepção, Membro, Secretária e Operador CRM: acesso
+    aos contatos vinculados a pelo menos uma Conta do perfil do usuário (Operador CRM
+    também restrito por categorias configuradas no perfil).
     """
     def has_permission(self, request, view):
         user = request.user
@@ -111,20 +120,40 @@ class CanAccessContacts(BasePermission):
         return is_in_group(user, _grupos_crud_contatos())
 
 
-class CanEditMunicipeDetails(BasePermission):
-    """
-    Permissão de edição (CRUD) para um contato específico.
-    Superadmin: sempre. Demais: apenas se compartilhar pelo menos uma Conta com o Munícipe.
-    """
-    def has_object_permission(self, request, view, obj):
+class CanAccessContactsAvancado(BasePermission):
+    """Recursos avançados de contatos (duplicatas, saneamento, unificação)."""
+    def has_permission(self, request, view):
         user = request.user
         if user.is_superuser:
             return True
-        if not hasattr(user, 'perfil') or not is_in_group(user, _grupos_crud_contatos()):
+        return is_in_group(user, _grupos_contatos_avancado())
+
+
+class CanManageCategoriasContato(BasePermission):
+    """CRUD de categorias de contato — Operador CRM não pode criar/editar categorias."""
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
             return False
-        user_contas = set(user.perfil.contas.all())
-        municipe_contas = set(obj.contas.all())
-        return not user_contas.isdisjoint(municipe_contas)
+        if request.method in SAFE_METHODS:
+            return True
+        if user.is_superuser:
+            return True
+        from .services.escopo_operador_crm import is_operador_crm
+        if is_operador_crm(user):
+            return False
+        return is_in_group(user, _grupos_contatos_avancado())
+
+
+class CanEditMunicipeDetails(BasePermission):
+    """
+    Permissão de edição (CRUD) para um contato específico.
+    Superadmin: sempre. Demais: conta compartilhada; Operador CRM exige perfil ativo
+    em categoria permitida.
+    """
+    def has_object_permission(self, request, view, obj):
+        from .services.escopo_operador_crm import usuario_pode_editar_municipe
+        return usuario_pode_editar_municipe(request.user, obj)
 
 class CanManageCheckIn(BasePermission):
     """
@@ -215,4 +244,13 @@ class CanManageLembretes(BasePermission):
     """
     def has_permission(self, request, view):
         user = request.user
+        return user.is_superuser or is_in_group(user, 'Secretária')
+
+
+class CanViewCrmLogs(BasePermission):
+    """Consulta de logs de auditoria do CRM — gestores (Secretária) e superusuários."""
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
         return user.is_superuser or is_in_group(user, 'Secretária')

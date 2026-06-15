@@ -1,0 +1,29 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block content %}
+  <h1>{{ titulo }}</h1>
+  <p>Contas selecionadas:</p>
+  <ul>
+    {% for item in queryset %}
+      <li>{{ item.conta.nome }} (ID {{ item.conta.id }})</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="{{ action_name }}">
+    {% for obj_id in selected_ids %}
+      <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj_id }}">
+    {% endfor %}
+
+    <fieldset class="module aligned">
+      {{ form.as_p }}
+    </fieldset>
+
+    <div class="submit-row">
+      <input type="submit" name="apply" value="Executar" class="default">
+      <a href="{% url cancel_url %}" class="button cancel-link">Cancelar</a>
+    </div>
+  </form>
+{% endblock %}

@@ -16,6 +16,7 @@ router.register(r'checklists', views.EventoChecklistViewSet, basename='eventoche
 router.register(r'checklist-items', views.EventoChecklistItemStatusViewSet, basename='eventochecklistitem')
 router.register(r'master-checklist-items', views.ChecklistItemViewSet, basename='masterchecklistitem')
 router.register(r'mailing-lists', views.MailingListViewSet, basename='mailinglist')
+router.register(r'email-supressoes', views.EmailSupressaoViewSet, basename='emailsupressao')
 
 public_urls = [
     path('public/presenca/<int:evento_id>/', views.registrar_presenca, name='registrar_presenca'),

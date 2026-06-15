@@ -1,5 +1,8 @@
 import os
+import re
+import csv
 import base64
+from urllib.parse import quote
 import openpyxl
 import calendar
 import operator
@@ -7,6 +10,7 @@ import traceback
 import logging
 import uuid
 import threading
+import unicodedata
 
 # Imports de bibliotecas padrão
 from datetime import datetime, time, timedelta
@@ -54,22 +58,29 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.pagination import PageNumberPagination
+
+from .pagination import SIGAListPagination
 from rest_framework.generics import ListAPIView
 from rest_framework.decorators import action
 
 # Imports locais (do seu projeto)
 from .utils import enviar_email_com_cid
+from .report_calendar_utils import build_meses_do_relatorio
 from oficios.models import Oficio
 
 # Configurar logger
 logger = logging.getLogger(__name__)
 from .models import *
 from .utils_dados import is_data_dirty
-from .permissions import (CanAccessContacts, CanAccessObjectByConta, CanViewSharedAgenda, CanAccessEspaco,
+from .permissions import (CanAccessContacts, CanAccessContactsAvancado, CanManageCategoriasContato,
+                          CanAccessObjectByConta, CanViewSharedAgenda, CanAccessEspaco,
                           CanInteractWithAtendimento, CanManageAgendas, CanCreateGoogleEvent, CanManageReservas,
                           CanViewAgendaReports, CanViewAtendimentoReports, CanEditMunicipeDetails, CanManageCheckIn,
-                          CanCreateCheckIn, CanManageLembretes, is_in_group)
+                          CanCreateCheckIn, CanManageLembretes, CanViewCrmLogs, is_in_group)
 from .serializers import *
+from .services import GoogleCalendarCompatibilityService, GoogleCalendarAuthError, GoogleCalendarPermissionError
+from .services.log_crm import suppress_crm_logs, registrar_log_mesclagem_municipes
+from .services.unificar_municipes import preview_unificacao_municipes
 
 
 # -----------------------------------------------------------------------------
@@ -79,11 +90,12 @@ from .serializers import *
 class AtendimentoListCreateView(generics.ListCreateAPIView):
     serializer_class = AtendimentoSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = SIGAListPagination
 
     def get_queryset(self):
         user = self.request.user
         queryset = Atendimento.objects.select_related(
-            'municipe', 'conta', 'responsavel'
+            'municipe', 'conta', 'responsavel', 'assunto'
         ).prefetch_related('responsaveis_compartilhados')
 
         # REGRA 1: Superusuário vê tudo.
@@ -105,15 +117,11 @@ class AtendimentoListCreateView(generics.ListCreateAPIView):
             # REGRA 4: Se nenhuma das anteriores se aplicar, não mostra nada.
             return Atendimento.objects.none()
 
-        # Aplicar filtro de busca textual (se fornecido)
         termo_busca = self.request.query_params.get('q', None)
         if termo_busca:
-            queryset = queryset.filter(
-                Q(protocolo__icontains=termo_busca) |
-                Q(titulo__icontains=termo_busca) |
-                Q(municipe__nome_completo__icontains=termo_busca) |
-                Q(municipe__nome_de_guerra__icontains=termo_busca)
-            )
+            from .services.busca_textual import filtrar_queryset_atendimento
+
+            queryset = filtrar_queryset_atendimento(queryset, termo_busca)
 
         # Aplicar filtro de status (se fornecido)
         status = self.request.query_params.get('status', None)
@@ -125,6 +133,28 @@ class AtendimentoListCreateView(generics.ListCreateAPIView):
         if conta_id:
             queryset = queryset.filter(conta_id=conta_id)
 
+        assunto_id = self.request.query_params.get('assunto_id', None)
+        if assunto_id:
+            queryset = queryset.filter(assunto_id=assunto_id)
+
+        assunto_codigo = self.request.query_params.get('assunto_codigo', None)
+        if assunto_codigo:
+            queryset = queryset.filter(assunto__codigo=assunto_codigo)
+
+        sla_status = self.request.query_params.get('sla_status', None)
+        if sla_status:
+            from .services.sla_atendimento import filtrar_queryset_por_sla
+            queryset = filtrar_queryset_por_sla(queryset, sla_status)
+
+        ordering = self.request.query_params.get('ordering', '-data_criacao')
+        campos_ordenacao = {
+            'protocolo', '-protocolo',
+            'data_criacao', '-data_criacao',
+            'status', '-status',
+            'titulo', '-titulo',
+        }
+        if ordering in campos_ordenacao:
+            return queryset.order_by(ordering)
         return queryset.order_by('-data_criacao')
 
     def perform_create(self, serializer):
@@ -137,8 +167,65 @@ class AtendimentoDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return Atendimento.objects.select_related(
-            'municipe', 'conta', 'responsavel'
-        ).prefetch_related('responsaveis_compartilhados', 'tramitacoes__usuario', 'categorias', 'anexos')
+            'municipe', 'conta', 'responsavel', 'assunto', 'assunto_ia_sugerido'
+        ).prefetch_related('responsaveis_compartilhados', 'tramitacoes__usuario', 'anexos')
+
+
+class SugerirAssuntoAtendimentoView(APIView):
+    """Sugere (e opcionalmente aplica) o assunto de um atendimento via LLM."""
+    permission_classes = [permissions.IsAuthenticated, CanInteractWithAtendimento]
+
+    def post(self, request, pk):
+        atendimento = get_object_or_404(Atendimento, pk=pk)
+        self.check_object_permissions(request, atendimento)
+        aplicar = (request.query_params.get('aplicar') or '').lower() in ('1', 'true', 'sim')
+        from .services.assunto_ia import sugerir_assunto_atendimento
+
+        resultado = sugerir_assunto_atendimento(atendimento, aplicar=aplicar)
+        if not resultado.get('ok'):
+            return Response(resultado, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        atendimento.refresh_from_db()
+        data = AtendimentoSerializer(atendimento, context={'request': request}).data
+        data['sugestao_ia'] = resultado
+        return Response(data)
+
+
+class SugerirAssuntoPreviewView(APIView):
+    """Sugestão de assunto a partir de título/descrição (antes de salvar o atendimento)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        titulo = (request.data.get('titulo') or '').strip()
+        descricao = (request.data.get('descricao') or '').strip()
+        if not titulo and not descricao:
+            return Response(
+                {'detail': 'Informe título ou descrição para a sugestão.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        origem = (request.data.get('origem') or 'PRESENCIAL').strip()
+        municipe_id = request.data.get('municipe')
+        conta_id = request.data.get('conta')
+        try:
+            municipe_id = int(municipe_id) if municipe_id is not None else None
+        except (TypeError, ValueError):
+            municipe_id = None
+        try:
+            conta_id = int(conta_id) if conta_id is not None else None
+        except (TypeError, ValueError):
+            conta_id = None
+
+        from .services.assunto_ia import sugerir_assunto_preview
+
+        resultado = sugerir_assunto_preview(
+            titulo=titulo,
+            descricao=descricao,
+            origem=origem,
+            municipe_id=municipe_id,
+            conta_id=conta_id,
+        )
+        if not resultado.get('ok'):
+            return Response(resultado, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response(resultado)
 
 
 class RecarregarResumoAtendimentoView(APIView):
@@ -307,19 +394,44 @@ class RegistroVisitaListCreateView(generics.ListCreateAPIView):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        registro = serializer.save(registrado_por=self.request.user)
-        nome_municipe = registro.municipe.nome_completo
+        from .services.visita_atendimento import registrar_visita_como_atendimento
+
+        data = serializer.validated_data
+        atendimento, registro = registrar_visita_como_atendimento(
+            municipe=data['municipe'],
+            conta_destino=data['conta_destino'],
+            usuario_destino=data.get('usuario_destino'),
+            observacao=data.get('observacao'),
+            registrado_por=self.request.user,
+            manter_registro_legado=True,
+        )
+        if registro is None:
+            registro = serializer.save(registrado_por=self.request.user)
+
+        nome_municipe = atendimento.municipe.nome_completo
         mensagem = f"O Munícipe {nome_municipe} acabou de chegar para uma visita/reunião."
-        link = f"/contatos/{registro.municipe_id}"
+        link = f"/atendimentos/{atendimento.id}"
         usuarios_notificar = []
-        if registro.usuario_destino_id:
-            usuarios_notificar = [registro.usuario_destino]
+        if atendimento.responsavel_id:
+            usuarios_notificar = [atendimento.responsavel]
         else:
             usuarios_notificar = list(
-                User.objects.filter(perfil__contas=registro.conta_destino).distinct()
+                User.objects.filter(perfil__contas=atendimento.conta).distinct()
             )
         for usuario in usuarios_notificar:
             Notificacao.objects.create(usuario=usuario, mensagem=mensagem, link=link)
+
+        self._registro_criado = registro
+        self._atendimento_criado = atendimento
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        registro = getattr(self, '_registro_criado', None)
+        output = RegistroVisitaSerializer(registro, context={'request': request})
+        headers = self.get_success_headers(output.data)
+        return Response(output.data, status=status.HTTP_201_CREATED, headers=headers)
 
 class RegistroVisitaDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
@@ -449,87 +561,283 @@ class ContaListView(generics.ListAPIView):
 
 
 class CategoriaAtendimentoListView(generics.ListAPIView):
+    """Deprecated (Fase 8): use GET /api/assuntos-atendimento/."""
     permission_classes = [permissions.IsAuthenticated]
-    queryset = CategoriaAtendimento.objects.filter(ativa=True)
+    queryset = CategoriaAtendimento.objects.none()
     serializer_class = CategoriaAtendimentoSerializer
 
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        response['Deprecation'] = 'true'
+        response['Link'] = '</api/assuntos-atendimento/>; rel="successor-version"'
+        return response
+
+
+class AssuntoAtendimentoListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = AssuntoAtendimento.objects.filter(ativo=True)
+    serializer_class = AssuntoAtendimentoSerializer
+
+
 class CategoriaContatoListView(generics.ListAPIView):
-    queryset = CategoriaContato.objects.filter(ativa=True)
     serializer_class = CategoriaContatoSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        from .services.escopo_operador_crm import categorias_escopo_usuario
+
+        qs = CategoriaContato.objects.filter(ativa=True)
+        escopo = categorias_escopo_usuario(self.request.user)
+        if escopo is not None:
+            return qs.filter(id__in=escopo)
+        return qs
 
 class CategoriaContatoViewSet(viewsets.ModelViewSet):
     """
     ViewSet para gerenciar (CRUD) as Categorias de Contato.
+    Operador CRM: somente leitura das categorias permitidas no perfil.
     """
     queryset = CategoriaContato.objects.all().order_by('nome')
     serializer_class = CategoriaContatoSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_permissions(self):
+        if self.request.method not in permissions.SAFE_METHODS:
+            return [permissions.IsAuthenticated(), CanManageCategoriasContato()]
+        return [permissions.IsAuthenticated()]
+
+    def get_queryset(self):
+        from .services.escopo_operador_crm import categorias_escopo_usuario
+
+        qs = super().get_queryset()
+        escopo = categorias_escopo_usuario(self.request.user)
+        if escopo is not None:
+            return qs.filter(id__in=escopo, ativa=True)
+        return qs
+
+    def _categorias_resumo_queryset(self, request):
+        categoria_ids = request.query_params.getlist("categoria_id")
+        categorias_qs = CategoriaContato.objects.all().order_by("nome")
+        if categoria_ids:
+            categorias_qs = categorias_qs.filter(id__in=categoria_ids)
+
+        # Alinhado com a visão de categorias da operação: considera perfis ativos,
+        # independentemente do status ativo/inativo do munícipe.
+        perfis_qs = PerfilMunicipe.objects.filter(ativo=True)
+        if not request.user.is_superuser:
+            if hasattr(request.user, "perfil"):
+                perfis_qs = perfis_qs.filter(conta__in=request.user.perfil.contas.all())
+            else:
+                perfis_qs = PerfilMunicipe.objects.none()
+        if categoria_ids:
+            perfis_qs = perfis_qs.filter(categoria_id__in=categoria_ids)
+
+        totals = dict(
+            perfis_qs.values("categoria_id")
+            .annotate(total=Count("municipe_id", distinct=True))
+            .values_list("categoria_id", "total")
+        )
+
+        rows = []
+        for categoria in categorias_qs:
+            rows.append(
+                {
+                    "categoria_id": categoria.id,
+                    "categoria": categoria.nome,
+                    "contatos_total": int(totals.get(categoria.id, 0)),
+                }
+            )
+        return rows
+
+    @action(detail=False, methods=["get"], url_path="relatorio-csv")
+    def relatorio_csv(self, request):
+        rows = self._categorias_resumo_queryset(request)
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response.write("\ufeff")
+        response["Content-Disposition"] = 'attachment; filename="relatorio_categorias_contatos.csv"'
+        writer = csv.writer(response, delimiter=";")
+        writer.writerow(["categoria", "contatos (total)"])
+        for row in rows:
+            writer.writerow([row["categoria"], row["contatos_total"]])
+        return response
+
+    @action(detail=False, methods=["get"], url_path="relatorio-pdf")
+    def relatorio_pdf(self, request):
+        rows = self._categorias_resumo_queryset(request)
+        conta_contexto = None
+        if request.user.is_superuser:
+            conta_contexto = Conta.objects.filter(ativo=True).order_by("id").first()
+        elif hasattr(request.user, "perfil"):
+            conta_contexto = request.user.perfil.contas.order_by("id").first()
+
+        brasao_url = ""
+        if conta_contexto and getattr(conta_contexto, "brasao_instituicao", None):
+            try:
+                if conta_contexto.brasao_instituicao and os.path.exists(conta_contexto.brasao_instituicao.path):
+                    brasao_url = f"file://{os.path.abspath(conta_contexto.brasao_instituicao.path)}"
+                else:
+                    brasao_url = request.build_absolute_uri(conta_contexto.brasao_instituicao.url)
+            except Exception:
+                brasao_url = ""
+
+        logo_siga_url = ""
+        candidatos_logo = [
+            os.path.join(str(settings.STATIC_ROOT), "images", "logo-siga-gab.png"),
+            os.path.join(str(settings.BASE_DIR), "staticfiles", "images", "logo-siga-gab.png"),
+            os.path.join(str(settings.BASE_DIR), "atendimentos", "static", "images", "logo-siga-gab.png"),
+        ]
+        for caminho in candidatos_logo:
+            if caminho and os.path.exists(caminho):
+                logo_siga_url = f"file://{os.path.abspath(caminho)}"
+                break
+        if not logo_siga_url:
+            # fallback robusto para não quebrar o layout se o arquivo de logo não existir no servidor
+            svg = (
+                "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='24'>"
+                "<rect width='100' height='24' rx='4' fill='#1d4ed8'/>"
+                "<text x='50' y='16' text-anchor='middle' font-size='12' fill='white' "
+                "font-family='Arial, sans-serif'>SIGA</text></svg>"
+            )
+            logo_siga_url = f"data:image/svg+xml;utf8,{quote(svg)}"
+
+        context = {
+            "linhas": rows,
+            "total_contatos": sum(r["contatos_total"] for r in rows),
+            "gerado_em": timezone.localtime(),
+            "usuario_emissao": request.user.get_full_name() or request.user.username,
+            "brasao_url": brasao_url,
+            "logo_siga_url": logo_siga_url,
+        }
+        html = render_to_string("relatorios/categorias_contatos_report.html", context)
+        pdf = HTML(string=html, base_url=str(settings.BASE_DIR)).write_pdf()
+        response = HttpResponse(pdf, content_type="application/pdf")
+        response["Content-Disposition"] = 'attachment; filename="relatorio_categorias_contatos.pdf"'
+        return response
+
+
+class LogDeAtividadeViewSet(viewsets.ReadOnlyModelViewSet):
+    """Consulta de logs de auditoria do CRM (Épico 11)."""
+    serializer_class = LogDeAtividadeSerializer
+    permission_classes = [permissions.IsAuthenticated, CanViewCrmLogs]
+    pagination_class = SIGAListPagination
+
+    def get_queryset(self):
+        qs = LogDeAtividade.objects.select_related(
+            'usuario', 'conta', 'content_type'
+        ).order_by('-timestamp')
+
+        acao = self.request.query_params.get('acao')
+        if acao:
+            qs = qs.filter(acao=acao)
+
+        entidade = self.request.query_params.get('entidade')
+        if entidade:
+            qs = qs.filter(content_type__model=entidade.lower())
+
+        conta_id = self.request.query_params.get('conta_id')
+        if conta_id:
+            qs = qs.filter(conta_id=conta_id)
+
+        de = self.request.query_params.get('de')
+        if de:
+            qs = qs.filter(timestamp__date__gte=de)
+
+        ate = self.request.query_params.get('ate')
+        if ate:
+            qs = qs.filter(timestamp__date__lte=ate)
+
+        user = self.request.user
+        if not user.is_superuser and hasattr(user, 'perfil'):
+            contas = user.perfil.contas.all()
+            qs = qs.filter(Q(conta__in=contas) | Q(conta__isnull=True))
+
+        return qs
+
 # -----------------------------------------------------------------------------
 # Views de Munícipe
 # -----------------------------------------------------------------------------
 
+def _categoria_ids_from_request(request):
+    from .services.perfil_municipe import parse_categoria_ids_from_request
+    return parse_categoria_ids_from_request(request)
+
+
 class MunicipeListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated, CanAccessContacts]
     serializer_class = MunicipeSerializer
+    pagination_class = SIGAListPagination
+
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('tem_grupo_duplicado') == 'true':
+            return None
+        return super().paginate_queryset(queryset)
 
     def get_queryset(self):
         user = self.request.user
-        termo_busca = self.request.query_params.get('q', None)
+        termo_busca = self.request.query_params.get('q', None) or self.request.query_params.get('q_sem_acento', None)
         letra_inicial = self.request.query_params.get('letra', None)
         grupo_id = self.request.query_params.get('grupo', None)
         tem_grupo_duplicado = self.request.query_params.get('tem_grupo_duplicado', None)
-        categoria_ids = self.request.query_params.getlist('categoria') or self.request.query_params.getlist('categoria_id')
+        categoria_ids = _categoria_ids_from_request(self.request)
 
         filtro_aplicado = bool(termo_busca or letra_inicial or categoria_ids)
 
         base_queryset = Municipe.objects.prefetch_related('contas', 'perfis', 'perfis__categoria')
 
         if grupo_id:
-            return base_queryset.filter(grupo_duplicado=grupo_id).order_by('nome_completo')
-
-        if tem_grupo_duplicado == 'true':
-            return base_queryset.exclude(grupo_duplicado__isnull=True).order_by('grupo_duplicado', 'nome_completo')
+            base_queryset = base_queryset.filter(grupo_duplicado=grupo_id)
+        elif tem_grupo_duplicado == 'true':
+            base_queryset = base_queryset.exclude(grupo_duplicado__isnull=True)
 
         if user.is_superuser:
             pass
-        elif hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
-            contas_usuario = user.perfil.contas.all()
-            base_queryset = base_queryset.filter(contas__in=contas_usuario).distinct()
+        elif hasattr(user, 'perfil'):
+            from .services.escopo_operador_crm import aplicar_escopo_municipes_queryset
+
+            base_queryset = aplicar_escopo_municipes_queryset(
+                base_queryset, user, categoria_ids_opcional=categoria_ids or None
+            )
         else:
             return Municipe.objects.none()
-        
-        if categoria_ids:
-            base_queryset = base_queryset.filter(perfis__categoria__id__in=categoria_ids).distinct()
+
+        if categoria_ids and user.is_superuser:
+            from .services.perfil_municipe import filtrar_municipes_por_categoria_perfis
+
+            base_queryset = filtrar_municipes_por_categoria_perfis(
+                base_queryset, categoria_ids, None
+            )
+        elif categoria_ids and not hasattr(user, 'perfil'):
+            return Municipe.objects.none()
 
         if termo_busca:
-            query_palavras_nome = Q()
-            for palavra in termo_busca.split():
-                query_palavras_nome &= (Q(nome_completo__icontains=palavra) | Q(nome_de_guerra__icontains=palavra))
+            from .services.busca_textual import filtrar_queryset_municipe
 
-            query_outros_campos = (
-                Q(cpf__icontains=termo_busca) |
-                Q(emails__contains=[{'email': termo_busca}]) |
-                Q(cargo__icontains=termo_busca) |
-                Q(orgao__icontains=termo_busca) |
-                Q(perfis__categoria__nome__icontains=termo_busca) |
-                Q(endereco__icontains=termo_busca) |
-                Q(perfis__cargo__icontains=termo_busca) |
-                Q(perfis__instituicao__icontains=termo_busca)
-            )
-
-            final_query = query_palavras_nome | query_outros_campos
-            
-            base_queryset = base_queryset.filter(final_query).distinct()
+            if tem_grupo_duplicado == 'true':
+                matches = filtrar_queryset_municipe(base_queryset, termo_busca)
+                grupo_ids = (
+                    matches.exclude(grupo_duplicado__isnull=True)
+                    .values_list('grupo_duplicado', flat=True)
+                    .distinct()
+                )
+                base_queryset = (
+                    base_queryset.filter(grupo_duplicado__in=grupo_ids)
+                    if grupo_ids
+                    else base_queryset.none()
+                )
+            else:
+                base_queryset = filtrar_queryset_municipe(base_queryset, termo_busca).distinct()
         
         if letra_inicial:
             base_queryset = base_queryset.filter(nome_completo__istartswith=letra_inicial)
-        
+
+        ordenar_por = self.request.query_params.get('ordenar_por', 'nome')
+        if grupo_id or tem_grupo_duplicado == 'true':
+            return base_queryset.order_by('grupo_duplicado', 'nome_completo')
+        if ordenar_por == 'orgao':
+            return base_queryset.order_by('orgao', 'nome_completo')
         if filtro_aplicado:
             return base_queryset.order_by('nome_completo')
-        else:
-            return base_queryset.order_by('-data_cadastro')[:100]
+        return base_queryset.order_by('-data_cadastro')
 
     # --- O AJUSTE ESTÁ AQUI EMBAIXO ---
     def create(self, request, *args, **kwargs):
@@ -635,11 +943,9 @@ class MunicipeDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         user = self.request.user
         qs = Municipe.objects.prefetch_related('contas', 'perfis', 'perfis__categoria')
-        if user.is_superuser:
-            return qs
-        if hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
-            return qs.filter(contas__in=user.perfil.contas.all()).distinct()
-        return Municipe.objects.none()
+        from .services.escopo_operador_crm import aplicar_escopo_municipes_queryset
+
+        return aplicar_escopo_municipes_queryset(qs, user)
 
 
 class MunicipeDetailDataView(generics.RetrieveAPIView):
@@ -653,11 +959,9 @@ class MunicipeDetailDataView(generics.RetrieveAPIView):
             'visitas', 'visitas__conta_destino', 'visitas__usuario_destino',
             'agendas_participantes', 'agendas_participantes__compromisso', 'agendas_participantes__compromisso__conta'
         )
-        if user.is_superuser:
-            return qs
-        if hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
-            return qs.filter(contas__in=user.perfil.contas.all()).distinct()
-        return Municipe.objects.none()
+        from .services.escopo_operador_crm import aplicar_escopo_municipes_queryset
+
+        return aplicar_escopo_municipes_queryset(qs, user)
 
 
 class MunicipeLookupView(generics.ListAPIView):
@@ -668,13 +972,9 @@ class MunicipeLookupView(generics.ListAPIView):
         user = self.request.user
         queryset = Municipe.objects.all()
 
-        # Filtro de segurança: só contatos vinculados a pelo menos uma conta do perfil
-        if not user.is_superuser:
-            if hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
-                queryset = queryset.filter(contas__in=user.perfil.contas.all()).distinct()
-            else:
-                return Municipe.objects.none()
+        from .services.escopo_operador_crm import aplicar_escopo_municipes_queryset
 
+        queryset = aplicar_escopo_municipes_queryset(queryset, user)
         queryset = queryset.prefetch_related('contas', 'perfis', 'perfis__categoria')
 
         # --- 2. FILTRO PARA EXCLUIR IDS (útil para unificação de municipes) ---
@@ -698,20 +998,16 @@ class MunicipeLookupView(generics.ListAPIView):
         if not termo_busca:
             return queryset.order_by('-data_cadastro')[:20]
 
-        if termo_busca.isdigit():
-            return queryset.filter(id=termo_busca)
+        termo_busca = termo_busca.strip()
+        # ID interno só para termos curtos (evita confundir CPF 11 dígitos com pk)
+        if termo_busca.isdigit() and len(termo_busca) <= 7:
+            por_id = queryset.filter(id=int(termo_busca))
+            if por_id.exists():
+                return por_id
 
-        palavras = termo_busca.split()
-        query_parts = [
-            (Q(nome_completo__icontains=palavra) | Q(nome_de_guerra__icontains=palavra) |
-             Q(perfis__cargo__icontains=palavra) | Q(perfis__instituicao__icontains=palavra))
-            for palavra in palavras
-        ]
-        if query_parts:
-            final_query = reduce(operator.and_, query_parts)
-            resultados = queryset.filter(final_query).distinct()
-        else:
-            resultados = queryset
+        from .services.busca_textual import filtrar_queryset_municipe
+
+        resultados = filtrar_queryset_municipe(queryset, termo_busca).distinct()
         return resultados.order_by('nome_completo')[:100]
     
 class VerificarDependenciasMunicipeView(APIView):
@@ -749,7 +1045,7 @@ class VerificarDependenciasMunicipeView(APIView):
         })
     
 class MesclarDuplicatasView(APIView):
-    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
 
     def post(self, request, *args, **kwargs):
         id_principal = request.data.get('id_principal')
@@ -767,108 +1063,126 @@ class MesclarDuplicatasView(APIView):
         except Municipe.DoesNotExist:
             return Response({'error': 'Um ou ambos os IDs de Munícipe não foram encontrados.'}, status=status.HTTP_404_NOT_FOUND)
 
+        duplicado_id = municipe_duplicado.id
+        duplicado_nome = municipe_duplicado.nome_completo
+
         try:
-            with transaction.atomic():
-                # Contagens para feedback (antes de transferir)
-                n_atendimentos = municipe_duplicado.atendimentos.count()
-                n_visitas = municipe_duplicado.visitas.count()
-                n_solicitacoes_agenda = municipe_duplicado.solicitacoes_agenda.count()
-                n_perfis = municipe_duplicado.perfis.count()
-                n_reservas = getattr(municipe_duplicado, 'reservas_solicitadas', None)
-                n_reservas = n_reservas.count() if n_reservas is not None else 0
+            with suppress_crm_logs():
+                with transaction.atomic():
+                    # Contagens para feedback (antes de transferir)
+                    n_atendimentos = municipe_duplicado.atendimentos.count()
+                    n_visitas = municipe_duplicado.visitas.count()
+                    n_solicitacoes_agenda = municipe_duplicado.solicitacoes_agenda.count()
+                    n_perfis = municipe_duplicado.perfis.count()
+                    n_reservas = getattr(municipe_duplicado, 'reservas_solicitadas', None)
+                    n_reservas = n_reservas.count() if n_reservas is not None else 0
 
-                # --- 1. DADOS COMPLEMENTARES: foto, observações, data_cadastro ---
-                if not municipe_principal.foto and municipe_duplicado.foto:
-                    municipe_principal.foto = municipe_duplicado.foto
-                if municipe_duplicado.observacoes and (municipe_duplicado.observacoes or '').strip():
-                    obs_dup = (municipe_duplicado.observacoes or '').strip()
-                    if not (municipe_principal.observacoes or '').strip():
-                        municipe_principal.observacoes = obs_dup
-                    else:
-                        municipe_principal.observacoes = (municipe_principal.observacoes or '').strip() + '\n\n[Unificado]\n' + obs_dup
-                # Manter a data de cadastro mais antiga
-                if municipe_duplicado.data_cadastro and municipe_principal.data_cadastro:
-                    if municipe_duplicado.data_cadastro < municipe_principal.data_cadastro:
-                        municipe_principal.data_cadastro = municipe_duplicado.data_cadastro
-                elif municipe_duplicado.data_cadastro and not municipe_principal.data_cadastro:
-                    municipe_principal.data_cadastro = municipe_duplicado.data_cadastro
-
-                # --- 2. PERFIS (CARGO/ÓRGÃO): herdar todos do duplicado vinculando ao principal ---
-                PerfilMunicipe.objects.filter(municipe=municipe_duplicado).update(municipe=municipe_principal)
-
-                # --- 3. M2M no próprio Municipe (ex: contas) ---
-                for field in Municipe._meta.many_to_many:
-                    manager_duplicado = getattr(municipe_duplicado, field.name)
-                    manager_principal = getattr(municipe_principal, field.name)
-                    related_objs = manager_duplicado.all()
-                    if related_objs.exists():
-                        manager_principal.add(*related_objs)
-
-                # --- 4. Todas as relações reversas (ForeignKey/OneToOne) que apontam para Municipe ---
-                all_related_objects = [
-                    f for f in Municipe._meta.get_fields(include_hidden=True)
-                    if (f.one_to_many or f.one_to_one or f.many_to_many) and f.auto_created and not f.concrete
-                ]
-
-                for rel in all_related_objects:
-                    if rel.many_to_many and rel.field.model == Municipe:
-                        continue
-                    try:
-                        accessor_name = rel.get_accessor_name()
-                        if not hasattr(municipe_duplicado, accessor_name):
-                            continue
-                    except AttributeError:
-                        continue
-
-                    if rel.one_to_many or rel.one_to_one:
-                        related_queryset = getattr(municipe_duplicado, accessor_name).all()
-                        unique_constraints = getattr(rel.related_model._meta, 'unique_together', [])
-                        constraint_fields_to_check = []
-                        for constraint in unique_constraints:
-                            if rel.field.name in constraint:
-                                constraint_fields_to_check = [f for f in constraint if f != rel.field.name]
-                                break
-                        if constraint_fields_to_check:
-                            for obj_duplicado in related_queryset:
-                                lookup_filter = {rel.field.name: municipe_principal}
-                                for field_name in constraint_fields_to_check:
-                                    lookup_filter[field_name] = getattr(obj_duplicado, field_name)
-                                if rel.related_model.objects.filter(**lookup_filter).exists():
-                                    obj_duplicado.delete()
-                                else:
-                                    setattr(obj_duplicado, rel.field.name, municipe_principal)
-                                    obj_duplicado.save()
+                    # --- 1. DADOS COMPLEMENTARES: foto, observações, data_cadastro ---
+                    if not municipe_principal.foto and municipe_duplicado.foto:
+                        municipe_principal.foto = municipe_duplicado.foto
+                    if municipe_duplicado.observacoes and (municipe_duplicado.observacoes or '').strip():
+                        obs_dup = (municipe_duplicado.observacoes or '').strip()
+                        if not (municipe_principal.observacoes or '').strip():
+                            municipe_principal.observacoes = obs_dup
                         else:
-                            related_queryset.update(**{rel.field.name: municipe_principal})
+                            municipe_principal.observacoes = (municipe_principal.observacoes or '').strip() + '\n\n[Unificado]\n' + obs_dup
+                    # Manter a data de cadastro mais antiga
+                    if municipe_duplicado.data_cadastro and municipe_principal.data_cadastro:
+                        if municipe_duplicado.data_cadastro < municipe_principal.data_cadastro:
+                            municipe_principal.data_cadastro = municipe_duplicado.data_cadastro
+                    elif municipe_duplicado.data_cadastro and not municipe_principal.data_cadastro:
+                        municipe_principal.data_cadastro = municipe_duplicado.data_cadastro
 
-                    elif rel.many_to_many:
-                        related_queryset = getattr(municipe_duplicado, accessor_name).all()
-                        for related_obj in related_queryset:
-                            m2m_field_on_related = getattr(related_obj, rel.field.name)
-                            m2m_field_on_related.add(municipe_principal)
-                            m2m_field_on_related.remove(municipe_duplicado)
+                    # --- 2. PERFIS (CARGO/ÓRGÃO): herdar todos do duplicado vinculando ao principal ---
+                    PerfilMunicipe.objects.filter(municipe=municipe_duplicado).update(municipe=municipe_principal)
 
-                # --- 5. Consolida emails e telefones ---
-                if municipe_principal.emails is None:
-                    municipe_principal.emails = []
-                if municipe_principal.telefones is None:
-                    municipe_principal.telefones = []
+                    # --- 3. M2M no próprio Municipe (ex: contas) ---
+                    for field in Municipe._meta.many_to_many:
+                        manager_duplicado = getattr(municipe_duplicado, field.name)
+                        manager_principal = getattr(municipe_principal, field.name)
+                        related_objs = manager_duplicado.all()
+                        if related_objs.exists():
+                            manager_principal.add(*related_objs)
 
-                emails_principais = {e['email'].lower() for e in municipe_principal.emails if isinstance(e, dict) and e.get('email')}
-                for email_info in (municipe_duplicado.emails or []):
-                    if isinstance(email_info, dict) and email_info.get('email') and email_info['email'].lower() not in emails_principais:
-                        municipe_principal.emails.append(email_info)
+                    # --- 4. Todas as relações reversas (ForeignKey/OneToOne) que apontam para Municipe ---
+                    all_related_objects = [
+                        f for f in Municipe._meta.get_fields(include_hidden=True)
+                        if (f.one_to_many or f.one_to_one or f.many_to_many) and f.auto_created and not f.concrete
+                    ]
 
-                telefones_principais = {t['numero'] for t in municipe_principal.telefones if isinstance(t, dict) and t.get('numero')}
-                for tel_info in (municipe_duplicado.telefones or []):
-                    if isinstance(tel_info, dict) and tel_info.get('numero') and tel_info['numero'] not in telefones_principais:
-                        municipe_principal.telefones.append(tel_info)
+                    for rel in all_related_objects:
+                        if rel.many_to_many and rel.field.model == Municipe:
+                            continue
+                        try:
+                            accessor_name = rel.get_accessor_name()
+                            if not hasattr(municipe_duplicado, accessor_name):
+                                continue
+                        except AttributeError:
+                            continue
 
-                update_fields = ['foto', 'observacoes', 'data_cadastro', 'emails', 'telefones']
-                municipe_principal.save(update_fields=update_fields)
+                        if rel.one_to_many or rel.one_to_one:
+                            related_queryset = getattr(municipe_duplicado, accessor_name).all()
+                            unique_constraints = getattr(rel.related_model._meta, 'unique_together', [])
+                            constraint_fields_to_check = []
+                            for constraint in unique_constraints:
+                                if rel.field.name in constraint:
+                                    constraint_fields_to_check = [f for f in constraint if f != rel.field.name]
+                                    break
+                            if constraint_fields_to_check:
+                                for obj_duplicado in related_queryset:
+                                    lookup_filter = {rel.field.name: municipe_principal}
+                                    for field_name in constraint_fields_to_check:
+                                        lookup_filter[field_name] = getattr(obj_duplicado, field_name)
+                                    if rel.related_model.objects.filter(**lookup_filter).exists():
+                                        obj_duplicado.delete()
+                                    else:
+                                        setattr(obj_duplicado, rel.field.name, municipe_principal)
+                                        obj_duplicado.save()
+                            else:
+                                related_queryset.update(**{rel.field.name: municipe_principal})
 
-                # --- 6. Remove o registro duplicado ---
-                municipe_duplicado.delete()
+                        elif rel.many_to_many:
+                            related_queryset = getattr(municipe_duplicado, accessor_name).all()
+                            for related_obj in related_queryset:
+                                m2m_field_on_related = getattr(related_obj, rel.field.name)
+                                m2m_field_on_related.add(municipe_principal)
+                                m2m_field_on_related.remove(municipe_duplicado)
+
+                    # --- 5. Consolida emails e telefones ---
+                    if municipe_principal.emails is None:
+                        municipe_principal.emails = []
+                    if municipe_principal.telefones is None:
+                        municipe_principal.telefones = []
+
+                    emails_principais = {e['email'].lower() for e in municipe_principal.emails if isinstance(e, dict) and e.get('email')}
+                    for email_info in (municipe_duplicado.emails or []):
+                        if isinstance(email_info, dict) and email_info.get('email') and email_info['email'].lower() not in emails_principais:
+                            municipe_principal.emails.append(email_info)
+
+                    telefones_principais = {t['numero'] for t in municipe_principal.telefones if isinstance(t, dict) and t.get('numero')}
+                    for tel_info in (municipe_duplicado.telefones or []):
+                        if isinstance(tel_info, dict) and tel_info.get('numero') and tel_info['numero'] not in telefones_principais:
+                            municipe_principal.telefones.append(tel_info)
+
+                    update_fields = ['foto', 'observacoes', 'data_cadastro', 'emails', 'telefones']
+                    municipe_principal.save(update_fields=update_fields)
+
+                    # --- 6. Remove o registro duplicado ---
+                    municipe_duplicado.delete()
+
+            registrar_log_mesclagem_municipes(
+                request,
+                municipe_principal,
+                duplicado_id,
+                duplicado_nome,
+                transferidos={
+                    'atendimentos': n_atendimentos,
+                    'visitas': n_visitas,
+                    'solicitacoes_agenda': n_solicitacoes_agenda,
+                    'perfis': n_perfis,
+                    'reservas': n_reservas,
+                },
+            )
 
             # Resposta com contagem para o toast
             partes = []
@@ -902,8 +1216,29 @@ class MesclarDuplicatasView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         
+class UnificarMunicipesPreviewView(APIView):
+    """Simula unificação sem persistir (dry-run)."""
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
+
+    def post(self, request):
+        id_principal = request.data.get('id_principal')
+        id_duplicado = request.data.get('id_duplicado')
+
+        if not id_principal or not id_duplicado:
+            return Response({'detail': 'IDs inválidos.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if str(id_principal) == str(id_duplicado):
+            return Response({'detail': 'Você não pode unificar um registro com ele mesmo.'}, status=400)
+
+        principal = get_object_or_404(Municipe, pk=id_principal)
+        duplicado = get_object_or_404(Municipe, pk=id_duplicado)
+
+        preview = preview_unificacao_municipes(principal, duplicado)
+        return Response(preview)
+
+
 class UnificarMunicipesView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
 
     def post(self, request):
         logger = logging.getLogger(__name__)
@@ -927,208 +1262,217 @@ class UnificarMunicipesView(APIView):
             duplicado = get_object_or_404(Municipe, pk=id_duplicado)
             logger.info(f"Objetos carregados: principal={principal.nome_completo} (ID: {principal.id}), duplicado={duplicado.nome_completo} (ID: {duplicado.id})")
             
-            with transaction.atomic():
+            duplicado_id = duplicado.id
+            duplicado_nome = duplicado.nome_completo
+            links_migrados = 0
 
-                # 1. COPIA DADOS FALTANTES (Merge de Informações)
-                if not principal.cpf and duplicado.cpf:
-                    principal.cpf = duplicado.cpf
-                if not principal.matricula_rh and duplicado.matricula_rh:
-                    principal.matricula_rh = duplicado.matricula_rh
-                if not principal.foto and duplicado.foto:
-                    principal.foto = duplicado.foto
-                
-                # Merge inteligente de telefones
-                if duplicado.telefones:
-                    if not principal.telefones: principal.telefones = []
-                    numeros_existentes = [t.get('numero') for t in principal.telefones if t.get('numero')]
-                    for tel in duplicado.telefones:
-                        if tel.get('numero') and tel.get('numero') not in numeros_existentes:
-                            principal.telefones.append(tel)
+            with suppress_crm_logs():
+                with transaction.atomic():
 
-                # Merge inteligente de emails
-                if duplicado.emails:
-                    if not principal.emails: principal.emails = []
-                    emails_existentes = [e.get('email') for e in principal.emails if e.get('email')]
-                    for mail in duplicado.emails:
-                        if mail.get('email') and mail.get('email') not in emails_existentes:
-                            principal.emails.append(mail)
-
-                logger.info(f"Salvando principal (ID: {principal.id})")
-                principal.save(update_fields=['cpf', 'matricula_rh', 'foto', 'telefones', 'emails'])
-                logger.info(f"Principal salvo com sucesso")
-
-                # 2. TRANSFERIR VÍNCULOS (CORREÇÃO DA INTROSPECÇÃO)
-                links_migrados = 0
-                
-                # get_fields() traz todas as relações. Filtramos as que apontam PARA Munícipe (one_to_many)
-                logger.info("Iniciando transferência de vínculos one-to-many")
-                for rel in Municipe._meta.get_fields():
+                    # 1. COPIA DADOS FALTANTES (Merge de Informações)
+                    if not principal.cpf and duplicado.cpf:
+                        principal.cpf = duplicado.cpf
+                    if not principal.matricula_rh and duplicado.matricula_rh:
+                        principal.matricula_rh = duplicado.matricula_rh
+                    if not principal.foto and duplicado.foto:
+                        principal.foto = duplicado.foto
                     
-                    # Verifica se é uma relação reversa (OutroModel -> Municipe)
-                    if rel.one_to_many and rel.auto_created:
-                        related_model = rel.related_model
-                        remote_field_name = rel.field.name # Ex: 'municipe' ou 'solicitante'
+                    # Merge inteligente de telefones
+                    if duplicado.telefones:
+                        if not principal.telefones: principal.telefones = []
+                        numeros_existentes = [t.get('numero') for t in principal.telefones if t.get('numero')]
+                        for tel in duplicado.telefones:
+                            if tel.get('numero') and tel.get('numero') not in numeros_existentes:
+                                principal.telefones.append(tel)
 
-                        # Tratamento ESPECÍFICO para PerfilMunicipe, evitando conflitos de unicidade:
-                        # - Se o principal já tiver um perfil com mesmo cargo+conta, descarta o perfil do duplicado.
-                        # - Caso contrário, transfere o perfil alterando o municipe_id.
-                        if related_model.__name__ == 'PerfilMunicipe':
+                    # Merge inteligente de emails
+                    if duplicado.emails:
+                        if not principal.emails: principal.emails = []
+                        emails_existentes = [e.get('email') for e in principal.emails if e.get('email')]
+                        for mail in duplicado.emails:
+                            if mail.get('email') and mail.get('email') not in emails_existentes:
+                                principal.emails.append(mail)
+
+                    logger.info(f"Salvando principal (ID: {principal.id})")
+                    principal.save(update_fields=['cpf', 'matricula_rh', 'foto', 'telefones', 'emails'])
+                    logger.info(f"Principal salvo com sucesso")
+
+                    # 2. TRANSFERIR VÍNCULOS (CORREÇÃO DA INTROSPECÇÃO)
+                
+                    # get_fields() traz todas as relações. Filtramos as que apontam PARA Munícipe (one_to_many)
+                    logger.info("Iniciando transferência de vínculos one-to-many")
+                    for rel in Municipe._meta.get_fields():
+                        
+                        # Verifica se é uma relação reversa (OutroModel -> Municipe)
+                        if rel.one_to_many and rel.auto_created:
+                            related_model = rel.related_model
+                            remote_field_name = rel.field.name # Ex: 'municipe' ou 'solicitante'
+
+                            # Tratamento ESPECÍFICO para PerfilMunicipe, evitando conflitos de unicidade:
+                            # - Se o principal já tiver um perfil com mesmo cargo+conta, descarta o perfil do duplicado.
+                            # - Caso contrário, transfere o perfil alterando o municipe_id.
+                            if related_model.__name__ == 'PerfilMunicipe':
+                                try:
+                                    objetos = list(related_model.objects.filter(**{remote_field_name: duplicado}))
+                                    logger.debug(f"Processando {len(objetos)} perfis de PerfilMunicipe para migrar")
+                                    for perfil in objetos:
+                                        existe = related_model.objects.filter(
+                                            municipe=principal,
+                                            conta=perfil.conta,
+                                            cargo=perfil.cargo,
+                                        ).exists()
+                                        if existe:
+                                            logger.debug(
+                                                "Descartando PerfilMunicipe duplicado (principal já possui mesmo cargo/conta): "
+                                                f"perfil_id={perfil.id}, conta_id={perfil.conta_id}, cargo={perfil.cargo}"
+                                            )
+                                            perfil.delete()
+                                        else:
+                                            perfil.municipe = principal
+                                            perfil.save()
+                                            links_migrados += 1
+                                except Exception as e:
+                                    logger.error(f"Erro ao migrar perfis de PerfilMunicipe: {e}", exc_info=True)
+                                # Já tratamos PerfilMunicipe, segue para a próxima relação
+                                continue
+                        
+                            # Busca objetos do modelo relacionado que apontam para o duplicado
                             try:
-                                objetos = list(related_model.objects.filter(**{remote_field_name: duplicado}))
-                                logger.debug(f"Processando {len(objetos)} perfis de PerfilMunicipe para migrar")
-                                for perfil in objetos:
-                                    existe = related_model.objects.filter(
-                                        municipe=principal,
-                                        conta=perfil.conta,
-                                        cargo=perfil.cargo,
-                                    ).exists()
-                                    if existe:
-                                        logger.debug(
-                                            "Descartando PerfilMunicipe duplicado (principal já possui mesmo cargo/conta): "
-                                            f"perfil_id={perfil.id}, conta_id={perfil.conta_id}, cargo={perfil.cargo}"
-                                        )
-                                        perfil.delete()
-                                    else:
-                                        perfil.municipe = principal
-                                        perfil.save()
-                                        links_migrados += 1
-                            except Exception as e:
-                                logger.error(f"Erro ao migrar perfis de PerfilMunicipe: {e}", exc_info=True)
-                            # Já tratamos PerfilMunicipe, segue para a próxima relação
-                            continue
-                        
-                        # Busca objetos do modelo relacionado que apontam para o duplicado
-                        try:
-                            logger.debug(f"Processando relação: {related_model.__name__}.{remote_field_name}")
-                            filtro = {remote_field_name: duplicado}
-                            # IMPORTANTE: Converter para lista ANTES de entrar no loop para evitar lazy evaluation
-                            objetos = list(related_model.objects.filter(**filtro))
-                            logger.debug(f"Encontrados {len(objetos)} objetos para migrar em {related_model.__name__}")
+                                logger.debug(f"Processando relação: {related_model.__name__}.{remote_field_name}")
+                                filtro = {remote_field_name: duplicado}
+                                # IMPORTANTE: Converter para lista ANTES de entrar no loop para evitar lazy evaluation
+                                objetos = list(related_model.objects.filter(**filtro))
+                                logger.debug(f"Encontrados {len(objetos)} objetos para migrar em {related_model.__name__}")
                             
-                            for idx, obj in enumerate(objetos):
-                                obj_id = obj.pk  # Captura ID antes de qualquer modificação
-                                try:
-                                    # ENVELOPE ESTA AÇÃO COM ATOMIC:
-                                    # O atomic() aninhado cria um savepoint automaticamente
-                                    # Se der erro, faz rollback apenas desta operação, mantendo a transação principal intacta
-                                    with transaction.atomic():
-                                        setattr(obj, remote_field_name, principal)
-                                        obj.save()
-                                    links_migrados += 1
-                                    logger.debug(f"Migrado objeto {idx+1}/{len(objetos)} de {related_model.__name__} (ID: {obj_id})")
-                                except IntegrityError as ie:
-                                    # O rollback aconteceu APENAS no savepoint interno.
-                                    # A transação principal continua intacta e o delete() vai funcionar!
-                                    logger.warning(f"IntegrityError ao migrar {related_model.__name__} ID {obj_id}: {ie}. Removendo duplicado.")
-                                    
-                                    # Reverter mudança em memória antes de deletar
-                                    setattr(obj, remote_field_name, duplicado)
-                                    try:
-                                        obj.delete()
-                                        links_migrados += 1  # Conta como migrado (foi removido)
-                                        logger.debug(f"Duplicado removido: {related_model.__name__} ID {obj_id}")
-                                    except Exception as delete_err:
-                                        logger.error(f"Erro ao deletar objeto duplicado {related_model.__name__} ID {obj_id}: {delete_err}")
-                                        # Não re-raise aqui, apenas loga e continua
-                                        # O objeto pode ser removido manualmente depois
-                                except Exception as obj_error:
-                                    logger.error(f"Erro ao processar objeto {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
-                                    # Reverte mudança em memória antes de continuar
-                                    try:
-                                        setattr(obj, remote_field_name, duplicado)
-                                    except:
-                                        pass  # Se não conseguir reverter, continua mesmo assim
-                                    # NÃO re-raise aqui - apenas loga e continua para não quebrar a transação
-                                    # O objeto problemático será deixado apontando para o duplicado
-                                    # e pode ser corrigido manualmente depois
-                        except Exception as e:
-                            # Log do erro mas continua processamento
-                            logger.error(f"Erro ao migrar relação {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
-                            continue
-
-                # 3. MIGRAR RELAÇÕES MANY-TO-MANY (Ex: Listas de Distribuição)
-                # O loop acima (one_to_many) não pega ManyToMany.
-                logger.info("Iniciando transferência de vínculos many-to-many")
-                for rel in Municipe._meta.get_fields():
-                     if rel.many_to_many and rel.auto_created:
-                        related_model = rel.related_model
-                        remote_field_name = rel.field.name 
-                        
-                        # Para M2M, o filtro é um pouco diferente
-                        try:
-                            logger.debug(f"Processando relação M2M: {related_model.__name__}.{remote_field_name}")
-                            filtro = {remote_field_name: duplicado}
-                            
-                            # Usar atomic() aninhado para isolar cada relação M2M (cria savepoint automaticamente)
-                            with transaction.atomic():
-                                try:
-                                    objetos_m2m = list(related_model.objects.filter(**filtro))
-                                    logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
-                                except Exception as query_error:
-                                    logger.error(f"Erro ao buscar objetos M2M de {related_model.__name__}: {query_error}", exc_info=True)
-                                    continue  # Pula esta relação e continua com a próxima
-                                
-                                for idx, obj in enumerate(objetos_m2m):
+                                for idx, obj in enumerate(objetos):
                                     obj_id = obj.pk  # Captura ID antes de qualquer modificação
                                     try:
-                                        # Usar atomic() aninhado para cada objeto M2M (cria savepoint automaticamente)
+                                        # ENVELOPE ESTA AÇÃO COM ATOMIC:
+                                        # O atomic() aninhado cria um savepoint automaticamente
+                                        # Se der erro, faz rollback apenas desta operação, mantendo a transação principal intacta
                                         with transaction.atomic():
-                                            # Pega o manager do campo M2M no objeto relacionado
-                                            m2m_manager = getattr(obj, remote_field_name)
-                                            m2m_manager.remove(duplicado)
-                                            m2m_manager.add(principal)
+                                            setattr(obj, remote_field_name, principal)
+                                            obj.save()
                                         links_migrados += 1
-                                        logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj_id})")
+                                        logger.debug(f"Migrado objeto {idx+1}/{len(objetos)} de {related_model.__name__} (ID: {obj_id})")
+                                    except IntegrityError as ie:
+                                        # O rollback aconteceu APENAS no savepoint interno.
+                                        # A transação principal continua intacta e o delete() vai funcionar!
+                                        logger.warning(f"IntegrityError ao migrar {related_model.__name__} ID {obj_id}: {ie}. Removendo duplicado.")
+                                    
+                                        # Reverter mudança em memória antes de deletar
+                                        setattr(obj, remote_field_name, duplicado)
+                                        try:
+                                            obj.delete()
+                                            links_migrados += 1  # Conta como migrado (foi removido)
+                                            logger.debug(f"Duplicado removido: {related_model.__name__} ID {obj_id}")
+                                        except Exception as delete_err:
+                                            logger.error(f"Erro ao deletar objeto duplicado {related_model.__name__} ID {obj_id}: {delete_err}")
+                                            # Não re-raise aqui, apenas loga e continua
+                                            # O objeto pode ser removido manualmente depois
                                     except Exception as obj_error:
-                                        logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
+                                        logger.error(f"Erro ao processar objeto {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
+                                        # Reverte mudança em memória antes de continuar
+                                        try:
+                                            setattr(obj, remote_field_name, duplicado)
+                                        except:
+                                            pass  # Se não conseguir reverter, continua mesmo assim
                                         # NÃO re-raise aqui - apenas loga e continua para não quebrar a transação
-                                        # O objeto problemático pode ser corrigido manualmente depois
-                        except Exception as e:
-                            # Log do erro mas continua processamento - NUNCA re-raise aqui!
-                            logger.error(f"Erro ao migrar relação M2M {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
-                            continue
+                                        # O objeto problemático será deixado apontando para o duplicado
+                                        # e pode ser corrigido manualmente depois
+                            except Exception as e:
+                                # Log do erro mas continua processamento
+                                logger.error(f"Erro ao migrar relação {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
+                                continue
 
-                # 4. EXCLUIR OBJETOS DUPLICADOS E O DUPLICADO (APÓS COMMIT DA TRANSAÇÃO)
-                duplicado_id = duplicado.id
-                duplicado_nome = duplicado.nome_completo
-                logger.info(f"Preparando exclusão de {len(objetos_para_deletar_apos_commit)} objetos duplicados e munícipe duplicado após commit")
-                
-                # Usar on_commit para deletar APÓS a transação ser commitada com sucesso
-                def deletar_objetos_apos_commit():
-                    # Deletar objetos duplicados primeiro
-                    for model_class, obj_id in objetos_para_deletar_apos_commit:
-                        try:
-                            obj = model_class.objects.filter(pk=obj_id).first()
-                            if obj:
-                                obj.delete()
-                                logger.info(f"Objeto duplicado deletado após commit: {model_class.__name__} ID {obj_id}")
-                        except Exception as delete_error:
-                            logger.error(f"Erro ao deletar objeto duplicado {model_class.__name__} ID {obj_id} após commit: {delete_error}", exc_info=True)
-                    
-                    # Deletar o munícipe duplicado
-                    try:
-                        duplicado_refresh = Municipe.objects.filter(pk=duplicado_id).first()
-                        if duplicado_refresh:
-                            logger.info(f"Deletando duplicado após commit (ID: {duplicado_id})")
-                            duplicado_refresh.delete()
-                            logger.info(f"Duplicado excluído com sucesso após commit (ID: {duplicado_id})")
-                        else:
-                            logger.warning(f"Duplicado já não existe (ID: {duplicado_id})")
-                    except Exception as delete_error:
-                        logger.error(f"Erro ao deletar duplicado após commit (ID: {duplicado_id}): {delete_error}", exc_info=True)
-                        logger.warning(f"Duplicado não foi deletado automaticamente. ID: {duplicado_id}, Nome: {duplicado_nome} - pode ser deletado manualmente")
-                
-                # Agendar deleção para após o commit bem-sucedido
-                transaction.on_commit(deletar_objetos_apos_commit)
+                    # 3. MIGRAR RELAÇÕES MANY-TO-MANY (Ex: Listas de Distribuição)
+                    # O loop acima (one_to_many) não pega ManyToMany.
+                    logger.info("Iniciando transferência de vínculos many-to-many")
+                    for rel in Municipe._meta.get_fields():
+                        if rel.many_to_many and rel.auto_created:
+                            related_model = rel.related_model
+                            remote_field_name = rel.field.name 
+                        
+                            # Para M2M, o filtro é um pouco diferente
+                            try:
+                                logger.debug(f"Processando relação M2M: {related_model.__name__}.{remote_field_name}")
+                                filtro = {remote_field_name: duplicado}
+                            
+                                # Usar atomic() aninhado para isolar cada relação M2M (cria savepoint automaticamente)
+                                with transaction.atomic():
+                                    try:
+                                        objetos_m2m = list(related_model.objects.filter(**filtro))
+                                        logger.debug(f"Encontrados {len(objetos_m2m)} objetos M2M para migrar em {related_model.__name__}")
+                                    except Exception as query_error:
+                                        logger.error(f"Erro ao buscar objetos M2M de {related_model.__name__}: {query_error}", exc_info=True)
+                                        continue  # Pula esta relação e continua com a próxima
+                                
+                                    for idx, obj in enumerate(objetos_m2m):
+                                        obj_id = obj.pk  # Captura ID antes de qualquer modificação
+                                        try:
+                                            # Usar atomic() aninhado para cada objeto M2M (cria savepoint automaticamente)
+                                            with transaction.atomic():
+                                                # Pega o manager do campo M2M no objeto relacionado
+                                                m2m_manager = getattr(obj, remote_field_name)
+                                                m2m_manager.remove(duplicado)
+                                                m2m_manager.add(principal)
+                                            links_migrados += 1
+                                            logger.debug(f"Migrado objeto M2M {idx+1}/{len(objetos_m2m)} de {related_model.__name__} (ID: {obj_id})")
+                                        except Exception as obj_error:
+                                            logger.error(f"Erro ao processar objeto M2M {idx+1} de {related_model.__name__} (ID: {obj_id}): {obj_error}", exc_info=True)
+                                            # NÃO re-raise aqui - apenas loga e continua para não quebrar a transação
+                                            # O objeto problemático pode ser corrigido manualmente depois
+                            except Exception as e:
+                                # Log do erro mas continua processamento - NUNCA re-raise aqui!
+                                logger.error(f"Erro ao migrar relação M2M {related_model.__name__}.{remote_field_name}: {e}", exc_info=True)
+                                continue
 
-                logger.info(f"Unificação concluída: {links_migrados} vínculos migrados. Duplicado será deletado após commit.")
-                return Response({
-                    "message": "Fusão concluída com sucesso.",
-                    "links_migrados": links_migrados,
-                    "nome_final": principal.nome_completo,
-                    "duplicado_id": duplicado_id,
-                    "nota": "O registro duplicado será excluído automaticamente após a conclusão da transação."
-                })
+                    # 4. EXCLUIR OBJETOS DUPLICADOS E O DUPLICADO (APÓS COMMIT DA TRANSAÇÃO)
+                    logger.info(f"Preparando exclusão de {len(objetos_para_deletar_apos_commit)} objetos duplicados e munícipe duplicado após commit")
+                
+                    # Usar on_commit para deletar APÓS a transação ser commitada com sucesso
+                    def deletar_objetos_apos_commit():
+                        with suppress_crm_logs():
+                            for model_class, obj_id in objetos_para_deletar_apos_commit:
+                                try:
+                                    obj = model_class.objects.filter(pk=obj_id).first()
+                                    if obj:
+                                        obj.delete()
+                                        logger.info(f"Objeto duplicado deletado após commit: {model_class.__name__} ID {obj_id}")
+                                except Exception as delete_error:
+                                    logger.error(f"Erro ao deletar objeto duplicado {model_class.__name__} ID {obj_id} após commit: {delete_error}", exc_info=True)
+
+                            try:
+                                duplicado_refresh = Municipe.objects.filter(pk=duplicado_id).first()
+                                if duplicado_refresh:
+                                    logger.info(f"Deletando duplicado após commit (ID: {duplicado_id})")
+                                    duplicado_refresh.delete()
+                                    logger.info(f"Duplicado excluído com sucesso após commit (ID: {duplicado_id})")
+                                else:
+                                    logger.warning(f"Duplicado já não existe (ID: {duplicado_id})")
+                            except Exception as delete_error:
+                                logger.error(f"Erro ao deletar duplicado após commit (ID: {duplicado_id}): {delete_error}", exc_info=True)
+                                logger.warning(f"Duplicado não foi deletado automaticamente. ID: {duplicado_id}, Nome: {duplicado_nome}")
+
+                    transaction.on_commit(deletar_objetos_apos_commit)
+
+                    logger.info(f"Unificação concluída: {links_migrados} vínculos migrados. Duplicado será deletado após commit.")
+
+            registrar_log_mesclagem_municipes(
+                request,
+                principal,
+                duplicado_id,
+                duplicado_nome,
+                links_migrados=links_migrados,
+            )
+
+            return Response({
+                "message": "Fusão concluída com sucesso.",
+                "links_migrados": links_migrados,
+                "nome_final": principal.nome_completo,
+                "duplicado_id": duplicado_id,
+                "nota": "O registro duplicado será excluído automaticamente após a conclusão da transação."
+            })
 
         except Exception as e:
             # Log completo do erro para depuração
@@ -1150,7 +1494,7 @@ class UnificarMunicipesView(APIView):
 
 class RodarAuditoriaDuplicidadesView(APIView):
     """Dispara o management command auditoria_qualidade_duplicidades em background. Retorna 202 Accepted."""
-    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
 
     def post(self, request):
         def run_command():
@@ -1166,9 +1510,34 @@ class RodarAuditoriaDuplicidadesView(APIView):
         )
 
 
+class DuplicatasContadorView(APIView):
+    """Total de grupos pendentes de duplicatas (2+ contatos no mesmo grupo)."""
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
+
+    def get(self, request):
+        from django.db.models import Count
+        from .services.escopo_operador_crm import aplicar_escopo_municipes_queryset
+
+        qs = Municipe.objects.exclude(grupo_duplicado__isnull=True)
+        qs = aplicar_escopo_municipes_queryset(qs, request.user)
+
+        grupos = list(
+            qs.values('grupo_duplicado')
+            .annotate(total=Count('pk', distinct=True))
+            .filter(total__gte=2)
+        )
+        total_grupos = len(grupos)
+        total_contatos = sum(item['total'] for item in grupos)
+
+        return Response({
+            'total_grupos': total_grupos,
+            'total_contatos': total_contatos,
+        })
+
+
 class DescartarGrupoDuplicatasView(APIView):
     """Limpa grupo_duplicado de todos os munícipes do grupo informado (UUID)."""
-    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
 
     def post(self, request):
         grupo_uuid = request.data.get('grupo_duplicado')
@@ -1185,7 +1554,7 @@ class DescartarGrupoDuplicatasView(APIView):
 
 class DescartarContatoDuplicataView(APIView):
     """Remove um único munícipe do grupo de duplicatas (limpa grupo_duplicado desse ID)."""
-    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
 
     def post(self, request, pk):
         municipe = get_object_or_404(Municipe, pk=pk)
@@ -1229,7 +1598,7 @@ class SaneamentoDadosMunicipeView(APIView):
       - email_invalido
       - cpf_ausente
     """
-    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
 
     def get(self, request):
         problemas_param = request.query_params.getlist('problema') or ['telefone_invalido', 'email_invalido', 'cpf_ausente']
@@ -1242,14 +1611,9 @@ class SaneamentoDadosMunicipeView(APIView):
         )
 
         if q_busca:
-            qs = qs.filter(
-                Q(nome_completo__icontains=q_busca) |
-                Q(cpf__icontains=q_busca) |
-                Q(cargo__icontains=q_busca) |
-                Q(orgao__icontains=q_busca) |
-                Q(perfis__cargo__icontains=q_busca) |
-                Q(perfis__instituicao__icontains=q_busca)
-            ).distinct()
+            from .services.busca_textual import filtrar_queryset_municipe
+
+            qs = filtrar_queryset_municipe(qs, q_busca).distinct()
 
         for m in qs.iterator(chunk_size=500):
             # Telefones inválidos (validação via is_data_dirty)
@@ -1305,7 +1669,7 @@ class AtualizarCategoriaEmLoteView(APIView):
     View para atualizar a categoria de múltiplos perfis de munícipes.
     Recebe perfil_ids e nova_categoria_id.
     """
-    permission_classes = [permissions.IsAuthenticated, CanEditMunicipeDetails]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContactsAvancado]
 
     def post(self, request, *args, **kwargs):
         from .models import PerfilMunicipe
@@ -1766,6 +2130,11 @@ class AnexoListCreateView(generics.ListCreateAPIView):
 # -----------------------------------------------------------------------------
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    SAFE_PERMISSION_CLAIMS = {
+        "eventos.pode_gerenciar_eventos",
+        "oficios.pode_gerenciar_oficios",
+    }
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
@@ -1774,7 +2143,11 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['username'] = user.username
         token['is_superuser'] = user.is_superuser
         token['groups'] = list(user.groups.values_list('name', flat=True))
-        token['user_permissions'] = list(user.get_all_permissions())
+        # Evita JWT gigante para superadmin (causava 400 em requests por header excessivo).
+        # O frontend usa apenas permissões específicas para feature flags.
+        token['user_permissions'] = sorted(
+            perm for perm in user.get_all_permissions() if perm in cls.SAFE_PERMISSION_CLAIMS
+        )
 
         if hasattr(user, 'perfil'):
             token['perfil'] = {
@@ -1854,73 +2227,10 @@ class RelatorioAtendimentosPorStatusView(APIView):
     permission_classes = [IsAuthenticated, CanViewAtendimentoReports]
 
     def get(self, request, *args, **kwargs):
-        user = self.request.user
-        queryset = Atendimento.objects.all()
+        from .reporting import queryset_atendimentos_relatorio
 
-        # Lógica de permissão UNIFICADA
-        if not (user.is_superuser or is_in_group(user, 'Recepção')):
-            if hasattr(user, 'perfil'):
-                queryset = queryset.filter(conta__in=user.perfil.contas.all())
-                queryset = queryset.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
-            else:
-                queryset = Atendimento.objects.none()
-        elif is_in_group(user, 'Recepção') and not user.is_superuser:
-            if hasattr(user, 'perfil'):
-                queryset = queryset.filter(conta__in=user.perfil.contas.all())
-            else:
-                queryset = Atendimento.objects.none()
-
-        # Aplicar filtros de data
-        data_inicio_str = request.query_params.get('data_inicio', None)
-        data_fim_str = request.query_params.get('data_fim', None)
-        
-        # Debug: log dos parâmetros recebidos
-        logging.info(f"RelatorioAtendimentosPorStatusView - data_inicio: {data_inicio_str}, data_fim: {data_fim_str}")
-        
-        if data_inicio_str:
-            try:
-                # Converter para datetime no início do dia (00:00:00) com timezone
-                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
-                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
-                logging.info(f"Aplicando filtro data_inicio: {data_inicio_datetime}")
-                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}': {e}")
-        if data_fim_str:
-            try:
-                # Converter para datetime no fim do dia (23:59:59) com timezone
-                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
-                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
-                logging.info(f"Aplicando filtro data_fim: {data_fim_datetime}")
-                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_fim '{data_fim_str}': {e}")
-
-        # Aplicar filtros de conta e status
-        conta_id = request.query_params.get('conta_id', None)
-        if conta_id:
-            queryset = queryset.filter(conta_id=conta_id)
-        
-        status = request.query_params.get('status', None)
-        if status:
-            queryset = queryset.filter(status=status)
-        
-        # Aplicar filtro de membros (responsáveis)
-        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
-        if responsavel_ids_str:
-            try:
-                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
-                if responsavel_ids:
-                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
-            except (ValueError, AttributeError):
-                pass
-
-        # Debug: log do total de registros após filtros
-        total_count = queryset.count()
-        logging.info(f"Total de atendimentos após filtros: {total_count}")
-
-        data = queryset.values('status').annotate(total=Count('status')).order_by('status')
-        logging.info(f"Dados retornados: {list(data)}")
+        queryset = queryset_atendimentos_relatorio(request.user, request)
+        data = queryset.values('status').annotate(total=Count('id')).order_by('status')
         return Response(data)
 
 
@@ -1928,148 +2238,54 @@ class RelatorioAtendimentosPorContaView(APIView):
     permission_classes = [IsAuthenticated, CanViewAtendimentoReports]
 
     def get(self, request, *args, **kwargs):
-        user = self.request.user
-        queryset = Atendimento.objects.all()
+        from .reporting import queryset_atendimentos_relatorio
 
-        # Lógica de permissão UNIFICADA
-        if not (user.is_superuser or is_in_group(user, 'Recepção')):
-            if hasattr(user, 'perfil'):
-                queryset = queryset.filter(conta__in=user.perfil.contas.all())
-                queryset = queryset.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
-            else:
-                queryset = Atendimento.objects.none()
-        elif is_in_group(user, 'Recepção') and not user.is_superuser:
-            if hasattr(user, 'perfil'):
-                queryset = queryset.filter(conta__in=user.perfil.contas.all())
-            else:
-                queryset = Atendimento.objects.none()
-
-        # Aplicar filtros de data
-        data_inicio_str = request.query_params.get('data_inicio', None)
-        data_fim_str = request.query_params.get('data_fim', None)
-        
-        # Debug: log dos parâmetros recebidos
-        logging.info(f"RelatorioAtendimentosPorContaView - data_inicio: {data_inicio_str}, data_fim: {data_fim_str}")
-        
-        if data_inicio_str:
-            try:
-                # Converter para datetime no início do dia (00:00:00) com timezone
-                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
-                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
-                logging.info(f"Aplicando filtro data_inicio: {data_inicio_datetime}")
-                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}': {e}")
-        if data_fim_str:
-            try:
-                # Converter para datetime no fim do dia (23:59:59) com timezone
-                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
-                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
-                logging.info(f"Aplicando filtro data_fim: {data_fim_datetime}")
-                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_fim '{data_fim_str}': {e}")
-
-        # Aplicar filtros de conta e status
-        conta_id = request.query_params.get('conta_id', None)
-        if conta_id:
-            queryset = queryset.filter(conta_id=conta_id)
-        
-        status = request.query_params.get('status', None)
-        if status:
-            queryset = queryset.filter(status=status)
-        
-        # Aplicar filtro de membros (responsáveis)
-        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
-        if responsavel_ids_str:
-            try:
-                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
-                if responsavel_ids:
-                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
-            except (ValueError, AttributeError):
-                pass
-
-        # Debug: log do total de registros após filtros
-        total_count = queryset.count()
-        logging.info(f"Total de atendimentos após filtros: {total_count}")
-
+        queryset = queryset_atendimentos_relatorio(request.user, request)
         data = queryset.values('conta__nome').annotate(total=Count('id')).order_by('-total')
-        logging.info(f"Dados retornados: {list(data)}")
         return Response(data)
 
 
-class RelatorioAtendimentosPorCategoriaView(APIView):
+class RelatorioFiltrosPerfilView(APIView):
+    """Opções de categoria de contato e cargo para filtros de relatório."""
     permission_classes = [IsAuthenticated, CanViewAtendimentoReports]
 
     def get(self, request, *args, **kwargs):
-        user = self.request.user
-        queryset = Atendimento.objects.all()
+        from .reporting import opcoes_cargos_relatorio, opcoes_categorias_relatorio
 
-        # Lógica de permissão UNIFICADA
-        if not (user.is_superuser or is_in_group(user, 'Recepção')):
-            if hasattr(user, 'perfil'):
-                queryset = queryset.filter(conta__in=user.perfil.contas.all())
-                queryset = queryset.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
-            else:
-                queryset = Atendimento.objects.none()
-        elif is_in_group(user, 'Recepção') and not user.is_superuser:
-            if hasattr(user, 'perfil'):
-                queryset = queryset.filter(conta__in=user.perfil.contas.all())
-            else:
-                queryset = Atendimento.objects.none()
+        return Response({
+            'categorias': opcoes_categorias_relatorio(request.user),
+            'cargos': opcoes_cargos_relatorio(request.user),
+        })
 
-        # Aplicar filtros de data
-        data_inicio_str = request.query_params.get('data_inicio', None)
-        data_fim_str = request.query_params.get('data_fim', None)
-        
-        # Debug: log dos parâmetros recebidos
-        logging.info(f"RelatorioAtendimentosPorCategoriaView - data_inicio: {data_inicio_str}, data_fim: {data_fim_str}")
-        
-        if data_inicio_str:
-            try:
-                # Converter para datetime no início do dia (00:00:00) com timezone
-                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
-                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
-                logging.info(f"Aplicando filtro data_inicio: {data_inicio_datetime}")
-                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}': {e}")
-        if data_fim_str:
-            try:
-                # Converter para datetime no fim do dia (23:59:59) com timezone
-                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
-                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
-                logging.info(f"Aplicando filtro data_fim: {data_fim_datetime}")
-                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_fim '{data_fim_str}': {e}")
 
-        # Aplicar filtros de conta e status
-        conta_id = request.query_params.get('conta_id', None)
-        if conta_id:
-            queryset = queryset.filter(conta_id=conta_id)
-        
-        status = request.query_params.get('status', None)
-        if status:
-            queryset = queryset.filter(status=status)
-        
-        # Aplicar filtro de membros (responsáveis)
-        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
-        if responsavel_ids_str:
-            try:
-                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
-                if responsavel_ids:
-                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
-            except (ValueError, AttributeError):
-                pass
+class RelatorioAtendimentosPorCategoriaView(APIView):
+    """Deprecated (Fase 8): delega agregação por assunto; mantém formato legado."""
 
-        # Debug: log do total de registros após filtros
-        total_count = queryset.count()
-        logging.info(f"Total de atendimentos após filtros: {total_count}")
+    permission_classes = [IsAuthenticated, CanViewAtendimentoReports]
 
-        data = queryset.values('categorias__nome').annotate(total=Count('id')).order_by('-total')
-        logging.info(f"Dados retornados: {list(data)}")
-        return Response(data)
+    def get(self, request, *args, **kwargs):
+        from .reporting import queryset_atendimentos_relatorio, serializar_atendimentos_por_assunto
+
+        queryset = queryset_atendimentos_relatorio(request.user, request)
+        por_assunto = serializar_atendimentos_por_assunto(queryset)
+        data = [
+            {'categorias__nome': row['nome'], 'total': row['total']}
+            for row in por_assunto
+        ]
+        response = Response(data)
+        response['Deprecation'] = 'true'
+        response['Link'] = '</api/relatorios/atendimentos-por-assunto/>; rel="successor-version"'
+        return response
+
+
+class RelatorioAtendimentosPorAssuntoView(APIView):
+    permission_classes = [IsAuthenticated, CanViewAtendimentoReports]
+
+    def get(self, request, *args, **kwargs):
+        from .reporting import queryset_atendimentos_relatorio, serializar_atendimentos_por_assunto
+
+        queryset = queryset_atendimentos_relatorio(request.user, request)
+        return Response(serializar_atendimentos_por_assunto(queryset))
 
 
 class DashboardSummaryView(APIView):
@@ -2085,13 +2301,27 @@ class DashboardSummaryView(APIView):
 
         if is_in_group(user, 'Recepção'):
             data['triagens_do_dia'] = Atendimento.objects.filter(
-                created_by=user, 
+                created_by=user,
                 data_criacao__range=(inicio_do_dia, fim_do_dia)
             ).count()
-            data['checkins_do_dia'] = RegistroVisita.objects.filter(
-                registrado_por=user,
-                data_checkin__range=(inicio_do_dia, fim_do_dia)
-            ).count()
+            if hasattr(user, 'perfil'):
+                data['atendimentos_do_dia'] = Atendimento.objects.filter(
+                    conta__in=user.perfil.contas.all(),
+                    data_criacao__range=(inicio_do_dia, fim_do_dia),
+                ).count()
+
+        if hasattr(user, 'perfil'):
+            from .reporting import big_numbers_por_assunto
+
+            qs_hoje = Atendimento.objects.filter(
+                conta__in=user.perfil.contas.all(),
+                data_criacao__range=(inicio_do_dia, fim_do_dia),
+            )
+            if not (user.is_superuser or is_in_group(user, 'Recepção')):
+                qs_hoje = qs_hoje.filter(
+                    Q(responsavel=user) | Q(responsavel__isnull=True)
+                )
+            data['atendimentos_por_assunto_hoje'] = big_numbers_por_assunto(qs_hoje, top=5)
 
         if hasattr(user, 'perfil') and (is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária')):
             atendimentos_do_usuario = Atendimento.objects.filter(conta__in=user.perfil.contas.all())
@@ -2108,23 +2338,45 @@ class DashboardSummaryView(APIView):
             data['agendas_em_aberto'] = agendas_da_secretaria.filter(status='SOLICITADO').count()
             data['agendas_em_analise'] = agendas_da_secretaria.filter(status='EM_ANALISE').count()
 
-        # Minha Agenda Hoje: Registros de Visita/Check-in do dia (conta do usuário + filtro de responsabilidade)
-        data['visitas_hoje'] = []
-        contas_usuario = user.perfil.contas.all() if hasattr(user, 'perfil') else Conta.objects.none()
-        if user.is_superuser and not contas_usuario.exists():
-            contas_usuario = Conta.objects.all()
-        if contas_usuario.exists():
-            hoje_inicio = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
-            hoje_fim = timezone.localtime().replace(hour=23, minute=59, second=59, microsecond=999999)
-            qs_visitas = RegistroVisita.objects.filter(
-                conta_destino__in=contas_usuario,
-                data_checkin__range=(hoje_inicio, hoje_fim),
-            ).filter(
-                Q(usuario_destino=user) | Q(registrado_por=user) | Q(usuario_destino__isnull=True)
-            ).select_related('municipe', 'conta_destino', 'usuario_destino', 'registrado_por').order_by('data_checkin')
-            data['visitas_hoje'] = RegistroVisitaSerializer(qs_visitas, many=True, context={'request': request}).data
+            from .services.sla_atendimento import filtrar_queryset_por_sla
+
+            qs_sla = Atendimento.objects.filter(conta__in=user.perfil.contas.all())
+            data['sla_vencidos'] = filtrar_queryset_por_sla(qs_sla, 'VENCIDO').count()
+            data['sla_em_risco'] = filtrar_queryset_por_sla(qs_sla, 'EM_RISCO').count()
 
         return Response(data)
+
+
+class RelatorioSlaAtendimentosView(APIView):
+    """Resumo gerencial de cumprimento de SLA (% no prazo por conta e assunto)."""
+    permission_classes = [permissions.IsAuthenticated, CanViewAtendimentoReports]
+
+    def get(self, request):
+        from .reporting import queryset_atendimentos_relatorio
+
+        queryset = queryset_atendimentos_relatorio(request.user, request)
+        return Response(_resposta_sla_atendimentos(queryset))
+
+
+class BiRelatorioSlaView(APIView):
+    """Resumo SLA com os mesmos filtros do painel BI."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .reporting import queryset_bi_atendimentos
+
+        queryset = queryset_bi_atendimentos(request.user, request)
+        return Response(_resposta_sla_atendimentos(queryset))
+
+
+def _resposta_sla_atendimentos(queryset):
+    from .services.sla_atendimento import resumo_sla_por_dimensao, resumo_sla_queryset
+
+    return {
+        'resumo': resumo_sla_queryset(queryset),
+        'por_conta': resumo_sla_por_dimensao(queryset, 'conta'),
+        'por_assunto': resumo_sla_por_dimensao(queryset, 'assunto'),
+    }
 
 
 class DashboardVisitasPorDataView(APIView):
@@ -2157,16 +2409,8 @@ class DashboardVisitasPorDataView(APIView):
         if not contas_usuario.exists():
             return Response([])
 
-        inicio = timezone.make_aware(datetime.combine(data_obj, time.min))
-        fim = timezone.make_aware(datetime.combine(data_obj, time.max))
-        qs = RegistroVisita.objects.filter(
-            conta_destino__in=contas_usuario,
-            data_checkin__range=(inicio, fim),
-        ).filter(
-            Q(usuario_destino=user) | Q(registrado_por=user) | Q(usuario_destino__isnull=True)
-        ).select_related('municipe', 'conta_destino', 'usuario_destino', 'registrado_por').order_by('data_checkin')
-        data_serializada = RegistroVisitaSerializer(qs, many=True, context={'request': request}).data
-        return Response(data_serializada)
+        from .services.visita_atendimento import listar_visitas_agenda_serializado
+        return Response(listar_visitas_agenda_serializado(user, data_obj))
 
 
 # -----------------------------------------------------------------------------
@@ -2177,121 +2421,106 @@ class GerarPdfAtendimentosView(APIView):
     permission_classes = [permissions.IsAuthenticated, CanViewAtendimentoReports]
 
     def get(self, request, *args, **kwargs):
-        user = request.user
-        queryset = Atendimento.objects.all()
+        from .reporting import (
+            anotar_linha_cargo_orgao,
+            big_numbers_por_assunto,
+            big_numbers_por_status,
+            queryset_atendimentos_relatorio,
+            resumo_filtros_relatorio,
+        )
 
-        if not (user.is_superuser or is_in_group(user, 'Recepção')):
-            if hasattr(user, 'perfil'):
-                queryset = queryset.filter(conta__in=user.perfil.contas.all())
-                queryset = queryset.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
-            else:
-                queryset = Atendimento.objects.none()
-
-        status = request.query_params.get('status', None)
+        queryset = queryset_atendimentos_relatorio(request.user, request)
+        filtros_resumo = resumo_filtros_relatorio(request)
         conta_id = request.query_params.get('conta_id', None)
-        data_inicio_str = request.query_params.get('data_inicio', None)
-        data_fim_str = request.query_params.get('data_fim', None)
 
-        if status:
-            queryset = queryset.filter(status=status)
-        if conta_id:
-            queryset = queryset.filter(conta_id=conta_id)
-        
-        # Aplicar filtro de membros (responsáveis)
-        responsavel_ids_str = request.query_params.get('responsavel_ids', None)
-        if responsavel_ids_str:
-            try:
-                responsavel_ids = [int(id.strip()) for id in responsavel_ids_str.split(',') if id.strip()]
-                if responsavel_ids:
-                    queryset = queryset.filter(responsavel_id__in=responsavel_ids)
-            except (ValueError, AttributeError):
-                pass
-        
-        # Aplicar filtros de data com timezone
-        if data_inicio_str:
-            try:
-                # Converter para datetime no início do dia (00:00:00) com timezone
-                data_inicio_obj = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
-                data_inicio_datetime = timezone.make_aware(datetime.combine(data_inicio_obj, time.min))
-                queryset = queryset.filter(data_criacao__gte=data_inicio_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_inicio '{data_inicio_str}' em GerarPdfAtendimentosView: {e}")
-        if data_fim_str:
-            try:
-                # Converter para datetime no fim do dia (23:59:59) com timezone
-                data_fim_obj = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
-                data_fim_datetime = timezone.make_aware(datetime.combine(data_fim_obj, time.max))
-                queryset = queryset.filter(data_criacao__lte=data_fim_datetime)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Erro ao processar data_fim '{data_fim_str}' em GerarPdfAtendimentosView: {e}")
-
-        # Buscar conta_contexto para logos (sem duplicar a busca de conta_id)
         conta_contexto = None
         if conta_id:
             conta_contexto = Conta.objects.filter(id=conta_id).first()
-        elif not request.user.is_superuser and hasattr(request.user, 'perfil'):
+        elif hasattr(request.user, 'perfil') and request.user.perfil.contas.exists():
             conta_contexto = request.user.perfil.contas.first()
-        
-        # Prepara as informações de personalização
-        nome_instituicao = "Prefeitura Municipal" # Valor padrão
-        brasao_path = None
-        logo_conta_path = None
-        logo_siga_path = None
 
-        if conta_contexto:
-            nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
-            if conta_contexto.brasao_instituicao:
-                brasao_path = os.path.abspath(conta_contexto.brasao_instituicao.path).replace('\\', '/')
-            if conta_contexto.logo_conta:
-                logo_conta_path = os.path.abspath(conta_contexto.logo_conta.path).replace('\\', '/')
-        
-        # Tenta encontrar o logo do SIGA no sistema de arquivos
-        logo_siga_static = settings.STATIC_ROOT / 'images' / 'logo-siga-gab.png'
-        if logo_siga_static.exists():
-            logo_siga_path = os.path.abspath(str(logo_siga_static)).replace('\\', '/')
-        else:
-            logo_siga_alt = settings.BASE_DIR / 'staticfiles' / 'images' / 'logo-siga-gab.png'
-            if logo_siga_alt.exists():
-                logo_siga_path = os.path.abspath(str(logo_siga_alt)).replace('\\', '/')
-            else:
-                logo_siga_path = request.build_absolute_uri('/static/images/logo-siga-gab.png')
+        from .reporting import resolver_logos_relatorio_pdf
 
-        # Calcular big numbers por status
-        total_atendimentos = queryset.count()
-        status_counts = queryset.values('status').annotate(total=Count('id'))
-        big_numbers = {
-            'total': total_atendimentos,
-            'aberto': 0,
-            'em_analise': 0,
-            'encaminhado': 0,
-            'concluido': 0,
-            'arquivado': 0,
-        }
-        status_map = {
-            'ABERTO': 'aberto',
-            'EM_ANALISE': 'em_analise',
-            'ENCAMINHADO': 'encaminhado',
-            'CONCLUIDO': 'concluido',
-            'ARQUIVADO': 'arquivado',
-        }
-        for item in status_counts:
-            status_key = status_map.get(item['status'], None)
-            if status_key:
-                big_numbers[status_key] = item['total']
-        
+        logos = resolver_logos_relatorio_pdf(conta_contexto, request)
+
+        big_numbers = big_numbers_por_status(queryset)
+        big_numbers_assunto = big_numbers_por_assunto(queryset)
+        atendimentos = list(
+            queryset.select_related('municipe', 'conta', 'responsavel', 'assunto')
+            .prefetch_related('tramitacoes__usuario', 'categorias')
+            .order_by('-data_criacao')
+        )
+        anotar_linha_cargo_orgao(atendimentos, request)
+
         context = {
-            'atendimentos': queryset.select_related('municipe', 'conta', 'responsavel').prefetch_related('tramitacoes__usuario', 'categorias'),
-            'nome_instituicao': nome_instituicao,
-            'brasao_path': brasao_path,
-            'logo_conta_path': logo_conta_path,
-            'logo_siga_path': logo_siga_path,
+            'atendimentos': atendimentos,
             'big_numbers': big_numbers,
+            'big_numbers_assunto': big_numbers_assunto,
+            'filtros_resumo': filtros_resumo,
+            **logos,
         }
         html_string = render_to_string('atendimentos/relatorio_atendimentos.html', context)
         pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
 
         response = HttpResponse(pdf_file, content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="relatorio_atendimentos.pdf"'
+        return response
+
+
+class GerarCsvAtendimentosView(APIView):
+    permission_classes = [permissions.IsAuthenticated, CanViewAtendimentoReports]
+
+    def get(self, request, *args, **kwargs):
+        import csv
+
+        from .reporting import (
+            anotar_linha_cargo_orgao,
+            queryset_atendimentos_relatorio,
+            resumo_filtros_relatorio,
+        )
+
+        queryset = queryset_atendimentos_relatorio(request.user, request)
+        atendimentos = list(
+            queryset.select_related('municipe', 'conta', 'responsavel', 'assunto')
+            .order_by('-data_criacao')
+        )
+        anotar_linha_cargo_orgao(atendimentos, request)
+        filtros = resumo_filtros_relatorio(request)
+
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
+        response.write('\ufeff')
+        response['Content-Disposition'] = 'attachment; filename="relatorio_atendimentos.csv"'
+        writer = csv.writer(response, delimiter=';')
+
+        if filtros.get('tem_filtro_perfil'):
+            if filtros.get('categorias'):
+                writer.writerow(['Filtro categorias', ', '.join(filtros['categorias'])])
+            if filtros.get('cargos'):
+                writer.writerow(['Filtro cargos', ', '.join(filtros['cargos'])])
+            writer.writerow([])
+
+        writer.writerow([
+            'Protocolo', 'Data', 'Título', 'Status', 'Assunto', 'Gabinete',
+            'Munícipe', 'Cargo/Órgão', 'Responsável',
+        ])
+        for at in atendimentos:
+            data_str = ''
+            if at.data_criacao:
+                data_str = timezone.localtime(at.data_criacao).strftime('%d/%m/%Y %H:%M')
+            responsavel = ''
+            if at.responsavel:
+                responsavel = at.responsavel.get_full_name() or at.responsavel.username
+            writer.writerow([
+                at.protocolo,
+                data_str,
+                at.titulo,
+                at.status,
+                getattr(at.assunto, 'nome', '') if at.assunto_id else '',
+                getattr(at.conta, 'nome', '') if at.conta_id else '',
+                getattr(at.municipe, 'nome_completo', '') if at.municipe_id else '',
+                getattr(at, 'linha_cargo_orgao', '—'),
+                responsavel,
+            ])
         return response
 
 
@@ -2446,7 +2675,7 @@ class GerarPdfAgendasReportView(APIView):
             )
 
 class ExportMunicipesExcelView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContacts]
 
     def get(self, request, *args, **kwargs):
         user = request.user
@@ -2460,23 +2689,24 @@ class ExportMunicipesExcelView(APIView):
         
         queryset = Municipe.objects.prefetch_related('perfis__categoria', 'contas').all().order_by(*order_fields)
 
-        # 2. PERMISSÕES DE VISUALIZAÇÃO
-        if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
-            if hasattr(user, 'perfil'):
-                contas_usuario = user.perfil.contas.all()
-                queryset = queryset.filter(
-                    Q(contas__isnull=True) | Q(contas__in=contas_usuario)
-                ).distinct()
-            else:
-                queryset = queryset.filter(contas__isnull=True)
+        from .services.escopo_operador_crm import (
+            aplicar_escopo_municipes_queryset,
+            categorias_efetivas_request,
+        )
+        from .services.perfil_municipe import (
+            categorias_nomes_de_perfis,
+            contas_ids_escopo_usuario,
+            linhas_cargo_orgao_de_perfis,
+            perfis_para_exibicao,
+        )
 
-        # --- 3. FILTRO POR CATEGORIA (O QUE FALTAVA) ---
-        # O Frontend manda ?categoria_id=1&categoria_id=2...
-        # Usamos .getlist() para pegar todos os IDs enviados
-        categoria_ids = request.query_params.getlist('categoria_id')
-        if categoria_ids:
-            queryset = queryset.filter(perfis__categoria__id__in=categoria_ids).distinct()
-        # -----------------------------------------------
+        categoria_ids = categorias_efetivas_request(request)
+        queryset = aplicar_escopo_municipes_queryset(
+            queryset,
+            user,
+            categoria_ids_opcional=categoria_ids if categoria_ids else None,
+        )
+        contas_escopo = contas_ids_escopo_usuario(user)
 
         # 4. BUSCA TEXTUAL (q)
         termo_busca = self.request.query_params.get('q', None)
@@ -2495,6 +2725,8 @@ class ExportMunicipesExcelView(APIView):
             queryset = queryset.filter(query_palavras_nome | query_outros_campos).distinct()
 
         # 5. GERAÇÃO DO ARQUIVO EXCEL
+        from .services.campanhas_email import extract_primary_email, extract_primary_phone
+
         workbook = openpyxl.Workbook()
         sheet = workbook.active
         sheet.title = 'Contatos'
@@ -2503,14 +2735,18 @@ class ExportMunicipesExcelView(APIView):
         sheet.append(headers)
 
         for municipe in queryset:
-            email_principal = ''
-            if municipe.emails and isinstance(municipe.emails, list) and len(municipe.emails) > 0:
-                email_principal = municipe.emails[0].get('email', '')
-
-            telefone = municipe.telefones[0].get('numero', '') if municipe.telefones else ''
+            email_principal = extract_primary_email(municipe) or ''
+            telefone = extract_primary_phone(municipe)
             data_nasc_formatada = municipe.data_nascimento.strftime('%d/%m/%Y') if municipe.data_nascimento else ''
-            categorias = [p.categoria.nome for p in municipe.perfis.all().select_related('categoria') if p.categoria]
-            categoria_nome = ', '.join(sorted(set(categorias))) if categorias else ''
+            perfis = perfis_para_exibicao(
+                municipe,
+                categoria_ids=categoria_ids or None,
+                contas_ids=contas_escopo,
+            )
+            categoria_nome = ', '.join(categorias_nomes_de_perfis(perfis))
+            linhas_cargo = linhas_cargo_orgao_de_perfis(perfis)
+            cargo_exibir = '; '.join(linhas_cargo) if linhas_cargo else municipe.cargo
+            orgao_exibir = municipe.orgao if not linhas_cargo else ''
             contas_vinculadas = ", ".join([conta.nome for conta in municipe.contas.all()])
 
             sheet.append([
@@ -2519,8 +2755,8 @@ class ExportMunicipesExcelView(APIView):
                 data_nasc_formatada,
                 email_principal,
                 telefone,
-                municipe.cargo,
-                municipe.orgao,
+                cargo_exibir,
+                orgao_exibir,
                 categoria_nome,
                 contas_vinculadas
             ])
@@ -2534,7 +2770,7 @@ class ExportMunicipesExcelView(APIView):
         return response
     
 class GerarPdfMunicipesReportView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CanAccessContacts]
 
     def get(self, request, *args, **kwargs):
         user = request.user
@@ -2548,20 +2784,24 @@ class GerarPdfMunicipesReportView(APIView):
         
         queryset = Municipe.objects.prefetch_related('perfis__categoria', 'contas').all().order_by(*order_fields)
 
-        if is_in_group(user, 'Membro do Gabinete') or is_in_group(user, 'Secretária'):
-            if hasattr(user, 'perfil'):
-                contas_usuario = user.perfil.contas.all()
-                queryset = queryset.filter(
-                    Q(contas__isnull=True) | Q(contas__in=contas_usuario)
-                ).distinct()
-            else:
-                queryset = queryset.filter(contas__isnull=True)
+        from .services.escopo_operador_crm import (
+            aplicar_escopo_municipes_queryset,
+            categorias_efetivas_request,
+        )
+        from .services.perfil_municipe import (
+            categorias_nomes_de_perfis,
+            contas_ids_escopo_usuario,
+            linhas_cargo_orgao_de_perfis,
+            perfis_para_exibicao,
+        )
 
-        # --- CORREÇÃO: FILTRO POR CATEGORIA AQUI TAMBÉM ---
-        categoria_ids = request.query_params.getlist('categoria_id')
-        if categoria_ids:
-            queryset = queryset.filter(perfis__categoria__id__in=categoria_ids).distinct()
-        # --------------------------------------------------
+        categoria_ids = categorias_efetivas_request(request)
+        contas_escopo = contas_ids_escopo_usuario(user)
+        queryset = aplicar_escopo_municipes_queryset(
+            queryset,
+            user,
+            categoria_ids_opcional=categoria_ids if categoria_ids else None,
+        )
 
         termo_busca = request.query_params.get('q', None)
         if termo_busca:
@@ -2580,25 +2820,25 @@ class GerarPdfMunicipesReportView(APIView):
 
         
         # PREPARAÇÃO DOS DADOS PARA O TEMPLATE
+        from .services.campanhas_email import extract_primary_email, extract_primary_phone
+
         municipes_data = []
         for municipe in queryset:
-            telefone_principal = ''
-            if municipe.telefones and isinstance(municipe.telefones, list) and len(municipe.telefones) > 0:
-                telefone_principal = municipe.telefones[0].get('numero', '')
-            
-            email_principal = ''
-            if municipe.emails and isinstance(municipe.emails, list) and len(municipe.emails) > 0:
-                # Pega o primeiro email da lista como principal
-                email_principal = municipe.emails[0].get('email', '') if isinstance(municipe.emails[0], dict) else str(municipe.emails[0])
-
-            categorias_pdf = [p.categoria.nome for p in municipe.perfis.all() if p.categoria]
+            telefone_principal = extract_primary_phone(municipe)
+            email_principal = extract_primary_email(municipe) or ''
+            perfis = perfis_para_exibicao(
+                municipe,
+                categoria_ids=categoria_ids or None,
+                contas_ids=contas_escopo,
+            )
+            linhas_cargo = linhas_cargo_orgao_de_perfis(perfis)
             municipes_data.append({
                 'nome': municipe.nome_completo,
                 'telefone': telefone_principal,
                 'email': email_principal,
-                'cargo': municipe.cargo,
-                'orgao': municipe.orgao,
-                'categoria': ', '.join(sorted(set(categorias_pdf))) if categorias_pdf else '',
+                'cargo': '; '.join(linhas_cargo) if linhas_cargo else municipe.cargo,
+                'orgao': municipe.orgao if not linhas_cargo else '',
+                'categoria': ', '.join(categorias_nomes_de_perfis(perfis)),
             })
             
         # CABEÇALHO DO PDF
@@ -2670,40 +2910,40 @@ class GerarPdfGoogleAgendaView(APIView):
             # --------------------------------------------------------------------
             
             user_logado = request.user
-            agenda_id = request.query_params.get('agenda_id')
-            
-            # --- ETAPA 1: BUSCAR CREDENCIAIS (CORRIGIDO) ---
-            token_google = None
+            conta_google_id = request.query_params.get('conta_google_id') or request.query_params.get('agenda_id')
+            if not conta_google_id:
+                return Response(
+                    {'detail': 'conta_google_id é obrigatório para gerar o relatório.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            try:
+                conta_google_id = int(conta_google_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {'detail': 'conta_google_id inválido.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-            # 1. Se veio um ID de Agenda (Conta), tentamos pegar o token de alguém dessa conta
-            if agenda_id:
-                # Busca o primeiro token válido de qualquer usuário vinculado a esta conta
-                token_google = GoogleApiToken.objects.filter(
-                    usuario__perfil__contas__id=agenda_id
-                ).first()
+            if not GoogleCalendarCompatibilityService.usuario_pode_visualizar_eventos(user_logado, conta_google_id):
+                return Response(
+                    {'detail': 'Você não tem permissão para visualizar esta agenda.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
-            # 2. Se não achou token pela conta (ou não veio ID), tenta o usuário logado
-            if not token_google:
-                try:
-                    token_google = GoogleApiToken.objects.get(usuario=user_logado)
-                except GoogleApiToken.DoesNotExist:
-                    return Response({'detail': 'Autorização do Google não encontrada. O gestor da conta precisa conectar ao Google.'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                conta_google = ContaGoogleCalendar.objects.get(id=conta_google_id, ativa=True)
+            except ContaGoogleCalendar.DoesNotExist:
+                return Response(
+                    {'detail': 'Conta Google não encontrada ou inativa.'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
-            # --- A PARTIR DAQUI É O SEU CÓDIGO ORIGINAL (MANTIDO) ---
-            credentials = Credentials(
-                token=token_google.access_token,
-                refresh_token=token_google.refresh_token,
-                token_uri='https://oauth2.googleapis.com/token',
-                client_id=settings.GOOGLE_CLIENT_ID,
-                client_secret=settings.GOOGLE_CLIENT_SECRET
+            # --- ETAPA 1: RESOLVER CREDENCIAIS DA CONTA SELECIONADA ---
+            service = GoogleCalendarCompatibilityService.get_calendar_service(
+                user_logado,
+                conta_google_id,
+                requer_token_proprio=False,
             )
-            if credentials.expired and credentials.refresh_token:
-                credentials.refresh(Request())
-                token_google.access_token = credentials.token
-                token_google.save()
-
-            # --- ETAPA 2: BUSCAR EVENTOS ---
-            service = build('calendar', 'v3', credentials=credentials)
             
             start_date_str = request.query_params.get('data_inicio')
             end_date_str = request.query_params.get('data_fim')
@@ -2727,7 +2967,7 @@ class GerarPdfGoogleAgendaView(APIView):
             
             # Busca eventos usando a data ORIGINAL (não a ajustada)
             events_result = service.events().list(
-                calendarId='primary', 
+                calendarId=conta_google.calendar_id,
                 timeMin=start_date.isoformat() + "Z", # Usa data original para buscar eventos
                 timeMax=end_date.isoformat() + "Z",   # Adicione "Z" para UTC
                 singleEvents=True,
@@ -3131,13 +3371,10 @@ class AniversariantesDoDiaView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        base_queryset = Municipe.objects.filter(ativo=True)
+        from .services.escopo_operador_crm import aplicar_escopo_municipes_queryset
 
-        if user.is_superuser:
-            base_queryset = Municipe.objects.all()
-        elif hasattr(user, 'perfil'):
-            base_queryset = Municipe.objects.filter(contas__in=user.perfil.contas.all()).distinct()
-        else:
-            return Municipe.objects.none()
+        base_queryset = aplicar_escopo_municipes_queryset(base_queryset, user)
 
         data_param = self.request.query_params.get('data', None) 
 
@@ -3154,8 +3391,228 @@ class AniversariantesDoDiaView(generics.ListAPIView):
             data_nascimento__month=data_selecionada.month
         )
 
+
+class GerarPdfAniversariantesDoDiaView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        data_param = request.query_params.get("data")
+        data_selecionada = parse_date(data_param) if data_param else timezone.localdate()
+        if not data_selecionada:
+            return Response(
+                {"detail": "Data inválida. Use o formato YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if user.is_superuser:
+            base_queryset = Municipe.objects.filter(ativo=True)
+            contas_contexto = None
+        elif hasattr(user, "perfil"):
+            contas_contexto = list(user.perfil.contas.all())
+            from .services.escopo_operador_crm import aplicar_escopo_municipes_queryset
+
+            base_queryset = aplicar_escopo_municipes_queryset(
+                Municipe.objects.filter(ativo=True), user
+            )
+        else:
+            base_queryset = Municipe.objects.none()
+            contas_contexto = None
+
+        aniversariantes = base_queryset.filter(
+            data_nascimento__day=data_selecionada.day,
+            data_nascimento__month=data_selecionada.month,
+        ).order_by("nome_completo")
+
+        linhas = []
+        for municipe in aniversariantes:
+            telefone_principal = "-"
+            telefones = getattr(municipe, "telefones", None) or []
+            if isinstance(telefones, list) and telefones:
+                primeiro_tel = telefones[0]
+                if isinstance(primeiro_tel, dict):
+                    telefone_principal = primeiro_tel.get("numero") or "-"
+                else:
+                    telefone_principal = str(primeiro_tel) or "-"
+
+            perfis_qs = PerfilMunicipe.objects.filter(municipe=municipe, ativo=True)
+            if contas_contexto is not None:
+                perfis_qs = perfis_qs.filter(conta__in=contas_contexto)
+            perfil_ref = perfis_qs.select_related("categoria").order_by("-id").first()
+            cargo_ref = "-"
+            categoria_ref = "-"
+            if perfil_ref:
+                cargo_ref = (perfil_ref.cargo or perfil_ref.instituicao or perfil_ref.departamento or "-").strip() or "-"
+                categoria_ref = perfil_ref.categoria.nome if perfil_ref.categoria else "-"
+
+            linhas.append(
+                {
+                    "nome": municipe.nome_completo,
+                    "cargo": cargo_ref,
+                    "telefone": telefone_principal,
+                    "categoria": categoria_ref,
+                }
+            )
+
+        context = {
+            "data_aniversario": data_selecionada,
+            "total_aniversariantes": len(linhas),
+            "aniversariantes": linhas,
+            "gerado_em": timezone.localtime(),
+            "usuario_emissao": user.get_full_name() or user.username,
+        }
+
+        try:
+            html = render_to_string("relatorios/aniversariantes_do_dia_pdf.html", context)
+            pdf_file = HTML(string=html, base_url=str(settings.BASE_DIR)).write_pdf()
+            response = HttpResponse(pdf_file, content_type="application/pdf")
+            response["Content-Disposition"] = (
+                f'attachment; filename="aniversariantes_{data_selecionada.strftime("%Y%m%d")}.pdf"'
+            )
+            return response
+        except Exception as exc:
+            return Response(
+                {"detail": f"Erro ao gerar relatório de aniversariantes: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
 class BuscaGlobalView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def _usar_ia(request) -> bool:
+        valor = (request.query_params.get('ia') or '').strip().lower()
+        return valor in ('1', 'true', 'yes')
+
+    @staticmethod
+    def _municipe_queryset_global(user):
+        if user.is_superuser:
+            return Municipe.objects.all()
+        if hasattr(user, 'perfil') and is_in_group(
+            user, ['Recepção', 'Membro do Gabinete', 'Secretária']
+        ):
+            return Municipe.objects.filter(contas__in=user.perfil.contas.all()).distinct()
+        return Municipe.objects.none()
+
+    @staticmethod
+    def _atendimento_queryset_global(user):
+        if is_in_group(user, 'Recepção'):
+            return Atendimento.objects.none()
+        queryset = Atendimento.objects.all()
+        if user.is_superuser:
+            return queryset
+        if hasattr(user, 'perfil'):
+            return queryset.filter(conta__in=user.perfil.contas.all()).filter(
+                Q(responsavel=user) | Q(responsavel__isnull=True)
+            )
+        return Atendimento.objects.none()
+
+    @classmethod
+    def _usuario_pode_ver_atendimento_global(cls, atendimento, user):
+        return cls._atendimento_queryset_global(user).filter(id=atendimento.id).exists()
+
+    def _busca_textual_global(self, user, termo_busca):
+        from .services.busca_textual import filtrar_queryset_atendimento, filtrar_queryset_municipe
+
+        resultados = []
+        atendimento_qs = self._atendimento_queryset_global(user)
+        atendimentos_encontrados = (
+            filtrar_queryset_atendimento(atendimento_qs, termo_busca)
+            .order_by('-data_criacao')[:5]
+        )
+        for atendimento in atendimentos_encontrados:
+            resultados.append({
+                'tipo': 'atendimento',
+                'id': atendimento.id,
+                'texto_principal': f"Protocolo {atendimento.protocolo}",
+                'texto_secundario': atendimento.titulo,
+                'url': f"/atendimentos/{atendimento.id}",
+                'modo_busca': 'textual',
+            })
+
+        municipe_qs = self._municipe_queryset_global(user)
+        municipes_encontrados = (
+            filtrar_queryset_municipe(municipe_qs, termo_busca)
+            .order_by('nome_completo')[:100]
+        )
+        for municipe in municipes_encontrados:
+            resultados.append({
+                'tipo': 'municipe',
+                'id': municipe.id,
+                'texto_principal': municipe.nome_completo,
+                'texto_secundario': f"CPF: {municipe.cpf or 'Não informado'}",
+                'url': f"/municipes/{municipe.id}/historico",
+                'modo_busca': 'textual',
+            })
+        return resultados
+
+    def _busca_ia_global(self, user, termo_busca):
+        from .services.ia_intelligence import (
+            buscar_atendimentos_semantico_otimizado,
+            buscar_municipes_semantico,
+        )
+
+        resultados = []
+        municipe_qs = self._municipe_queryset_global(user)
+        municipe_ids_permitidos = set(municipe_qs.values_list('id', flat=True))
+
+        if not is_in_group(user, 'Recepção'):
+            raw_atendimentos = []
+            if user.is_superuser:
+                raw_atendimentos = buscar_atendimentos_semantico_otimizado(
+                    termo_busca, conta_id=None, top_k=10
+                )
+            elif hasattr(user, 'perfil'):
+                for conta in user.perfil.contas.all():
+                    raw_atendimentos.extend(
+                        buscar_atendimentos_semantico_otimizado(
+                            termo_busca, conta_id=conta.id, top_k=5
+                        )
+                    )
+
+            por_id = {}
+            for item in raw_atendimentos:
+                atendimento = item['atendimento']
+                if not self._usuario_pode_ver_atendimento_global(atendimento, user):
+                    continue
+                atual = por_id.get(atendimento.id)
+                if atual is None or item['score'] > atual['score']:
+                    por_id[atendimento.id] = item
+
+            for item in sorted(por_id.values(), key=lambda x: x['score'], reverse=True)[:5]:
+                atendimento = item['atendimento']
+                resultados.append({
+                    'tipo': 'atendimento',
+                    'id': atendimento.id,
+                    'texto_principal': f"Protocolo {atendimento.protocolo}",
+                    'texto_secundario': item.get('snippet') or atendimento.titulo,
+                    'url': f"/atendimentos/{atendimento.id}",
+                    'score_match': item['score_percentual'],
+                    'modo_busca': 'ia',
+                })
+
+        raw_municipes = buscar_municipes_semantico(termo_busca, limite=20)
+        municipes_adicionados = 0
+        for item in raw_municipes:
+            municipe = item['municipe']
+            if municipe.id not in municipe_ids_permitidos:
+                continue
+            cargo = _formatar_cargo_orgao_municipe(municipe)
+            resultados.append({
+                'tipo': 'municipe',
+                'id': municipe.id,
+                'texto_principal': municipe.nome_completo,
+                'texto_secundario': cargo or f"CPF: {municipe.cpf or 'Não informado'}",
+                'url': f"/municipes/{municipe.id}/historico",
+                'score_match': item['score_percentual'],
+                'modo_busca': 'ia',
+            })
+            municipes_adicionados += 1
+            if municipes_adicionados >= 20:
+                break
+
+        return resultados
 
     def get(self, request, *args, **kwargs):
         termo_busca = self.request.query_params.get('q', None)
@@ -3163,65 +3620,31 @@ class BuscaGlobalView(APIView):
             return Response([])
 
         user = self.request.user
+        usar_ia = self._usar_ia(request)
+        ia_fallback = False
         resultados = []
 
-        # Busca de Atendimentos (sem alteração)
-        if not is_in_group(user, 'Recepção'):
-            atendimento_qs = Atendimento.objects.all()
-            if not user.is_superuser:
-                if hasattr(user, 'perfil'):
-                    atendimento_qs = atendimento_qs.filter(conta__in=user.perfil.contas.all())
-                    atendimento_qs = atendimento_qs.filter(Q(responsavel=user) | Q(responsavel__isnull=True))
-                else:
-                    atendimento_qs = Atendimento.objects.none()
-            
-            atendimentos_encontrados = atendimento_qs.filter(
-                Q(titulo__icontains=termo_busca) | Q(protocolo__icontains=termo_busca)
-            )[:5]
+        if usar_ia:
+            try:
+                resultados = self._busca_ia_global(user, termo_busca)
+            except Exception as exc:
+                logger.warning("Busca global IA indisponível, fallback textual: %s", exc)
+                resultados = []
+                ia_fallback = True
 
-            for atendimento in atendimentos_encontrados:
-                resultados.append({
-                    'tipo': 'atendimento', 'id': atendimento.id,
-                    'texto_principal': f"Protocolo {atendimento.protocolo}",
-                    'texto_secundario': atendimento.titulo,
-                    'url': f"/atendimentos/{atendimento.id}"
-                })
-
-        # Munícipes: superuser vê todos; demais só os vinculados às contas do perfil
-        if user.is_superuser:
-            municipe_qs = Municipe.objects.all()
-        elif hasattr(user, 'perfil') and is_in_group(user, ['Recepção', 'Membro do Gabinete', 'Secretária']):
-            municipe_qs = Municipe.objects.filter(contas__in=user.perfil.contas.all()).distinct()
+            if not resultados:
+                resultados = self._busca_textual_global(user, termo_busca)
+                ia_fallback = True
         else:
-            municipe_qs = Municipe.objects.none()
-
-        # --- AQUI ESTÁ A CORREÇÃO DA BUSCA POR MUNÍCIPES ---
-        query_palavras = Q()
-        for palavra in termo_busca.split():
-            # Nome, nome de guerra ou cargo/instituição nos perfis
-            query_palavras &= (
-                Q(nome_completo__icontains=palavra) |
-                Q(nome_de_guerra__icontains=palavra) |
-                Q(perfis__cargo__icontains=palavra) |
-                Q(perfis__instituicao__icontains=palavra)
-            )
-        
-        # A busca por CPF continua separada
-        query_cpf = Q(cpf__icontains=termo_busca)
-        
-        # A consulta final une as duas buscas com um "OU"
-        municipes_encontrados = municipe_qs.filter(query_palavras | query_cpf).distinct()[:100]
-        # --- FIM DA CORREÇÃO ---
-
-        for municipe in municipes_encontrados:
-            resultados.append({
-                'tipo': 'municipe', 'id': municipe.id,
-                'texto_principal': municipe.nome_completo,
-                'texto_secundario': f"CPF: {municipe.cpf or 'Não informado'}",
-                'url': f"/municipes/{municipe.id}/historico"
-            })
+            resultados = self._busca_textual_global(user, termo_busca)
 
         serializer = BuscaGlobalSerializer(resultados, many=True)
+        if usar_ia:
+            return Response({
+                'modo_busca': 'ia' if not ia_fallback else 'textual',
+                'ia_fallback': ia_fallback,
+                'resultados': serializer.data,
+            })
         return Response(serializer.data)
 
 
@@ -3428,37 +3851,51 @@ class CriarEventoGoogleView(APIView):
     def post(self, request, pk, *args, **kwargs):
         user = request.user
         
-        # 1. Busca a solicitação de agenda e o token do Google do usuário
+        # 1. Busca a solicitação de agenda
         try:
             solicitacao = SolicitacaoAgenda.objects.get(pk=pk)
-            token_google = GoogleApiToken.objects.get(usuario=user)
         except SolicitacaoAgenda.DoesNotExist:
             return Response({'detail': 'Solicitação de agenda não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
-        except GoogleApiToken.DoesNotExist:
-            return Response({'detail': 'Autorização do Google não encontrada. Por favor, autorize o acesso nas configurações.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 2. Tenta usar novo sistema de múltiplas contas Google (compatibilidade)
+        try:
+            # Busca serviço usando compatibilidade (usa conta padrão)
+            service = GoogleCalendarCompatibilityService.get_calendar_service_legado(user)
+        except (GoogleCalendarAuthError, GoogleCalendarPermissionError) as e:
+            return Response({
+                'detail': f'Erro de autorização do Google: {str(e)}. Faça login novamente nas configurações.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            # Fallback para sistema legado se novo sistema falhar
+            try:
+                token_google = GoogleApiToken.objects.get(usuario=user)
+            except GoogleApiToken.DoesNotExist:
+                return Response({
+                    'detail': 'Autorização do Google não encontrada. Faça login nas configurações.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Usa sistema legado
+            credentials = Credentials(
+                token=token_google.access_token,
+                refresh_token=token_google.refresh_token,
+                token_uri='https://oauth2.googleapis.com/token',
+                client_id=settings.GOOGLE_CLIENT_ID,
+                client_secret=settings.GOOGLE_CLIENT_SECRET,
+                scopes=['https://www.googleapis.com/auth/calendar.events']
+            )
+            
+            if credentials.expired and credentials.refresh_token:
+                credentials.refresh(GoogleAuthRequest())
+                token_google.access_token = credentials.token
+                token_google.save()
+            
+            service = build('calendar', 'v3', credentials=credentials)
 
-        # 2. Garante que a solicitação está no status correto para ser agendada
+        # 3. Garante que a solicitação está no status correto para ser agendada
         if solicitacao.status != 'AGENDADO' or not solicitacao.data_agendada or not solicitacao.data_agendada_fim:
             return Response({'detail': 'Esta solicitação não está confirmada ou não possui data/hora definidas.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 3. Monta as credenciais do Google a partir do token salvo
-        credentials = Credentials(
-            token=token_google.access_token,
-            refresh_token=token_google.refresh_token,
-            token_uri='https://oauth2.googleapis.com/token',
-            client_id=settings.GOOGLE_CLIENT_ID,
-            client_secret=settings.GOOGLE_CLIENT_SECRET,
-            scopes=['https://www.googleapis.com/auth/calendar.events']
-        )
-
-        # 4. Verifica se o token de acesso expirou e o renova se necessário
-        if credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-            # Salva o novo token de acesso atualizado no banco
-            token_google.access_token = credentials.token
-            token_google.save()
-
-        # 5. Monta o evento a ser criado
+        # 4. Monta o evento a ser criado
         # Regra da Descrição: Assunto + Detalhes
         descricao_formatada = (
             f"Assunto: {solicitacao.assunto}\n\n"
@@ -3487,8 +3924,21 @@ class CriarEventoGoogleView(APIView):
 
         # 6. Tenta criar o evento usando a API do Google
         try:
-            service = build('calendar', 'v3', credentials=credentials)
-            evento_criado = service.events().insert(calendarId='primary', body=evento).execute()
+            # Busca calendar_id da conta padrão ou usa 'primary' como fallback
+            calendar_id = 'primary'
+            try:
+                # Tenta buscar conta Google padrão do usuário
+                conta_usuario = None
+                if hasattr(user, 'perfil') and hasattr(user.perfil, 'contas'):
+                    conta_usuario = user.perfil.contas.first()
+                
+                if conta_usuario and conta_usuario.conta_google_padrao:
+                    calendar_id = conta_usuario.conta_google_padrao.calendar_id
+            except Exception:
+                # Se falhar, usa 'primary' (comportamento original)
+                pass
+            
+            evento_criado = service.events().insert(calendarId=calendar_id, body=evento).execute()
             
             # Adiciona o link do evento do Google à nossa solicitação (opcional, mas muito útil)
             solicitacao.link_google_agenda = evento_criado.get('htmlLink')
@@ -3981,6 +4431,147 @@ class ReservaEspacoDetailView(generics.RetrieveUpdateDestroyAPIView):
             # Exclui apenas a instância única (comportamento padrão)
             instance.delete()
 
+
+class GerarPdfEspacosPeriodoView(APIView):
+    """
+    Relatório PDF em grade de calendário (estilo Google Agenda) com reservas e
+  solicitações de agenda agendadas por período e, opcionalmente, por espaço.
+    """
+    permission_classes = [permissions.IsAuthenticated, CanManageReservas]
+
+    def _filtrar_por_contas(self, queryset, user):
+        if user.is_superuser:
+            return queryset
+        if hasattr(user, 'perfil'):
+            return queryset.filter(espaco__contas__in=user.perfil.contas.all()).distinct()
+        return queryset.none()
+
+    def _evento_reserva(self, reserva):
+        inicio = timezone.localtime(reserva.data_inicio)
+        fim = timezone.localtime(reserva.data_fim)
+        return {
+            'summary': reserva.titulo,
+            'espaco_nome': reserva.espaco.nome,
+            'hora_inicio': inicio.strftime('%H:%M'),
+            'hora_fim': fim.strftime('%H:%M'),
+            'solicitante': reserva.solicitante.nome_completo if reserva.solicitante else '',
+            'tipo': 'reserva',
+            '_sort': inicio,
+        }
+
+    def _evento_agenda(self, agenda):
+        inicio = timezone.localtime(agenda.data_agendada)
+        fim = timezone.localtime(agenda.data_agendada_fim)
+        return {
+            'summary': agenda.assunto,
+            'espaco_nome': agenda.espaco.nome if agenda.espaco else '—',
+            'hora_inicio': inicio.strftime('%H:%M'),
+            'hora_fim': fim.strftime('%H:%M'),
+            'solicitante': agenda.solicitante.nome_completo if agenda.solicitante else '',
+            'tipo': 'agenda',
+            '_sort': inicio,
+        }
+
+    def get(self, request, *args, **kwargs):
+        data_inicio_str = request.query_params.get('data_inicio')
+        data_fim_str = request.query_params.get('data_fim')
+        espaco_id = request.query_params.get('espaco_id')
+
+        if not data_inicio_str or not data_fim_str:
+            return Response(
+                {'detail': 'Informe data_inicio e data_fim (YYYY-MM-DD).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            start_date = datetime.strptime(data_inicio_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(data_fim_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'detail': 'Datas inválidas. Use o formato YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if end_date < start_date:
+            return Response(
+                {'detail': 'data_fim deve ser igual ou posterior a data_inicio.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        inicio_dt = timezone.make_aware(datetime.combine(start_date, time.min))
+        fim_dt = timezone.make_aware(datetime.combine(end_date, time.max))
+
+        reservas_qs = ReservaEspaco.objects.filter(
+            data_inicio__lte=fim_dt,
+            data_fim__gte=inicio_dt,
+        ).select_related('espaco', 'solicitante')
+        reservas_qs = self._filtrar_por_contas(reservas_qs, request.user)
+
+        agendas_qs = SolicitacaoAgenda.objects.filter(
+            status='AGENDADO',
+            espaco__isnull=False,
+            data_agendada__isnull=False,
+            data_agendada_fim__isnull=False,
+            data_agendada__lte=fim_dt,
+            data_agendada_fim__gte=inicio_dt,
+        ).select_related('espaco', 'solicitante')
+        agendas_qs = self._filtrar_por_contas(agendas_qs, request.user)
+
+        espaco_label = 'Todos os espaços'
+        if espaco_id:
+            try:
+                espaco_id_int = int(espaco_id)
+            except (TypeError, ValueError):
+                return Response({'detail': 'espaco_id inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+            reservas_qs = reservas_qs.filter(espaco_id=espaco_id_int)
+            agendas_qs = agendas_qs.filter(espaco_id=espaco_id_int)
+            espaco_obj = Espaco.objects.filter(pk=espaco_id_int).first()
+            if espaco_obj:
+                espaco_label = espaco_obj.nome
+
+        eventos_por_dia = defaultdict(list)
+
+        for reserva in reservas_qs:
+            dia = timezone.localtime(reserva.data_inicio).date()
+            if start_date <= dia <= end_date:
+                eventos_por_dia[dia].append(self._evento_reserva(reserva))
+
+        for agenda in agendas_qs:
+            dia = timezone.localtime(agenda.data_agendada).date()
+            if start_date <= dia <= end_date:
+                eventos_por_dia[dia].append(self._evento_agenda(agenda))
+
+        for dia in eventos_por_dia:
+            eventos_por_dia[dia].sort(key=lambda e: e.get('_sort') or datetime.min)
+            for ev in eventos_por_dia[dia]:
+                ev.pop('_sort', None)
+
+        meses_do_relatorio = build_meses_do_relatorio(start_date, end_date, eventos_por_dia)
+        periodo_label = f"{start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
+
+        context = {
+            'hoje': timezone.now().date(),
+            'meses_do_relatorio': meses_do_relatorio,
+            'periodo_label': periodo_label,
+            'espaco_label': espaco_label,
+            'usuario_emissao': request.user.get_full_name() or request.user.username,
+        }
+
+        try:
+            html_string = render_to_string('espacos/relatorio_espacos_periodo.html', context)
+            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            nome_arquivo = f"relatorio_espacos_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.pdf"
+            response = HttpResponse(pdf_file, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{nome_arquivo}"'
+            return response
+        except Exception as e:
+            logger.exception('Erro ao gerar PDF de espaços: %s', e)
+            return Response(
+                {'detail': f'Ocorreu um erro ao gerar o PDF: {e}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
 class RemoverLinkGoogleView(APIView):
     """
     Remove o link do Google Agenda de uma solicitação específica.
@@ -4110,44 +4701,11 @@ class TramitacaoAgendaViewSet(viewsets.ModelViewSet):
 # -----------------------------------------------------------------------------
 
 def aplicar_filtros_bi(queryset, request):
-    """
-    Função centralizada para aplicar filtros de BI (Datas, Contas, Responsáveis)
-    """
-    user = request.user
-    
-    # 1. Segurança de Conta (Tenant)
-    # Se não for Superuser, restringe às contas do perfil
-    if not user.is_superuser:
-        if hasattr(user, 'perfil'):
-            queryset = queryset.filter(conta__in=user.perfil.contas.all())
-        else:
-            return queryset.none()
+    """Delega ao filtro unificado de BI (período com timezone-aware)."""
+    from .reporting import queryset_bi_atendimentos
 
-    # 2. Filtros de Data
-    data_inicio = request.query_params.get('data_inicio')
-    data_fim = request.query_params.get('data_fim')
-    
-    if data_inicio: 
-        queryset = queryset.filter(data_criacao__gte=f'{data_inicio} 00:00:00')
-    if data_fim: 
-        queryset = queryset.filter(data_criacao__lte=f'{data_fim} 23:59:59')
-
-    # 3. Filtro de Conta Específica (Admin/Gestor selecionou no dropdown)
-    conta_id = request.query_params.get('conta_id')
-    if conta_id: 
-        queryset = queryset.filter(conta_id=conta_id)
-
-    # 4. Filtros de Responsável (NOVO: usuario_id tem prioridade sobre apenas_meus)
-    usuario_id = request.query_params.get('usuario_id')
-    
-    if usuario_id:
-        # Se veio um ID específico (Superuser selecionou no Dropdown)
-        queryset = queryset.filter(responsavel_id=usuario_id)
-    elif request.query_params.get('apenas_meus') == 'true':
-        # Se não selecionou usuário, mas marcou "Apenas Meus"
-        queryset = queryset.filter(responsavel=user)
-        
-    return queryset
+    ids = queryset_bi_atendimentos(request.user, request).values_list('pk', flat=True)
+    return queryset.filter(pk__in=ids)
 
 class RelatorioProdutividadeEquipeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -4220,78 +4778,178 @@ class RelatorioStatusAtendimentosView(APIView):
             })
             
         return Response(resultado)
+
+
+def aplicar_filtros_bi_visitas(queryset, request):
+    """
+    Reaproveita a mesma lógica de filtros do BI para registros de visita/check-in.
+    """
+    user = request.user
+
+    # 1. Segurança por escopo de conta
+    if user.is_superuser:
+        queryset = queryset.all()
+    elif hasattr(user, 'perfil'):
+        queryset = queryset.filter(conta_destino__in=user.perfil.contas.all())
+    else:
+        return queryset.none()
+
+    # 2. Filtros de data
+    data_inicio = request.query_params.get('data_inicio')
+    data_fim = request.query_params.get('data_fim')
+    if data_inicio:
+        queryset = queryset.filter(data_checkin__gte=f'{data_inicio} 00:00:00')
+    if data_fim:
+        queryset = queryset.filter(data_checkin__lte=f'{data_fim} 23:59:59')
+
+    # 3. Filtro de conta específica
+    conta_id = request.query_params.get('conta_id')
+    if conta_id:
+        queryset = queryset.filter(conta_destino_id=conta_id)
+
+    # 4. Filtro por atendente/usuário
+    usuario_id = request.query_params.get('usuario_id')
+    if usuario_id:
+        queryset = queryset.filter(registrado_por_id=usuario_id)
+    elif request.query_params.get('apenas_meus') == 'true':
+        queryset = queryset.filter(registrado_por=user)
+
+    return queryset
+
+
+class RelatorioBiAtendimentosPorAssuntoView(APIView):
+    """Distribuição de atendimentos por assunto (substitui métricas legadas de check-in no BI)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        from .reporting import serializar_atendimentos_por_assunto
+
+        qs = aplicar_filtros_bi(Atendimento.objects.all(), request)
+        return Response(serializar_atendimentos_por_assunto(qs, top=12))
+
+
+class RelatorioVisitasVolumeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        queryset = aplicar_filtros_bi_visitas(RegistroVisita.objects.all(), request)
+        return Response({"total": queryset.count()})
+
+
+class RelatorioVisitasTopTrendsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        queryset = aplicar_filtros_bi_visitas(RegistroVisita.objects.all(), request).only('data_checkin')
+        volumes_por_dia = defaultdict(int)
+        for visita in queryset:
+            if not visita.data_checkin:
+                continue
+            dia_local = timezone.localtime(visita.data_checkin).date()
+            volumes_por_dia[dia_local] += 1
+
+        top_10 = sorted(volumes_por_dia.items(), key=lambda x: x[1], reverse=True)[:10]
+        data = [
+            {
+                "data_ref": dia.strftime('%Y-%m-%d'),
+                "label": dia.strftime('%d/%m/%Y'),
+                "total": total,
+            }
+            for dia, total in top_10
+        ]
+        return Response(data)
+
+
+class RelatorioVisitasTopAtendentesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        queryset = aplicar_filtros_bi_visitas(RegistroVisita.objects.all(), request)
+        data = queryset.values(
+            nome_destino=Coalesce(
+                F('usuario_destino__first_name'),
+                F('usuario_destino__username'),
+                Value('Sem destino'),
+                output_field=CharField()
+            )
+        ).annotate(total=Count('id')).order_by('-total')[:10]
+        return Response(data)
     
 class GerarRelatorioBiPdfView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         try:
-            # 1. Filtros (Já inclui a lógica nova de usuario_id)
-            qs_base = aplicar_filtros_bi(Atendimento.objects.all(), request)
-            
-            # 2. KPIs
+            from .reporting import (
+                parse_date_query_param,
+                queryset_bi_atendimentos,
+                resolver_logos_relatorio_pdf,
+                serializar_atendimentos_por_assunto,
+            )
+
+            user = request.user
+            qs_base = queryset_bi_atendimentos(user, request)
+
             total_atendimentos = qs_base.count()
             total_concluidos = qs_base.filter(status='CONCLUIDO').count()
             total_abertos = qs_base.filter(status='ABERTO').count()
-            
-            # 3. Listas
-            produtividade = qs_base.values(
-                nome=Coalesce(F('responsavel__first_name'), Value('Não Atribuído'), output_field=CharField())
-            ).annotate(qtd=Count('id')).order_by('-qtd')[:10]
 
-            solicitantes = qs_base.values(
-                nome=F('municipe__nome_completo')
-            ).annotate(qtd=Count('id')).order_by('-qtd')[:10]
+            produtividade = list(
+                qs_base.values(
+                    nome=Coalesce(
+                        F('responsavel__first_name'),
+                        F('responsavel__username'),
+                        Value('Não Atribuído'),
+                        output_field=CharField(),
+                    )
+                ).annotate(qtd=Count('id')).order_by('-qtd')[:10]
+            )
 
-            # 4. Contexto de Conta e Brasão (CORREÇÃO DE ERRO E IMAGEM)
-            user = request.user
+            solicitantes = list(
+                qs_base.values(nome=F('municipe__nome_completo'))
+                .annotate(qtd=Count('id'))
+                .order_by('-qtd')[:10]
+            )
+
+            por_assunto = serializar_atendimentos_por_assunto(qs_base, top=12)
+
             conta_contexto = None
-            
-            # Tenta pegar a conta de forma segura
-            if hasattr(user, 'perfil') and user.perfil.contas.exists():
+            conta_id = request.query_params.get('conta_id')
+            if conta_id:
+                conta_contexto = Conta.objects.filter(id=conta_id).first()
+            elif hasattr(user, 'perfil') and user.perfil.contas.exists():
                 conta_contexto = user.perfil.contas.first()
 
-            nome_instituicao = "Prefeitura Municipal"
-            
-            # Caminho padrão do brasão no disco
-            caminho_brasao = os.path.join(settings.STATIC_ROOT, 'images', 'logo-brasao-prefeitura.png')
-            if not os.path.exists(caminho_brasao):
-                 # Fallback para pasta de desenvolvimento se static_root não existir
-                 caminho_brasao = os.path.join(settings.BASE_DIR, 'static', 'images', 'logo-brasao-prefeitura.png')
-
-            # Se tiver conta e brasão personalizado, usa o da conta
-            if conta_contexto:
-                nome_instituicao = conta_contexto.nome_instituicao or nome_instituicao
-                if conta_contexto.brasao_instituicao:
-                    try:
-                        if os.path.exists(conta_contexto.brasao_instituicao.path):
-                            caminho_brasao = conta_contexto.brasao_instituicao.path
-                    except Exception:
-                        pass # Mantém o padrão se der erro
-
-            # Converte para URI de arquivo (file://) para o WeasyPrint ler do disco
-            brasao_uri = f"file://{caminho_brasao}" if os.path.exists(caminho_brasao) else ""
+            logos = resolver_logos_relatorio_pdf(conta_contexto, request)
+            data_inicio = parse_date_query_param(request.query_params.get('data_inicio'))
+            data_fim = parse_date_query_param(request.query_params.get('data_fim'))
+            apenas_meus = str(request.query_params.get('apenas_meus', '')).lower() in ('true', '1')
 
             context = {
-                'data_inicio': request.query_params.get('data_inicio'),
-                'data_fim': request.query_params.get('data_fim'),
-                'filtro_usuario': request.query_params.get('usuario_id'), # Apenas informativo
+                'data_inicio': data_inicio,
+                'data_fim': data_fim,
+                'periodo_label': (
+                    f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
+                    if data_inicio and data_fim
+                    else 'Período não informado'
+                ),
+                'filtro_usuario': request.query_params.get('usuario_id'),
                 'usuario_emissao': user.get_full_name() or user.username,
-                'data_emissao': datetime.now(),
-                'nome_instituicao': nome_instituicao, # Adicionado
+                'data_emissao': timezone.localtime(),
+                'apenas_meus': apenas_meus,
                 'total_geral': total_atendimentos,
                 'total_concluidos': total_concluidos,
                 'total_abertos': total_abertos,
                 'produtividade': produtividade,
                 'solicitantes': solicitantes,
-                'brasao_url': brasao_uri, # Agora é URI de arquivo, não URL web
-                'titulo_relatorio': "Relatório de Gestão e Produtividade"
+                'por_assunto': por_assunto,
+                'titulo_relatorio': 'Relatório de Gestão e Produtividade',
+                'sem_dados': total_atendimentos == 0,
+                **logos,
             }
 
             html_string = render_to_string('relatorios/relatorio_bi.html', context)
-            
-            # O base_url ajuda a carregar CSS local se necessário
-            pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+            pdf_file = HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
 
             response = HttpResponse(pdf_file, content_type='application/pdf')
             response['Content-Disposition'] = f'attachment; filename="Relatorio_BI.pdf"'
@@ -4544,3 +5202,883 @@ class AgendaCompartilhamentoView(viewsets.ModelViewSet):
         if not user.is_superuser and conta_alvo not in user.perfil.contas.all():
             raise serializers.ValidationError("Sem permissão para compartilhar esta conta.")
         serializer.save(criado_por=user)
+
+
+# ========================================
+# VIEWSETS MÚLTIPLAS CONTAS GOOGLE - FASE 3
+# ========================================
+
+class ContaGoogleCalendarViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet para listar contas Google Calendar disponíveis para o usuário.
+    
+    Endpoints:
+    - GET /api/contas-google/ - Lista contas disponíveis
+    - GET /api/contas-google/{id}/ - Detalhes de uma conta
+    - GET /api/contas-google/status/ - Status consolidado de todas as contas
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_serializer_class(self):
+        # Usar sempre o serializer completo que inclui client_id
+        return ContaGoogleCalendarSerializer
+    
+    def get_queryset(self):
+        """Contas Google que o usuário pode visualizar (inclui leitores SIGA)."""
+        user = self.request.user
+
+        if not user.is_authenticated:
+            return ContaGoogleCalendar.objects.none()
+
+        qs = ContaGoogleCalendar.objects.filter(
+            ativa=True,
+            permissoes_usuarios__usuario=user,
+            permissoes_usuarios__pode_visualizar=True,
+        )
+
+        try:
+            contas_perfil = user.perfil.contas.values_list('id', flat=True)
+            if contas_perfil:
+                qs = qs.filter(conta_id__in=contas_perfil)
+        except Exception:
+            pass
+
+        return qs.distinct().select_related('conta').prefetch_related('permissoes_usuarios')
+    
+    @action(detail=False, methods=['get'])
+    def status(self, request):
+        """
+        Endpoint consolidado com status de todas as contas Google do usuário.
+
+        GET /api/contas-google/status/
+
+        Retorna a mesma estrutura de /api/contas-google/ com token_status em objeto
+        e authorization_url quando necessário.
+        """
+        from .serializers import build_token_status_payload
+
+        contas = self.get_queryset()
+        result = []
+
+        for conta_google in contas:
+            try:
+                permissao = UsuarioContaGooglePermissao.objects.get(
+                    usuario=request.user,
+                    conta_google=conta_google
+                )
+            except UsuarioContaGooglePermissao.DoesNotExist:
+                continue
+
+            from .services.google_calendar_compatibility import GoogleCalendarCompatibilityService
+            token_status = GoogleCalendarCompatibilityService.obter_status_token_usuario(
+                request.user, conta_google
+            )
+
+            permissoes_usuario = {
+                'pode_visualizar': permissao.pode_visualizar,
+                'pode_criar': permissao.pode_criar,
+                'pode_editar': permissao.pode_editar,
+                'pode_excluir': permissao.pode_excluir,
+                'nivel_acesso': permissao.nivel_acesso,
+            }
+
+            authorization_url = None
+            if token_status['precisa_autorizacao']:
+                try:
+                    from .services import GoogleCalendarCompatibilityService
+                    redirect_uri = request.build_absolute_uri(
+                        f'/api/google-calendar/auth/{conta_google.id}/callback/'
+                    )
+                    auth_url, _state = GoogleCalendarCompatibilityService.get_auth_url(
+                        conta_google.id,
+                        redirect_uri
+                    )
+                    authorization_url = auth_url
+                except Exception:
+                    authorization_url = None
+
+            result.append({
+                'id': conta_google.id,
+                'nome': conta_google.nome,
+                'descricao': conta_google.descricao or '',
+                'email_google': conta_google.email_google,
+                'eh_padrao': conta_google.eh_padrao,
+                'conta_nome': conta_google.conta.nome,
+                'calendar_id': conta_google.calendar_id or '',
+                'client_id': conta_google.get_client_id() or '',
+                'total_usuarios': conta_google.permissoes_usuarios.filter(
+                    pode_visualizar=True
+                ).count(),
+                'permissoes_usuario': permissoes_usuario,
+                'token_status': token_status,
+                'pode_visualizar': permissao.pode_visualizar,
+                'pode_criar': permissao.pode_criar,
+                'pode_editar': permissao.pode_editar,
+                'pode_excluir': permissao.pode_excluir,
+                'nivel_acesso': permissao.nivel_acesso,
+                'dias_para_expirar': token_status['dias_para_expirar'],
+                'precisa_autorizacao': token_status['precisa_autorizacao'],
+                'authorization_url': authorization_url,
+            })
+
+        serializer = GoogleAccountStatusSerializer(result, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def permissions(self, request, pk=None):
+        """
+        Retorna permissões detalhadas do usuário para uma conta Google específica.
+        
+        GET /api/contas-google/{id}/permissions/
+        """
+        conta_google = self.get_object()
+        
+        try:
+            permissao = UsuarioContaGooglePermissao.objects.get(
+                usuario=request.user,
+                conta_google=conta_google
+            )
+            serializer = UsuarioContaGooglePermissaoSerializer(permissao)
+            return Response(serializer.data)
+        except UsuarioContaGooglePermissao.DoesNotExist:
+            return Response(
+                {'error': 'Usuário não tem permissão para esta conta Google'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+    
+    @action(detail=False, methods=['get'])
+    def debug(self, request):
+        """Endpoint de debug para verificar dados das contas"""
+        try:
+            user = request.user
+            
+            # Verificar PerfilUsuario
+            try:
+                perfil = PerfilUsuario.objects.get(usuario=user)
+                perfil_info = {
+                    'exists': True,
+                    'contas': [c.nome for c in perfil.contas.all()],
+                    'total_contas': perfil.contas.count()
+                }
+            except PerfilUsuario.DoesNotExist:
+                perfil_info = {'exists': False}
+            
+            # Verificar lógica _get_conta_usuario
+            conta_usuario = self._get_conta_usuario(user)
+            conta_usuario_info = {
+                'nome': conta_usuario.nome if conta_usuario else None,
+                'id': conta_usuario.id if conta_usuario else None
+            }
+            
+            # Verificar contas disponíveis com queryset completo
+            contas = self.get_queryset()
+            
+            debug_data = []
+            for conta in contas:
+                debug_data.append({
+                    'id': conta.id,
+                    'nome': conta.nome,
+                    'client_id': conta.client_id,
+                    'client_secret_configured': bool(conta.client_secret),
+                    'ativa': conta.ativa,
+                    'email_google': conta.email_google
+                })
+            
+            # Verificar ALL contas (sem filtro de permissão)
+            todas_contas = ContaGoogleCalendar.objects.all()
+            all_contas_data = []
+            for conta in todas_contas:
+                all_contas_data.append({
+                    'id': conta.id,
+                    'nome': conta.nome,
+                    'client_id': conta.client_id,
+                    'ativa': conta.ativa
+                })
+            
+            return Response({
+                'user': user.username,
+                'authenticated': user.is_authenticated,
+                'perfil': perfil_info,
+                'conta_usuario': conta_usuario_info,
+                'contas_google_com_permissao': debug_data,
+                'total_contas_com_permissao': len(debug_data),
+                'all_contas_google': all_contas_data,
+                'serializer_class': self.get_serializer_class().__name__
+            })
+            
+        except Exception as e:
+            import traceback
+            return Response({
+                'error': str(e),
+                'traceback': traceback.format_exc(),
+                'user': request.user.username if hasattr(request, 'user') else 'No user',
+                'authenticated': request.user.is_authenticated if hasattr(request, 'user') else False
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def simple(self, request):
+        """Endpoint simplificado que sempre retorna as contas com client_id"""
+        try:
+            # Retornar todas as contas diretamente (para debug)
+            contas = ContaGoogleCalendar.objects.filter(ativa=True).order_by('id')
+            
+            result = []
+            for conta in contas:
+                result.append({
+                    'id': conta.id,
+                    'nome': conta.nome,
+                    'descricao': conta.descricao,
+                    'email_google': conta.email_google,
+                    'client_id': conta.client_id,
+                    'client_secret_configured': bool(conta.client_secret),
+                    'ativa': conta.ativa,
+                    'eh_padrao': conta.eh_padrao,
+                    'calendar_id': conta.calendar_id,
+                    # Verificar se tem token
+                    'is_connected': TokenGoogleCalendar.objects.filter(
+                        usuario=request.user,
+                        conta_google=conta
+                    ).exists()
+                })
+            
+            return Response({
+                'results': result,
+                'count': len(result),
+                'user': request.user.username
+            })
+            
+        except Exception as e:
+            import traceback
+            return Response({
+                'error': str(e),
+                'traceback': traceback.format_exc(),
+                'user': request.user.username if hasattr(request, 'user') else 'No user',
+                'authenticated': request.user.is_authenticated if hasattr(request, 'user') else False
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def _get_conta_usuario(self, user):
+        """
+        Retorna a conta/gabinete associada ao usuário.
+        🚨 IMPLEMENTAR baseado na lógica do seu sistema!
+        """
+        # Abordagem 1: Profile com conta
+        if hasattr(user, 'perfil') and hasattr(user.perfil, 'contas'):
+            return user.perfil.contas.first()
+        
+        # Abordagem 2: Grupos do Django
+        grupos_usuario = user.groups.values_list('name', flat=True)
+        for grupo_nome in grupos_usuario:
+            conta = Conta.objects.filter(nome__icontains=grupo_nome).first()
+            if conta:
+                return conta
+        
+        # Fallback: Primeira conta com Google configurado
+        return Conta.objects.exclude(
+            google_calendar_id__isnull=True
+        ).exclude(
+            google_calendar_id__exact=''
+        ).first()
+
+
+class GoogleCalendarAuthViewSet(viewsets.ViewSet):
+    """
+    ViewSet para autenticação OAuth com contas Google específicas.
+    
+    Endpoints:
+    - POST /api/google-calendar/auth/start/ - Inicia OAuth
+    - GET /api/google-calendar/auth/{id}/callback/ - Callback OAuth
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_permissions(self):
+        """
+        Allow unauthenticated access to callback endpoints.
+        """
+        if self.action in ['callback', 'callback_generic']:
+            return []
+        return super().get_permissions()
+    
+    @action(detail=False, methods=['post'])
+    def start(self, request):
+        """
+        Inicia processo OAuth para uma conta Google específica.
+        
+        POST /api/google-calendar/auth/start/
+        Body: {
+            "conta_google_id": 1,
+            "redirect_uri": "https://..." (opcional)
+        }
+        """
+        serializer = OAuthInitiationSerializer(
+            data=request.data, 
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        
+        conta_google_id = serializer.validated_data['conta_google_id']
+        
+        # VERIFICAÇÃO DE PERMISSÃO: Flexível para conta principal
+        try:
+            permissao = UsuarioContaGooglePermissao.objects.get(
+                usuario=request.user,
+                conta_google_id=conta_google_id,
+                conta_google__ativa=True
+            )
+            
+            # Para conta ID 1 (Agenda Principal): qualquer usuário com permissão pode autorizar
+            # Para outras contas: apenas quem tem pode_editar
+            if conta_google_id == 1:
+                # Conta principal - qualquer usuário com acesso pode autorizar
+                if not permissao.pode_visualizar:
+                    return Response(
+                        {'error': 'Usuário não tem acesso a esta conta Google'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            else:
+                # Contas específicas - apenas gestores
+                if not permissao.pode_editar:
+                    return Response(
+                        {'error': 'Apenas gestores podem autorizar esta conta Google específica'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+        except UsuarioContaGooglePermissao.DoesNotExist:
+            return Response(
+                {'error': 'Usuário não tem permissão para esta conta Google'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        redirect_uri = serializer.validated_data.get(
+            'redirect_uri',
+            request.build_absolute_uri(f'/api/google-calendar/auth/{conta_google_id}/callback/')
+        )
+        
+        try:
+            from .services import GoogleCalendarCompatibilityService
+            auth_url, state = GoogleCalendarCompatibilityService.get_auth_url(
+                conta_google_id, 
+                redirect_uri
+            )
+            
+            # Salva estado na sessão
+            request.session[f'google_oauth2_state_{conta_google_id}'] = state
+            request.session[f'google_auth_user_id_{conta_google_id}'] = request.user.id
+            
+            return Response({
+                'authorization_url': auth_url,
+                'state': state,
+                'conta_google_id': conta_google_id
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Erro ao gerar URL de autorização: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def callback_generic(self, request):
+        """
+        Callback genérico que detecta a conta pelo client_id.
+        
+        GET /api/google-calendar/auth/callback/?code=...&state=...&client_id=...
+        """
+        code = request.query_params.get('code')
+        state = request.query_params.get('state')
+        
+        if not code:
+            return Response(
+                {'error': 'Código de autorização não fornecido'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Tentar detectar a conta pelo referrer ou usar a primeira conta ativa
+        try:
+            # Por simplicidade, vamos usar a conta ID 1 como padrão
+            # TODO: Melhorar a detecção da conta
+            return self.callback(request, pk='1')
+        except Exception as e:
+            return Response(
+                {'error': f'Erro no callback: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['get'])
+    def callback(self, request, pk=None):
+        """
+        Processa callback OAuth e salva tokens.
+        
+        GET /api/google-calendar/auth/{conta_google_id}/callback/?code=...&state=...
+        """
+        conta_google_id = pk
+        state = request.query_params.get('state')
+        code = request.query_params.get('code')
+        
+        if not code:
+            return Response(
+                {'error': 'Código de autorização é obrigatório'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Verifica estado da sessão (opcional para autorização direta)
+        if state:
+            session_state = request.session.get(f'google_oauth2_state_{conta_google_id}')
+            if session_state and state != session_state:
+                return Response(
+                    {'error': 'State mismatch - possível ataque CSRF'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # Verifica usuário (da sessão ou usuário autenticado)
+        user_id = request.session.get(f'google_auth_user_id_{conta_google_id}')
+        user = None
+        
+        # Se há usuário na sessão, usá-lo
+        if user_id:
+            try:
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                user = User.objects.get(pk=user_id)
+            except User.DoesNotExist:
+                return Response(
+                    {'error': 'Usuário da sessão não encontrado'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # Se não há usuário na sessão mas há usuário autenticado, usá-lo
+        elif request.user and request.user.is_authenticated:
+            user = request.user
+            user_id = user.id
+        
+        # Se não há usuário nem na sessão nem autenticado, erro
+        else:
+            # Para autorização direta, vamos permitir sem usuário específico
+            # e usar um usuário padrão (admin) para processar o token
+            try:
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                user = User.objects.get(is_superuser=True)  # Usar primeiro superusuário
+                user_id = user.id
+            except User.DoesNotExist:
+                return Response(
+                    {'error': 'Não foi possível processar a autorização - nenhum usuário disponível'}, 
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        
+        try:
+            from .services import GoogleCalendarCompatibilityService
+            
+            # Processa callback e salva token
+            token = GoogleCalendarCompatibilityService.process_oauth_callback(
+                int(conta_google_id),
+                request.build_absolute_uri(),
+                user
+            )
+            
+            # Limpa sessão
+            request.session.pop(f'google_oauth2_state_{conta_google_id}', None)
+            request.session.pop(f'google_auth_user_id_{conta_google_id}', None)
+            
+            # Retorna página de sucesso que fecha popup
+            html_response = '''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Autorização Concluída</title>
+                <style>
+                    body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+                    .success { color: #28a745; font-size: 24px; }
+                    .info { color: #6c757d; margin-top: 20px; }
+                </style>
+            </head>
+            <body>
+                <div class="success">✅ Autorização concluída com sucesso!</div>
+                <div class="info">Esta janela será fechada automaticamente.</div>
+                <script>
+                    // Envia mensagem para a janela pai
+                    if (window.opener) {
+                        window.opener.postMessage({
+                            type: 'GOOGLE_AUTH_SUCCESS',
+                            conta_google_id: ''' + str(conta_google_id) + '''
+                        }, '*');
+                    }
+                    // Fecha a janela após 2 segundos
+                    setTimeout(function() {
+                        window.close();
+                    }, 2000);
+                </script>
+            </body>
+            </html>
+            '''
+            
+            return HttpResponse(html_response, content_type='text/html')
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Erro ao processar callback: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class GoogleCalendarEventViewSet(viewsets.ViewSet):
+    """
+    ViewSet para operações com eventos do Google Calendar.
+    
+    Endpoints:
+    - POST /api/google-calendar/events/ - Criar evento
+    - GET /api/google-calendar/events/{conta_google_id}/ - Listar eventos
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @action(detail=False, methods=['post'])
+    def create_event(self, request):
+        """
+        Cria evento no Google Calendar da conta específica.
+        
+        POST /api/google-calendar/events/
+        Body: {
+            "conta_google_id": 1,
+            "titulo": "Reunião importante",
+            "descricao": "Descrição do evento",
+            "data_inicio": "2026-05-27T10:00:00Z",
+            "data_fim": "2026-05-27T11:00:00Z",
+            "local": "Sala de reuniões"
+        }
+        """
+        serializer = EventCreationSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        
+        try:
+            from .services import GoogleCalendarCompatibilityService
+            
+            conta_id = serializer.validated_data['conta_google_id']
+            if not GoogleCalendarCompatibilityService.usuario_pode_criar_evento(
+                request.user, conta_id
+            ):
+                return Response(
+                    {'error': 'Sem permissão para criar eventos nesta agenda.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            service = GoogleCalendarCompatibilityService.get_calendar_service(
+                request.user,
+                conta_id,
+                requer_token_proprio=True,
+            )
+            
+            # Busca conta Google para pegar calendar_id
+            conta_google = ContaGoogleCalendar.objects.get(
+                id=serializer.validated_data['conta_google_id']
+            )
+            
+            # Prepara evento
+            event_data = {
+                'summary': serializer.validated_data['titulo'],
+                'description': serializer.validated_data.get('descricao', ''),
+                'start': {
+                    'dateTime': serializer.validated_data['data_inicio'].isoformat(),
+                    'timeZone': 'America/Sao_Paulo',
+                },
+                'end': {
+                    'dateTime': serializer.validated_data['data_fim'].isoformat(),
+                    'timeZone': 'America/Sao_Paulo',
+                },
+            }
+            
+            if serializer.validated_data.get('local'):
+                event_data['location'] = serializer.validated_data['local']
+            
+            # Cria evento no Google Calendar
+            created_event = service.events().insert(
+                calendarId=conta_google.calendar_id,
+                body=event_data
+            ).execute()
+            
+            return Response({
+                'success': True,
+                'event_id': created_event['id'],
+                'event_link': created_event['htmlLink'],
+                'message': f'Evento criado com sucesso na {conta_google.nome}'
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Erro ao criar evento: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['patch'], url_path='update_google_event')
+    def update_google_event(self, request):
+        """
+        Atualiza evento no Google Calendar da conta selecionada.
+
+        PATCH /api/google-calendar/events/update_google_event/
+        Body: {
+            "event_id": "...",
+            "conta_google_id": 1,
+            "titulo": "...",
+            "data_inicio": "...",
+            "data_fim": "..."
+        }
+        """
+        from .serializers import EventUpdateSerializer
+
+        serializer = EventUpdateSerializer(
+            data=request.data,
+            context={'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            from .services import GoogleCalendarCompatibilityService
+
+            conta_id = serializer.validated_data['conta_google_id']
+            conta_google = ContaGoogleCalendar.objects.get(id=conta_id, ativa=True)
+            service = GoogleCalendarCompatibilityService.get_calendar_service(
+                request.user,
+                conta_id,
+                requer_token_proprio=True,
+            )
+
+            event_body = {
+                'summary': serializer.validated_data['titulo'],
+                'description': serializer.validated_data.get('descricao', ''),
+                'start': {
+                    'dateTime': serializer.validated_data['data_inicio'].isoformat(),
+                    'timeZone': 'America/Sao_Paulo',
+                },
+                'end': {
+                    'dateTime': serializer.validated_data['data_fim'].isoformat(),
+                    'timeZone': 'America/Sao_Paulo',
+                },
+            }
+            if serializer.validated_data.get('local'):
+                event_body['location'] = serializer.validated_data['local']
+
+            updated = service.events().patch(
+                calendarId=conta_google.calendar_id,
+                eventId=str(serializer.validated_data['event_id']),
+                body=event_body,
+            ).execute()
+
+            return Response({
+                'success': True,
+                'event_id': updated.get('id'),
+                'message': f'Evento atualizado na {conta_google.nome}',
+            })
+        except HttpError as error:
+            status_code = error.resp.status if error.resp else status.HTTP_400_BAD_REQUEST
+            return Response(
+                {'error': f'Falha ao atualizar evento no Google Calendar: {error}'},
+                status=status_code,
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Erro ao atualizar evento: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=False, methods=['delete'], url_path='delete_google_event')
+    def delete_google_event(self, request):
+        """
+        Exclui evento no Google Calendar da conta selecionada.
+
+        DELETE /api/google-calendar/events/delete_google_event/
+        Body: { "event_id": "...", "conta_google_id": 1 }
+        """
+        event_id = request.data.get('event_id')
+        conta_google_id = request.data.get('conta_google_id')
+
+        if not event_id or not conta_google_id:
+            return Response(
+                {'error': 'event_id e conta_google_id são obrigatórios.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            conta_google_id = int(conta_google_id)
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'conta_google_id inválido.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from .services import GoogleCalendarCompatibilityService
+
+        if not GoogleCalendarCompatibilityService.usuario_pode_visualizar_eventos(
+            request.user, conta_google_id
+        ):
+            return Response(
+                {'error': 'Sem permissão para excluir eventos nesta agenda.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            permissao = UsuarioContaGooglePermissao.objects.get(
+                usuario=request.user,
+                conta_google_id=conta_google_id,
+            )
+        except UsuarioContaGooglePermissao.DoesNotExist:
+            return Response(
+                {'error': 'Sem permissão para excluir eventos nesta agenda.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not permissao.pode_excluir:
+            return Response(
+                {'error': 'Sem permissão para excluir eventos nesta agenda.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            conta_google = ContaGoogleCalendar.objects.get(id=conta_google_id, ativa=True)
+            service = GoogleCalendarCompatibilityService.get_calendar_service(
+                request.user,
+                conta_google_id,
+                requer_token_proprio=False,
+            )
+            service.events().delete(
+                calendarId=conta_google.calendar_id,
+                eventId=str(event_id),
+            ).execute()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ContaGoogleCalendar.DoesNotExist:
+            return Response(
+                {'error': 'Conta Google não encontrada ou inativa.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except HttpError as error:
+            status_code = error.resp.status if error.resp else status.HTTP_400_BAD_REQUEST
+            detail = (
+                'Evento não encontrado nesta agenda. Verifique se a conta selecionada '
+                'é a mesma em que o evento foi criado.'
+                if status_code == 404
+                else f'Falha ao excluir evento no Google Calendar: {error}'
+            )
+            return Response({'error': detail}, status=status_code)
+        except Exception as e:
+            return Response(
+                {'error': f'Erro ao excluir evento: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+    
+    @action(detail=False, methods=['get'])
+    def list_events(self, request):
+        """
+        Lista eventos de uma conta Google específica.
+        
+        GET /api/google-calendar/events/list_events/?conta_google_id=1&start_date=2026-05-01&end_date=2026-05-31
+        """
+        try:
+            conta_google_id = request.GET.get('conta_google_id')
+            if not conta_google_id:
+                return Response(
+                    {'error': 'conta_google_id é obrigatório'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            conta_google_id = int(conta_google_id)
+            
+            from .services import GoogleCalendarCompatibilityService
+            
+            # Obtém o usuário (pode vir de request.user ou self.request.user)
+            user = getattr(request, 'user', None) or getattr(self.request, 'user', None)
+            if not user:
+                return Response(
+                    {'error': 'Usuário não autenticado'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            logger.info(f"🔍 DEBUG list_events - Usuário: {user.username} (ID: {user.id}), Conta: {conta_google_id}")
+            
+            # Verifica permissão (para listar eventos, só precisa de visualizar)
+            if not GoogleCalendarCompatibilityService.usuario_pode_visualizar_eventos(
+                user, conta_google_id
+            ):
+                return Response(
+                    {'error': 'Usuário não tem permissão para visualizar eventos desta conta Google'}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Busca conta Google
+            try:
+                conta_google = ContaGoogleCalendar.objects.get(id=conta_google_id)
+            except ContaGoogleCalendar.DoesNotExist:
+                return Response(
+                    {'error': 'Conta Google não encontrada'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Verifica se tem credenciais configuradas
+            if not conta_google.client_id or not conta_google.client_secret:
+                return Response({
+                    'events': [],
+                    'message': f'Conta "{conta_google.nome}" precisa ser configurada no Django Admin',
+                    'config_needed': True
+                })
+            
+            # Busca serviço
+            try:
+                logger.info(f"🔍 Tentando obter serviço para usuário {user.username} (ID: {user.id}) e conta {conta_google_id}")
+                service = GoogleCalendarCompatibilityService.get_calendar_service(
+                    user, conta_google_id
+                )
+                logger.info(f"✅ Serviço Google Calendar obtido com sucesso para usuário {user.username} e conta {conta_google_id}")
+            except Exception as e:
+                logger.error(f"❌ Erro ao obter serviço Google Calendar para {user.username}: {str(e)}")
+                logger.error(f"🔍 Tipo do erro: {type(e).__name__}")
+                return Response({
+                    'events': [],
+                    'message': f'Erro ao conectar com Google Calendar: Usuário precisa fazer autenticação OAuth para: {conta_google.nome}',
+                    'auth_needed': True,
+                    'error_details': str(e),
+                    'debug_info': {
+                        'user_id': user.id,
+                        'user_username': user.username,
+                        'conta_google_id': conta_google_id,
+                        'error_type': type(e).__name__
+                    }
+                })
+            
+            # Parâmetros de data (compatível com Django testing)
+            query_params = getattr(request, 'query_params', request.GET)
+            start_date = query_params.get('start_date')
+            end_date = query_params.get('end_date')
+            
+            # Busca eventos
+            try:
+                logger.info(f"Buscando eventos para conta {conta_google.nome} (calendar_id: {conta_google.calendar_id})")
+                
+                events_result = service.events().list(
+                    calendarId=conta_google.calendar_id,
+                    timeMin=start_date + 'T00:00:00Z' if start_date else None,
+                    timeMax=end_date + 'T23:59:59Z' if end_date else None,
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                
+                events = events_result.get('items', [])
+                logger.info(f"✅ Encontrados {len(events)} eventos para conta {conta_google.nome}")
+                
+                return Response({
+                    'conta_google_nome': conta_google.nome,
+                    'total_events': len(events),
+                    'events': events,
+                    'success': True
+                })
+                
+            except Exception as events_error:
+                logger.error(f"Erro específico ao buscar eventos: {str(events_error)}")
+                return Response({
+                    'events': [],
+                    'message': f'Erro ao buscar eventos do Google Calendar: {str(events_error)}',
+                    'auth_needed': False,
+                    'error_details': str(events_error)
+                })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Erro ao listar eventos: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

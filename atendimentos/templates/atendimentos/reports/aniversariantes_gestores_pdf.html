@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Relatório de Aniversariantes</title>
+  <style>
+    @page { size: A4; margin: 2cm; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #111827; font-size: 12px; }
+    h1 { font-size: 20px; margin: 0 0 6px 0; color: #1d4ed8; }
+    h2 { font-size: 14px; margin: 16px 0 8px 0; }
+    .meta { margin: 0 0 12px 0; line-height: 1.5; }
+    .meta strong { color: #111827; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { background: #eff6ff; color: #1e3a8a; font-size: 11px; }
+    tr:nth-child(even) td { background: #f9fafb; }
+    .footer { margin-top: 14px; font-size: 10px; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <h1>Relatório de Aniversariantes</h1>
+  <div class="meta">
+    <div><strong>Conta:</strong> {{ conta.nome }}</div>
+    <div><strong>Categoria:</strong> {{ categoria }}</div>
+    <div><strong>Data-base:</strong> {{ data_base|date:"d/m/Y" }}</div>
+    <div><strong>Data de aniversário (alvo):</strong> {{ data_aniversario|date:"d/m/Y" }}</div>
+    <div><strong>Total:</strong> {{ total_aniversariantes }} aniversariante(s)</div>
+  </div>
+
+  <h2>Lista consolidada</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 40%;">Nome</th>
+        <th style="width: 25%;">Cargo</th>
+        <th style="width: 20%;">Telefone principal</th>
+        <th style="width: 15%;">Categoria</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in aniversariantes %}
+      <tr>
+        <td>{{ item.nome_completo }}</td>
+        <td>{{ item.cargo|default:"-" }}</td>
+        <td>{{ item.telefone_principal|default:"-" }}</td>
+        <td>{{ item.categoria|default:"-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="footer">
+    Relatório gerado automaticamente em {{ gerado_em|date:"d/m/Y H:i:s" }}.
+  </div>
+</body>
+</html>

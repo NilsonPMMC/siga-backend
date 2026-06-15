@@ -15,16 +15,22 @@ from django.template.loader import render_to_string
 from django.conf import settings
 import weasyprint
 from rest_framework.views import APIView
-from rest_framework import viewsets, permissions, serializers, status
+from rest_framework import viewsets, permissions, serializers, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
+from django_filters.rest_framework import DjangoFilterBackend
+from django.core.exceptions import ValidationError as DjangoValidationError
 from .relatorios import gerar_pdf_checklist, gerar_pdf_eventos_periodo
-from .models import Evento, ListaPresenca, EventoChecklist, Convidado, Comunicacao, Destinatario, LogDeEnvio, EventoChecklistItemStatus, ChecklistItem, MailingList, Municipe
+from .models import Evento, ListaPresenca, EventoChecklist, Convidado, Comunicacao, Destinatario, LogDeEnvio, EventoChecklistItemStatus, ChecklistItem, MailingList, Municipe, EmailSupressao
 from atendimentos.models import Municipe, CategoriaContato, PerfilMunicipe 
 from .forms import ListaPresencaForm
-from .serializers import EventoSerializer, ConvidadoSerializer, ComunicacaoSerializer, DestinatarioSerializer, LogDeEnvioSerializer, ListaPresencaSerializer, EventoChecklistSerializer, EventoChecklistItemStatusSerializer, ChecklistItemSerializer, MailingListSerializer, MunicipeForConvidadoSerializer
+from .serializers import EventoSerializer, ConvidadoSerializer, ComunicacaoSerializer, DestinatarioSerializer, LogDeEnvioSerializer, ListaPresencaSerializer, EventoChecklistSerializer, EventoChecklistItemStatusSerializer, ChecklistItemSerializer, MailingListSerializer, MunicipeForConvidadoSerializer, EmailSupressaoSerializer, EmailSupressaoStatsSerializer
+from .serializers import DestinatarioListSerializer
 from .utils import gerar_e_enviar_certificado
 from .permissions import PodeGerenciarEventos
+from .pagination import LargeListPagination
+from .checklist_security import validar_observacoes_checklist, validar_nome_responsavel_checklist
 from eventos.tasks import enviar_comunicacao_em_massa, gerar_e_enviar_certificado
 from atendimentos.management.commands.verificar_duplicatas import normalizar_nome_para_conjunto
 
@@ -41,20 +47,52 @@ def get_image_path(image_field):
     
     return None
 
+
+def _coerce_id_list(data, singular_key, plural_key):
+    """Aceita um ID único ou lista (ex.: categoria_id / categoria_ids)."""
+    raw = data.get(plural_key)
+    if raw is None:
+        single = data.get(singular_key)
+        if single in (None, "", []):
+            return []
+        raw = [single]
+    if not isinstance(raw, (list, tuple)):
+        raw = [raw]
+    out = []
+    for x in raw:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 class EventoViewSet(viewsets.ModelViewSet):
     serializer_class = EventoSerializer
     permission_classes = [PodeGerenciarEventos]
 
     def get_queryset(self):
-        # This function is already correct
         user = self.request.user
         if user.is_superuser:
-            return Evento.objects.all().order_by('-data_evento')
-        if hasattr(user, 'perfil'):
+            qs = Evento.objects.all()
+        elif hasattr(user, "perfil"):
             contas_do_usuario = user.perfil.contas.all()
             if contas_do_usuario.exists():
-                return Evento.objects.filter(conta__in=contas_do_usuario).order_by('-data_evento')
-        return Evento.objects.none()
+                qs = Evento.objects.filter(conta__in=contas_do_usuario)
+            else:
+                qs = Evento.objects.none()
+        else:
+            qs = Evento.objects.none()
+
+        search = (self.request.query_params.get("search") or self.request.query_params.get("q") or "").strip()
+        if search:
+            qs = qs.filter(nome__icontains=search)
+
+        statuses = self.request.query_params.getlist("status")
+        if statuses:
+            qs = qs.filter(status__in=statuses)
+
+        return qs.order_by("-data_evento")
 
     def perform_create(self, serializer):
         # This function is also correct
@@ -500,73 +538,145 @@ class ComunicacaoViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='adicionar-por-categoria')
     def adicionar_por_categoria(self, request, pk=None):
         """
-        Adiciona todos os munícipes de uma categoria como DESTINATÁRIOS a esta comunicação.
+        Adiciona munícipes por uma ou mais categorias (categoria_id ou categoria_ids).
         """
-        comunicacao = self.get_object() # Agora pega a instância da Comunicação
-        categoria_id = request.data.get('categoria_id')
+        comunicacao = self.get_object()
+        if comunicacao.status == 'enviado':
+            return Response(
+                {"error": "Não é permitido alterar destinatários de comunicação já enviada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        categoria_ids = _coerce_id_list(request.data, "categoria_id", "categoria_ids")
+        if not categoria_ids:
+            return Response(
+                {"error": "Informe ao menos uma categoria (categoria_id ou categoria_ids)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        if not categoria_id:
-            return Response({'error': 'ID da categoria é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # 1. Pega os IDs dos munícipes que já são destinatários DESTA comunicação.
-        destinatarios_existentes_ids = Destinatario.objects.filter(comunicacao=comunicacao).values_list('municipe_id', flat=True)
-
-        # 2. Encontra munícipes com perfil na conta do evento e categoria selecionada
         evento_ref = comunicacao.evento
-        municipes_para_adicionar = Municipe.objects.filter(
-            perfis__conta=evento_ref.conta,
-            perfis__categoria_id=categoria_id
-        ).exclude(
-            id__in=destinatarios_existentes_ids
-        ).filter(
-            Q(emails__isnull=False) & ~Q(emails__exact='[]')
-        ).distinct()
+        novos_destinatarios = []
+        novas_entradas = []
 
-        # 3. Cria os novos objetos Destinatario em massa.
-        novos_destinatarios = [
-            Destinatario(comunicacao=comunicacao, municipe=municipe)
-            for municipe in municipes_para_adicionar
-        ]
-        
-        if novos_destinatarios:
-            Destinatario.objects.bulk_create(novos_destinatarios)
+        with transaction.atomic():
+            com_db = Comunicacao.objects.select_for_update().get(pk=comunicacao.pk)
+            existing_ids = set(
+                Destinatario.objects.filter(comunicacao=com_db).values_list("municipe_id", flat=True)
+            )
 
+            for cat_id in categoria_ids:
+                try:
+                    cat = CategoriaContato.objects.get(pk=cat_id)
+                except CategoriaContato.DoesNotExist:
+                    return Response(
+                        {"error": f"Categoria com id {cat_id} não encontrada."},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+                municipes_batch = list(
+                    Municipe.objects.filter(
+                        perfis__conta=evento_ref.conta,
+                        perfis__categoria_id=cat_id,
+                    )
+                    .exclude(id__in=existing_ids)
+                    .filter(Q(emails__isnull=False) & ~Q(emails__exact="[]"))
+                    .distinct()
+                )
+                for m in municipes_batch:
+                    existing_ids.add(m.id)
+                novos_destinatarios.extend(
+                    [Destinatario(comunicacao=com_db, municipe=m) for m in municipes_batch]
+                )
+                if municipes_batch:
+                    novas_entradas.append(
+                        {
+                            "tipo": "categoria",
+                            "id": cat.id,
+                            "nome": cat.nome,
+                            "qtd_novos": len(municipes_batch),
+                            "incluido_em": timezone.now().isoformat(),
+                        }
+                    )
+
+            if novos_destinatarios:
+                Destinatario.objects.bulk_create(novos_destinatarios)
+            if novas_entradas:
+                hist = list(com_db.grupos_inclusao or [])
+                hist.extend(novas_entradas)
+                com_db.grupos_inclusao = hist
+                com_db.save(update_fields=["grupos_inclusao"])
+
+        total = len(novos_destinatarios)
         return Response(
-            {'status': f'{len(novos_destinatarios)} novo(s) destinatário(s) com e-mail foram adicionado(s).'},
-            status=status.HTTP_200_OK
+            {"status": f"{total} novo(s) destinatário(s) com e-mail foram adicionado(s)."},
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=True, methods=['post'], url_path='adicionar-por-mailing-list')
     def adicionar_por_mailing_list(self, request, pk=None):
         """
-        Adiciona todos os contatos de uma Mailing List como destinatários.
+        Adiciona contatos de uma ou mais listas de mailing (mailing_list_id ou mailing_list_ids).
         """
         comunicacao = self.get_object()
-        mailing_list_id = request.data.get('mailing_list_id')
+        if comunicacao.status == 'enviado':
+            return Response(
+                {"error": "Não é permitido alterar destinatários de comunicação já enviada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        mailing_ids = _coerce_id_list(request.data, "mailing_list_id", "mailing_list_ids")
+        if not mailing_ids:
+            return Response(
+                {"error": "Informe ao menos uma lista (mailing_list_id ou mailing_list_ids)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        if not mailing_list_id:
-            return Response({'error': 'O ID da lista de mailing é obrigatório.'}, status=status.HTTP_400_BAD_REQUEST)
+        evento_ref = comunicacao.evento
+        novos_destinatarios = []
+        novas_entradas = []
 
-        try:
-            mailing_list = MailingList.objects.get(id=mailing_list_id, conta=comunicacao.evento.conta)
-        except MailingList.DoesNotExist:
-            return Response({'error': 'Lista de mailing não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+        with transaction.atomic():
+            com_db = Comunicacao.objects.select_for_update().get(pk=comunicacao.pk)
+            existing_ids = set(
+                Destinatario.objects.filter(comunicacao=com_db).values_list("municipe_id", flat=True)
+            )
 
-        destinatarios_existentes_ids = Destinatario.objects.filter(comunicacao=comunicacao).values_list('municipe_id', flat=True)
-        
-        municipes_para_adicionar = mailing_list.municipes.exclude(id__in=destinatarios_existentes_ids)
+            for ml_id in mailing_ids:
+                try:
+                    mailing_list = MailingList.objects.get(id=ml_id, conta=evento_ref.conta)
+                except MailingList.DoesNotExist:
+                    return Response(
+                        {"error": f"Lista de mailing {ml_id} não encontrada para esta conta."},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
 
-        novos_destinatarios = [
-            Destinatario(comunicacao=comunicacao, municipe=municipe)
-            for municipe in municipes_para_adicionar
-        ]
-        
-        if novos_destinatarios:
-            Destinatario.objects.bulk_create(novos_destinatarios)
+                municipes_batch = list(mailing_list.municipes.exclude(id__in=existing_ids))
+                for m in municipes_batch:
+                    existing_ids.add(m.id)
+                novos_destinatarios.extend(
+                    [Destinatario(comunicacao=com_db, municipe=m) for m in municipes_batch]
+                )
+                if municipes_batch:
+                    novas_entradas.append(
+                        {
+                            "tipo": "mailing",
+                            "id": mailing_list.id,
+                            "nome": mailing_list.nome,
+                            "qtd_novos": len(municipes_batch),
+                            "incluido_em": timezone.now().isoformat(),
+                        }
+                    )
 
+            if novos_destinatarios:
+                Destinatario.objects.bulk_create(novos_destinatarios)
+            if novas_entradas:
+                hist = list(com_db.grupos_inclusao or [])
+                hist.extend(novas_entradas)
+                com_db.grupos_inclusao = hist
+                com_db.save(update_fields=["grupos_inclusao"])
+
+        total = len(novos_destinatarios)
         return Response(
-            {'status': f'{len(novos_destinatarios)} novo(s) destinatário(s) da lista "{mailing_list.nome}" foram adicionado(s).'},
-            status=status.HTTP_200_OK
+            {"status": f"{total} novo(s) destinatário(s) de lista(s) de mailing foram adicionado(s)."},
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=True, methods=['get'], url_path='relatorio-pdf')
@@ -643,6 +753,12 @@ class ComunicacaoViewSet(viewsets.ModelViewSet):
 class DestinatarioViewSet(viewsets.ModelViewSet):
     serializer_class = DestinatarioSerializer
     permission_classes = [PodeGerenciarEventos]
+    pagination_class = LargeListPagination
+
+    def get_serializer_class(self):
+        if self.action in ["list", "retrieve"]:
+            return DestinatarioListSerializer
+        return DestinatarioSerializer
 
     def get_queryset(self):
         """
@@ -664,15 +780,41 @@ class DestinatarioViewSet(viewsets.ModelViewSet):
         # Agora filtramos pelo parâmetro 'comunicacao' que o frontend vai enviar
         comunicacao_id = self.request.query_params.get('comunicacao')
         if comunicacao_id:
-            return qs.filter(comunicacao_id=comunicacao_id)
+            return (
+                qs.filter(comunicacao_id=comunicacao_id)
+                .select_related('municipe', 'comunicacao')
+                .only(
+                    'id',
+                    'comunicacao_id',
+                    'municipe_id',
+                    'municipe__id',
+                    'municipe__nome_completo',
+                    'municipe__nome_de_guerra',
+                    'municipe__cargo',
+                    'municipe__emails',
+                )
+                .order_by('id')
+            )
             
         # Retorna a base de permissão se nenhum filtro específico for aplicado
-        return qs.select_related('municipe')        
+        return qs.select_related('municipe', 'comunicacao').order_by('id')
+
+    def perform_create(self, serializer):
+        comunicacao = serializer.validated_data.get('comunicacao')
+        if comunicacao and comunicacao.status == 'enviado':
+            raise serializers.ValidationError("Não é permitido adicionar destinatários em comunicação já enviada.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.comunicacao.status == 'enviado':
+            raise serializers.ValidationError("Não é permitido remover destinatários de comunicação já enviada.")
+        instance.delete()
 
 class LogDeEnvioViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = LogDeEnvioSerializer
     permission_classes = [PodeGerenciarEventos]
     filterset_fields = ['comunicacao']
+    pagination_class = LargeListPagination
 
     def get_queryset(self):
         # CORREÇÃO 3: Aplicando o seu padrão para Logs.
@@ -688,9 +830,65 @@ class LogDeEnvioViewSet(viewsets.ReadOnlyModelViewSet):
         # O frontend envia '?comunicacao=ID', então filtramos por isso.
         comunicacao_id = self.request.query_params.get('comunicacao')
         if comunicacao_id:
-            return qs.filter(comunicacao_id=comunicacao_id)
+            return (
+                qs.filter(comunicacao_id=comunicacao_id)
+                .select_related('destinatario__municipe')
+                .only(
+                    'id',
+                    'status',
+                    'data_envio',
+                    'detalhe_erro',
+                    'destinatario_id',
+                    'destinatario__municipe__nome_completo',
+                )
+                .order_by('-data_envio', '-id')
+            )
 
-        return qs.order_by('-data_envio')
+        return qs.select_related('destinatario__municipe').order_by('-data_envio', '-id')
+
+    @action(detail=False, methods=['get'], url_path='resumo')
+    def resumo(self, request):
+        comunicacao_id = request.query_params.get('comunicacao')
+        if not comunicacao_id:
+            return Response({"detail": "Parâmetro 'comunicacao' é obrigatório."}, status=status.HTTP_400_BAD_REQUEST)
+
+        qs = self.get_queryset().filter(comunicacao_id=comunicacao_id)
+        total_logs = qs.count()
+        sucessos = qs.filter(status='sucesso').count()
+        falhas = qs.filter(status='falha').count()
+        taxa_falha_pct = round((falhas / total_logs * 100), 1) if total_logs else 0.0
+
+        falhas_qs = qs.filter(status='falha')
+        falhas_sem_email = falhas_qs.filter(detalhe_erro='Munícipe não possui e-mail cadastrado.').count()
+        falhas_email_malformado = falhas_qs.filter(
+            Q(detalhe_erro__icontains='Invalid address') |
+            Q(detalhe_erro__icontains='domain missing or malformed')
+        ).count()
+        top_erros = list(
+            falhas_qs.values('detalhe_erro')
+            .annotate(total=Count('id'))
+            .order_by('-total')[:5]
+        )
+        top_erros_gerais = [
+            {
+                "erro": (row.get('detalhe_erro') or 'Falha sem detalhe').strip() or 'Falha sem detalhe',
+                "total": row.get('total', 0),
+            }
+            for row in top_erros
+        ]
+
+        return Response(
+            {
+                "comunicacao_id": int(comunicacao_id),
+                "total_logs": total_logs,
+                "sucessos": sucessos,
+                "falhas": falhas,
+                "taxa_falha_pct": taxa_falha_pct,
+                "falhas_sem_email": falhas_sem_email,
+                "falhas_email_malformado": falhas_email_malformado,
+                "top_erros_gerais": top_erros_gerais,
+            }
+        )
 
 class PublicCheckInView(APIView):
     """
@@ -867,12 +1065,15 @@ class ListaPresencaViewSet(viewsets.ReadOnlyModelViewSet):
 
         # Adiciona os dados
         for item in queryset:
+            data_registro_local = ""
+            if item.data_registro:
+                data_registro_local = timezone.localtime(item.data_registro).strftime("%d/%m/%Y %H:%M:%S")
             sheet.append([
                 item.nome_completo,
                 item.telefone,
                 item.email,
                 item.instituicao_orgao,
-                item.data_registro.strftime('%d/%m/%Y %H:%M:%S') if item.data_registro else ''
+                data_registro_local,
             ])
 
         # Prepara a resposta HTTP
@@ -986,11 +1187,17 @@ class EventoChecklistViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class PublicChecklistAnonThrottle(AnonRateThrottle):
+    """Limita POST/GET público de checklist por IP (mitigação de scanners)."""
+    scope = 'checklist_public'
+
+
 class PublicChecklistView(APIView):
     """
     View pública para o preenchimento do checklist via token.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [PublicChecklistAnonThrottle]
 
     def get(self, request, token, *args, **kwargs):
         try:
@@ -1006,30 +1213,54 @@ class PublicChecklistView(APIView):
         except EventoChecklist.DoesNotExist:
             return Response({'error': 'Checklist inválido ou expirado.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if checklist.token_usado:
+            return Response(
+                {'error': 'Este checklist já foi preenchido e não aceita novos envios.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         items_data = request.data.get('items')
         nome_responsavel = request.data.get('nome_responsavel')
 
         if not nome_responsavel or items_data is None:
             return Response({'error': 'Dados incompletos.'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+        try:
+            nome_responsavel = validar_nome_responsavel_checklist(nome_responsavel)
+        except DjangoValidationError as exc:
+            return Response({'error': exc.messages}, status=status.HTTP_400_BAD_REQUEST)
+
+        linhas_validadas = []
+        try:
+            for item_data in items_data:
+                master_id = item_data.get('master_id')
+                if not master_id:
+                    continue
+                try:
+                    obs = validar_observacoes_checklist(item_data.get('observacoes', ''))
+                except DjangoValidationError as exc:
+                    return Response({'error': exc.messages}, status=status.HTTP_400_BAD_REQUEST)
+                linhas_validadas.append((master_id, obs))
+        except TypeError:
+            return Response({'error': 'Formato inválido do campo items.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not linhas_validadas:
+            return Response({'error': 'Nenhum item válido informado.'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             with transaction.atomic():
                 # Apaga itens antigos para o caso de um reenvio do formulário
                 EventoChecklistItemStatus.objects.filter(evento_checklist=checklist).delete()
 
                 # Cria os novos itens com base no que foi selecionado no formulário
-                for item_data in items_data:
-                    master_id = item_data.get('master_id')
-                    if not master_id:
-                        continue
-                    
+                for master_id, obs in linhas_validadas:
                     EventoChecklistItemStatus.objects.create(
                         evento_checklist=checklist,
                         item_mestre_id=master_id,
-                        observacoes=item_data.get('observacoes', ''),
+                        observacoes=obs,
                         concluido=False # O status 'concluido' foi removido da lógica
                     )
-                
+
                 # Atualiza o checklist principal
                 checklist.token_usado = True
                 checklist.nome_responsavel = nome_responsavel
@@ -1046,7 +1277,7 @@ class ChecklistItemViewSet(viewsets.ModelViewSet):
     API para listar e gerenciar (CRUD) os Itens Mestres de Checklist.
     """
     serializer_class = ChecklistItemSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated, PodeGerenciarEventos]
     queryset = ChecklistItem.objects.all()
 
 class EventoChecklistItemStatusViewSet(viewsets.ModelViewSet):
@@ -1095,13 +1326,23 @@ class MailingListViewSet(viewsets.ModelViewSet):
         Lista os munícipes que estão nesta lista de mailing.
         """
         mailing_list = self.get_object()
-        municipes = mailing_list.municipes.all()
+        from django.db.models import Prefetch
+        from atendimentos.models import PerfilMunicipe
+
+        perfil_qs = PerfilMunicipe.objects.filter(conta=mailing_list.conta)
+        municipes = mailing_list.municipes.all().prefetch_related(
+            Prefetch("perfis", queryset=perfil_qs)
+        )
         page = self.paginate_queryset(municipes)
         if page is not None:
-            serializer = MunicipeForConvidadoSerializer(page, many=True)
+            serializer = MunicipeForConvidadoSerializer(
+                page, many=True, context={"conta_id": mailing_list.conta_id}
+            )
             return self.get_paginated_response(serializer.data)
         
-        serializer = MunicipeForConvidadoSerializer(municipes, many=True)
+        serializer = MunicipeForConvidadoSerializer(
+            municipes, many=True, context={"conta_id": mailing_list.conta_id}
+        )
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'], url_path='add-municipe')
@@ -1652,3 +1893,110 @@ class GerarPdfBiEventosView(APIView):
         response = HttpResponse(pdf_file, content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="relatorio_eventos.pdf"'
         return response
+
+
+class EmailSupressaoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gerenciar supressões de e-mail.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmailSupressaoSerializer
+    filterset_fields = ['status', 'motivo', 'origem', 'conta']
+    search_fields = ['email', 'observacao']
+    ordering_fields = ['email', 'status', 'ocorrencias', 'ultima_ocorrencia', 'criado_em']
+    ordering = ['-ultima_ocorrencia']
+    
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter
+    ]
+
+    def get_queryset(self):
+        return EmailSupressao.objects.select_related('conta', 'criado_por', 'atualizado_por').all()
+
+    def perform_create(self, serializer):
+        serializer.save(criado_por=self.request.user, atualizado_por=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(atualizado_por=self.request.user)
+
+    @action(detail=False, methods=['get'], url_path='estatisticas')
+    def estatisticas(self, request):
+        """
+        Retorna estatísticas gerais de supressão.
+        """
+        from django.db.models import Count
+        from datetime import timedelta
+
+        queryset = self.get_queryset()
+        
+        total_suprimidos = queryset.filter(status='ativo').count()
+        total_liberados = queryset.filter(status='liberado').count()
+        total_geral = queryset.count()
+        
+        # Novos da última semana
+        uma_semana_atras = timezone.now() - timedelta(days=7)
+        novos_ultima_semana = queryset.filter(criado_em__gte=uma_semana_atras).count()
+        
+        # Top motivos
+        top_motivos = list(
+            queryset.filter(status='ativo')
+            .values('motivo')
+            .annotate(count=Count('id'))
+            .order_by('-count')[:5]
+        )
+        
+        # Formata motivos com display
+        motivo_choices = dict(EmailSupressao.MOTIVO_CHOICES)
+        for item in top_motivos:
+            item['motivo_display'] = motivo_choices.get(item['motivo'], item['motivo'])
+        
+        stats = {
+            'total_suprimidos': total_suprimidos,
+            'total_liberados': total_liberados,
+            'total_geral': total_geral,
+            'novos_ultima_semana': novos_ultima_semana,
+            'top_motivos': top_motivos
+        }
+        
+        serializer = EmailSupressaoStatsSerializer(stats)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='liberar-lote')
+    def liberar_lote(self, request):
+        """
+        Libera múltiplos e-mails em lote.
+        """
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'detail': 'IDs não fornecidos.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        atualizados = EmailSupressao.objects.filter(id__in=ids).update(
+            status='liberado',
+            atualizado_por=request.user
+        )
+        
+        return Response({
+            'detail': f'{atualizados} e-mail(s) liberado(s).',
+            'atualizados': atualizados
+        })
+
+    @action(detail=False, methods=['post'], url_path='bloquear-lote')
+    def bloquear_lote(self, request):
+        """
+        Bloqueia múltiplos e-mails em lote.
+        """
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'detail': 'IDs não fornecidos.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        atualizados = EmailSupressao.objects.filter(id__in=ids).update(
+            status='ativo',
+            atualizado_por=request.user
+        )
+        
+        return Response({
+            'detail': f'{atualizados} e-mail(s) bloqueado(s).',
+            'atualizados': atualizados
+        })

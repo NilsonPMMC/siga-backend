@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Feliz aniversário</title>
+</head>
+<body style="margin:0; padding:0; background:#f5f7fb; font-family:Arial, Helvetica, sans-serif; color:#1f2937;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fb; padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="620" cellspacing="0" cellpadding="0" style="max-width:620px; background:#ffffff; border:1px solid #e5e7eb; border-radius:10px;">
+          <tr>
+            <td style="padding:28px 28px 12px 28px;">
+              <h2 style="margin:0 0 12px 0; font-size:26px; color:#1d4ed8;">Feliz Aniversário!</h2>
+              <p style="margin:0 0 14px 0; font-size:16px; line-height:1.5;">
+                Prezado(a) <strong>{{ nome_completo }}</strong>,
+              </p>
+              <p style="margin:0 0 14px 0; font-size:16px; line-height:1.6;">
+                Em nome de <strong>{{ conta_nome }}</strong>, desejamos um dia de aniversário com muita saúde,
+                paz e realizações.
+              </p>
+              <p style="margin:0 0 14px 0; font-size:16px; line-height:1.6;">
+                Que este novo ciclo seja de prosperidade e conquistas.
+              </p>
+              {% if conta_nome_titular %}
+              <p style="margin:0 0 14px 0; font-size:15px; line-height:1.6;">
+                Atenciosamente,<br>
+                <strong>{{ conta_nome_titular }}</strong>
+              </p>
+              {% endif %}
+              <p style="margin:18px 0 0 0; font-size:12px; color:#6b7280;">
+                Mensagem automática de aniversário - {{ data_alvo|date:"d/m/Y" }}.
+                {% if email_teste %}
+                <br>Modo teste ativo. Destinatário original: {{ email_original }}.
+                {% endif %}
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

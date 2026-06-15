@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório de Espaços</title>
+    <style>
+        @page {
+            size: A4 landscape;
+            margin: 20px;
+
+            @bottom-right {
+                content: "Página " counter(page) " de " counter(pages);
+                font-size: 8pt;
+                color: #555;
+            }
+
+            @bottom-left {
+                content: "Gerado em: {{ hoje|date:'d/m/Y' }}";
+                font-size: 8pt;
+                color: #555;
+            }
+        }
+        body { font-family: sans-serif; font-size: 9pt; }
+        .cabecalho-relatorio {
+            text-align: center;
+            margin-bottom: 12px;
+        }
+        .cabecalho-relatorio h1 {
+            font-size: 14pt;
+            margin: 0 0 4px 0;
+        }
+        .cabecalho-relatorio p {
+            margin: 2px 0;
+            color: #444;
+            font-size: 9pt;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        tr { page-break-inside: avoid !important; }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 4px;
+            vertical-align: top;
+        }
+        th {
+            background: #eee;
+            font-size: 7pt;
+            text-align: center;
+            font-weight: bold;
+            padding: 3px;
+        }
+        td.dia-passado { color: #888; font-style: italic; }
+        td.fim-de-semana { background: #f4e3d7; }
+        td.hoje { background: #fffae6; }
+        td.outro-mes { background: #f8f8f8; }
+        .titulo-mes {
+            text-align: center;
+            background: #1e3a5f;
+            color: #fff;
+            padding: 5px;
+            font-size: 12pt;
+            font-weight: bold;
+        }
+        .dia-numero {
+            font-size: 11pt;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 4px;
+        }
+        td.dia-passado .dia-numero { font-style: normal; }
+        .dia-numero.passado { color: #999; }
+        .dia-numero.futuro { color: #1e40af; }
+        .dia-numero.hoje-texto { color: #cc0000; }
+        .outro-mes .dia-numero { color: #ccc; }
+        .evento-item {
+            font-size: 6.5pt;
+            line-height: 1.15;
+            margin-bottom: 8px;
+            word-wrap: break-word;
+            padding: 2px 3px;
+            border-radius: 2px;
+        }
+        .evento-item.tipo-reserva {
+            background: #d1fae5;
+            border-left: 2px solid #059669;
+        }
+        .evento-item.tipo-agenda {
+            background: #dbeafe;
+            border-left: 2px solid #2563eb;
+        }
+        .evento-local { font-size: 6pt; margin-top: 1px; }
+        .evento-solicitante { font-size: 6pt; color: #555; }
+        .legenda {
+            margin-top: 8px;
+            font-size: 7pt;
+            text-align: center;
+        }
+        .legenda span { margin: 0 12px; }
+        .legenda-reserva::before {
+            content: "■";
+            color: #059669;
+            margin-right: 4px;
+        }
+        .legenda-agenda::before {
+            content: "■";
+            color: #2563eb;
+            margin-right: 4px;
+        }
+        .page-break { page-break-before: always; }
+    </style>
+</head>
+<body>
+    <div class="cabecalho-relatorio">
+        <h1>Relatório de Ocupação de Espaços</h1>
+        <p><strong>Período:</strong> {{ periodo_label }}</p>
+        <p><strong>Escopo:</strong> {{ espaco_label }}</p>
+        {% if usuario_emissao %}<p><strong>Emitido por:</strong> {{ usuario_emissao }}</p>{% endif %}
+    </div>
+
+    <div class="legenda">
+        <span class="legenda-reserva">Reserva direta</span>
+        <span class="legenda-agenda">Solicitação de agenda (agendado)</span>
+    </div>
+
+    {% for mes_data in meses_do_relatorio %}
+        <div class="month-container {% if not forloop.first %}page-break{% endif %}">
+            <table>
+                <thead>
+                    <tr>
+                        <th colspan="7" class="titulo-mes">
+                            {{ mes_data.nome_mes }}
+                        </th>
+                    </tr>
+                    <tr><th>Seg</th><th>Ter</th><th>Qua</th><th>Qui</th><th>Sex</th><th>Sáb</th><th>Dom</th></tr>
+                </thead>
+                <tbody>
+                    {% for semana in mes_data.semanas %}
+                    <tr>
+                        {% for dia_data in semana %}
+                            {% with mes_atual=mes_data.mes_numero %}
+                                <td class="
+                                    {% if dia_data.data < hoje %}dia-passado{% endif %}
+                                    {% if dia_data.data == hoje %}hoje{% endif %}
+                                    {% if dia_data.data.isoweekday == 6 or dia_data.data.isoweekday == 7 %}fim-de-semana{% endif %}
+                                    {% if dia_data.data.month != mes_atual %}outro-mes{% endif %}
+                                ">
+                                    <div class="dia-numero
+                                        {% if dia_data.data < hoje %}passado{% endif %}
+                                        {% if dia_data.data > hoje %}futuro{% endif %}
+                                        {% if dia_data.data == hoje %}hoje-texto{% endif %}
+                                    ">
+                                        {{ dia_data.data.day }}
+                                    </div>
+
+                                    {% for evento in dia_data.eventos %}
+                                        <div class="evento-item tipo-{{ evento.tipo }}">
+                                            <b>
+                                                <u>{{ evento.hora_inicio }}</u>
+                                                {% if evento.hora_fim %}–{{ evento.hora_fim }}{% endif %}
+                                                — {{ evento.summary }}
+                                            </b>
+                                            <div class="evento-local"><b>Espaço:</b> {{ evento.espaco_nome }}</div>
+                                            {% if evento.solicitante %}
+                                                <div class="evento-solicitante"><b>Solicitante:</b> {{ evento.solicitante }}</div>
+                                            {% endif %}
+                                        </div>
+                                    {% endfor %}
+                                </td>
+                            {% endwith %}
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% endfor %}
+</body>
+</html>

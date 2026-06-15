@@ -1,0 +1,10 @@
+{% if resumo_titulo and resumo_itens %}
+<div class="resumo-admin" style="margin-bottom: 1rem; padding: 12px 16px; background: var(--darkened-bg, #f8f8f8); border: 1px solid var(--hairline-color, #ddd); border-radius: 4px;">
+    <strong>{{ resumo_titulo }}</strong>
+    <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px 16px;">
+        {% for item in resumo_itens %}
+            <span>{{ item.nome }}: <strong>{{ item.total }}</strong></span>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}

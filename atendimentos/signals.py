@@ -153,6 +153,10 @@ def handle_atendimento_criacao(sender, instance, created, **kwargs):
             content_object=instance
         )
 
+        if getattr(settings, 'ATENDIMENTO_ASSUNTO_IA_POS_CRIACAO', True):
+            from .services.assunto_ia import disparar_assunto_ia_pos_criacao
+            disparar_assunto_ia_pos_criacao(instance.pk)
+
 # Sinal para Atendimento (Deleção)
 @receiver(post_delete, sender=Atendimento)
 def log_atendimento_delete(sender, instance, **kwargs):

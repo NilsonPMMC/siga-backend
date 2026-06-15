@@ -1,0 +1,3 @@
+nome_completo;cargo;telefone_principal;categoria;data_aniversario
+{% for item in aniversariantes %}{{ item.nome_completo }};{{ item.cargo|default:"-" }};{{ item.telefone_principal|default:"-" }};{{ item.categoria|default:"-" }};{{ data_aniversario|date:"d/m/Y" }}
+{% endfor %}

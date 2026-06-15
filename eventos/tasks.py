@@ -2,11 +2,140 @@ import os
 import locale
 from celery import shared_task
 from django.core.mail import EmailMultiAlternatives, EmailMessage
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError as DjangoValidationError
 from email.mime.image import MIMEImage
 from weasyprint import HTML
 from django.template.loader import render_to_string
 from django.conf import settings
-from .models import Comunicacao, LogDeEnvio, ListaPresenca
+from .models import Comunicacao, LogDeEnvio, ListaPresenca, EmailSupressao
+
+def _emails_validos_do_municipe(municipe):
+    """
+    Extrai e valida e-mails do munícipe.
+    Retorna lista de e-mails normalizados (lowercase) e válidos sintaticamente.
+    """
+    if not municipe.emails or not isinstance(municipe.emails, list):
+        return []
+    
+    emails_validos = []
+    for item in municipe.emails:
+        if isinstance(item, dict):
+            email_raw = item.get('email', '')
+        else:
+            email_raw = str(item)
+        
+        email = email_raw.strip().lower()
+        if not email:
+            continue
+        
+        try:
+            validate_email(email)
+            emails_validos.append(email)
+        except DjangoValidationError:
+            continue
+    
+    # Deduplica mantendo ordem
+    vistos = set()
+    resultado = []
+    for email in emails_validos:
+        if email not in vistos:
+            vistos.add(email)
+            resultado.append(email)
+    
+    return resultado
+
+
+def _email_esta_suprimido(email_normalizado):
+    """
+    Verifica se o e-mail está suprimido (bloqueado) no banco.
+    Retorna tupla: (bool_suprimido, motivo_str)
+    """
+    supressao = EmailSupressao.objects.filter(
+        email=email_normalizado,
+        status='ativo'
+    ).first()
+    
+    if supressao:
+        return (True, f"E-mail suprimido: {supressao.get_motivo_display()}")
+    return (False, None)
+
+def enviar_destinatario_comunicacao(comunicacao, destinatario, registrar_log=True):
+    """
+    Envia a comunicação para um destinatário (todos os e-mails válidos não suprimidos).
+    Retorna tupla: (status, detalhe_erro_ou_none)
+    """
+    lista_emails = _emails_validos_do_municipe(destinatario.municipe)
+    if not lista_emails:
+        detalhe = 'Munícipe não possui e-mail cadastrado.'
+        if registrar_log:
+            LogDeEnvio.objects.create(
+                comunicacao=comunicacao,
+                destinatario=destinatario,
+                status='falha',
+                detalhe_erro=detalhe
+            )
+        return ('falha', detalhe)
+
+    # Filtra e-mails suprimidos
+    emails_permitidos = []
+    emails_suprimidos = []
+    for email in lista_emails:
+        suprimido, motivo = _email_esta_suprimido(email)
+        if suprimido:
+            emails_suprimidos.append((email, motivo))
+        else:
+            emails_permitidos.append(email)
+    
+    if not emails_permitidos:
+        detalhe = f"Todos os e-mails do munícipe estão suprimidos: {', '.join([e for e, _ in emails_suprimidos])}"
+        if registrar_log:
+            LogDeEnvio.objects.create(
+                comunicacao=comunicacao,
+                destinatario=destinatario,
+                status='falha',
+                detalhe_erro=detalhe
+            )
+        return ('falha', detalhe)
+
+    try:
+        for email_addr in emails_permitidos:
+            corpo_html_personalizado = comunicacao.descricao.replace('{{ nome_completo }}', destinatario.municipe.nome_completo)
+
+            if comunicacao.arte:
+                corpo_html_personalizado += '<br><br><img src="cid:arte_comunicacao" style="max-width: 600px;">'
+
+            email = EmailMultiAlternatives(
+                subject=comunicacao.titulo,
+                body=corpo_html_personalizado,
+                to=[email_addr]
+            )
+            email.attach_alternative(corpo_html_personalizado, "text/html")
+
+            if comunicacao.arte:
+                with comunicacao.arte.open('rb') as f:
+                    arte_img = MIMEImage(f.read())
+                    arte_img.add_header('Content-ID', '<arte_comunicacao>')
+                    email.attach(arte_img)
+
+            if comunicacao.anexo:
+                email.attach_file(comunicacao.anexo.path)
+
+            email.send()
+
+        if registrar_log:
+            LogDeEnvio.objects.create(comunicacao=comunicacao, destinatario=destinatario, status='sucesso')
+        return ('sucesso', None)
+    except Exception as e:
+        detalhe = str(e)
+        if registrar_log:
+            LogDeEnvio.objects.create(
+                comunicacao=comunicacao,
+                destinatario=destinatario,
+                status='falha',
+                detalhe_erro=detalhe
+            )
+        return ('falha', detalhe)
 
 @shared_task
 def enviar_comunicacao_em_massa(comunicacao_id):
@@ -27,62 +156,10 @@ def enviar_comunicacao_em_massa(comunicacao_id):
     falhas = 0
 
     for destinatario in destinatarios:
-        # 1. Inicializa uma lista vazia para armazenar todos os e-mails do munícipe.
-        lista_emails = []
-        
-        # 2. Verifica se o campo 'emails' existe e é uma lista, extraindo os e-mails.
-        if destinatario.municipe.emails and isinstance(destinatario.municipe.emails, list):
-            lista_emails = [e['email'] for e in destinatario.municipe.emails if e.get('email')]
-
-        # Se a lista de e-mails estiver vazia, registra a falha.
-        if not lista_emails:
-            LogDeEnvio.objects.create(
-                comunicacao=comunicacao,
-                destinatario=destinatario,
-                status='falha',
-                detalhe_erro='Munícipe não possui e-mail cadastrado.'
-            )
-            falhas += 1
-            continue
-
-        try:
-            # Itera sobre cada e-mail encontrado e envia uma mensagem individual
-            for email_addr in lista_emails:
-                corpo_html_personalizado = comunicacao.descricao.replace('{{ nome_completo }}', destinatario.municipe.nome_completo)
-                
-                if comunicacao.arte:
-                    corpo_html_personalizado += f'<br><br><img src="cid:arte_comunicacao" style="max-width: 600px;">'
-
-                # O campo 'to' agora recebe uma lista com um único e-mail por vez
-                email = EmailMultiAlternatives(
-                    subject=comunicacao.titulo,
-                    body=corpo_html_personalizado,
-                    to=[email_addr]
-                )
-                email.attach_alternative(corpo_html_personalizado, "text/html")
-
-                if comunicacao.arte:
-                    with comunicacao.arte.open('rb') as f:
-                        arte_img = MIMEImage(f.read())
-                        arte_img.add_header('Content-ID', '<arte_comunicacao>')
-                        email.attach(arte_img)
-                
-                if comunicacao.anexo:
-                    email.attach_file(comunicacao.anexo.path)
-
-                email.send()
-
-            # Se todos os e-mails do munícipe foram enviados, registra um único sucesso.
-            LogDeEnvio.objects.create(comunicacao=comunicacao, destinatario=destinatario, status='sucesso')
+        status_envio, _ = enviar_destinatario_comunicacao(comunicacao, destinatario, registrar_log=True)
+        if status_envio == 'sucesso':
             sucessos += 1
-
-        except Exception as e:
-            LogDeEnvio.objects.create(
-                comunicacao=comunicacao,
-                destinatario=destinatario,
-                status='falha',
-                detalhe_erro=str(e)
-            )
+        else:
             falhas += 1
 
     return f"Envio concluído. Sucessos: {sucessos}, Falhas: {falhas}."

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Relatório de Categorias de Contatos</title>
+  <style>
+    @page { size: A4; margin: 2cm; }
+    body { font-family: "Inter", Arial, Helvetica, sans-serif; color: #111827; font-size: 12px; }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .brasao-header { height: 42px; width: auto; }
+    h1 { font-size: 20px; margin: 0 0 8px 0; color: #1d4ed8; }
+    .meta { margin: 0 0 12px 0; line-height: 1.5; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border: 1px solid #d1d5db; padding: 7px 8px; text-align: left; }
+    th { background: #eff6ff; color: #1e3a8a; font-size: 11px; }
+    td.num { text-align: right; }
+    .footer {
+      margin-top: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid #e5e7eb;
+      padding-top: 8px;
+      font-size: 10px;
+      color: #6b7280;
+    }
+    .logos { display: flex; gap: 8px; align-items: center; }
+    .logos img { height: 18px; width: auto; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      {% if brasao_url %}<img src="{{ brasao_url }}" class="brasao-header" alt="Brasão Prefeitura">{% endif %}
+      <h1>Relatório de Categorias de Contatos</h1>
+    </div>
+  </div>
+  <div class="meta">
+    <div><strong>Total de categorias:</strong> {{ linhas|length }}</div>
+    <div><strong>Total de contatos:</strong> {{ total_contatos }}</div>
+    <div><strong>Emitido por:</strong> {{ usuario_emissao }}</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 75%;">Categoria</th>
+        <th style="width: 25%;">Contatos (total)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in linhas %}
+      <tr>
+        <td>{{ item.categoria }}</td>
+        <td class="num">{{ item.contatos_total }}</td>
+      </tr>
+      {% empty %}
+      <tr>
+        <td colspan="2">Nenhuma categoria encontrada para os filtros informados.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <div>Gerado em {{ gerado_em|date:"d/m/Y H:i:s" }}</div>
+    <div class="logos">
+      {% if logo_siga_url %}<img src="{{ logo_siga_url }}" alt="Logo SIGA">{% endif %}
+    </div>
+  </div>
+</body>
+</html>

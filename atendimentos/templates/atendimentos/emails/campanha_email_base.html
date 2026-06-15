@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ assunto }}</title>
+</head>
+<body style="margin:0; padding:18px; font-family: Arial, Helvetica, sans-serif; color:#111827;">
+  <div style="max-width:620px; margin:0 auto; border:1px solid #e5e7eb; border-radius:8px; padding:18px;">
+    <h2 style="margin-top:0; color:#1d4ed8;">{{ assunto }}</h2>
+    <p style="line-height:1.55;">{{ corpo_html|safe }}</p>
+    {% if possui_arte %}
+      <p style="margin-top:15px;">
+        <img src="cid:arte_campanha" alt="Arte da campanha" style="max-width:600px; width:100%; height:auto;">
+      </p>
+    {% endif %}
+  </div>
+</body>
+</html>

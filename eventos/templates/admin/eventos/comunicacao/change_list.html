@@ -1,0 +1,8 @@
+{% extends "admin/change_list.html" %}
+
+{% block content %}
+    {% if resumo_contas %}
+        {% include "admin/includes/changelist_resumo.html" with resumo_titulo="Comunicações por conta (filtro atual)" resumo_itens=resumo_contas %}
+    {% endif %}
+    {{ block.super }}
+{% endblock %}
