@@ -782,10 +782,10 @@ class LogCrmAuditoriaTests(APITestCase):
         itens = _itens_lista_api(resp.data)
         self.assertTrue(any(item["object_id"] == mun.id for item in itens))
 
-    def test_api_logs_crm_negado_membro(self):
+    def test_api_logs_crm_membro_apenas_contatos(self):
         self.client.force_authenticate(user=self.membro)
-        resp = self.client.get("/api/logs-crm/")
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        resp = self.client.get("/api/logs-crm/", {"grupo": "contatos"})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
 
 class SlaAtendimentoTests(APITestCase):

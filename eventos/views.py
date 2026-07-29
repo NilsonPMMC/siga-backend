@@ -1203,7 +1203,12 @@ class PublicChecklistView(APIView):
         try:
             checklist = EventoChecklist.objects.prefetch_related('itens_status__item_mestre').get(token=token, token_usado=False)
             serializer = EventoChecklistSerializer(checklist)
-            return Response(serializer.data)
+            data = serializer.data
+            data['itens_mestre'] = ChecklistItemSerializer(
+                ChecklistItem.objects.order_by('nome'),
+                many=True,
+            ).data
+            return Response(data)
         except EventoChecklist.DoesNotExist:
             return Response({'error': 'Checklist inválido, expirado ou já preenchido.'}, status=status.HTTP_404_NOT_FOUND)
 

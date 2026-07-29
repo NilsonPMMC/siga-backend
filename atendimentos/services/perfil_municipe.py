@@ -95,6 +95,49 @@ def linhas_cargo_orgao_de_perfis(perfis):
     return linhas
 
 
+def campos_endereco_municipe(municipe) -> dict[str, str]:
+    """Extrai logradouro, número, complemento, bairro, cidade e CEP do JSON de endereço."""
+    endereco = getattr(municipe, 'endereco', None) or {}
+    vazio = {
+        'logradouro': '',
+        'numero': '',
+        'complemento': '',
+        'bairro': '',
+        'cidade': '',
+        'cep': '',
+    }
+
+    if isinstance(endereco, str):
+        return {**vazio, 'logradouro': endereco.strip()}
+    if not isinstance(endereco, dict):
+        return vazio
+
+    campos_estruturados = (
+        'logradouro',
+        'numero',
+        'complemento',
+        'comp',
+        'bairro',
+        'bairro_nome',
+        'cidade',
+        'cep',
+    )
+    if not any(str(endereco.get(campo) or '').strip() for campo in campos_estruturados):
+        texto_livre = str(endereco.get('texto_livre') or '').strip()
+        if texto_livre:
+            return {**vazio, 'logradouro': texto_livre}
+        return vazio
+
+    return {
+        'logradouro': str(endereco.get('logradouro') or endereco.get('rua') or '').strip(),
+        'numero': str(endereco.get('numero') or '').strip(),
+        'complemento': str(endereco.get('complemento') or endereco.get('comp') or '').strip(),
+        'bairro': str(endereco.get('bairro') or endereco.get('bairro_nome') or '').strip(),
+        'cidade': str(endereco.get('cidade') or '').strip(),
+        'cep': str(endereco.get('cep') or '').strip(),
+    }
+
+
 def extrair_categoria_id(item) -> int | None:
     if hasattr(item, "categoria_id"):
         return item.categoria_id

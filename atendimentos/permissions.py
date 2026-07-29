@@ -248,9 +248,11 @@ class CanManageLembretes(BasePermission):
 
 
 class CanViewCrmLogs(BasePermission):
-    """Consulta de logs de auditoria do CRM — gestores (Secretária) e superusuários."""
+    """Consulta de logs de auditoria do CRM — gestores e equipe de contatos."""
     def has_permission(self, request, view):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        return user.is_superuser or is_in_group(user, 'Secretária')
+        if user.is_superuser or is_in_group(user, 'Secretária'):
+            return True
+        return is_in_group(user, _grupos_crud_contatos())

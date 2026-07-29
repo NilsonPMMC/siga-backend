@@ -721,7 +721,18 @@ class LogDeAtividadeViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated, CanViewCrmLogs]
     pagination_class = SIGAListPagination
 
+    ACOES_LOG_CONTATOS = (
+        'MUNICIPE_CRIACAO',
+        'MUNICIPE_EDICAO',
+        'MUNICIPE_DELECAO',
+        'PERFIL_CRIACAO',
+        'PERFIL_EDICAO',
+        'PERFIL_DELECAO',
+    )
+
     def get_queryset(self):
+        from django.contrib.contenttypes.models import ContentType
+
         qs = LogDeAtividade.objects.select_related(
             'usuario', 'conta', 'content_type'
         ).order_by('-timestamp')
@@ -729,6 +740,24 @@ class LogDeAtividadeViewSet(viewsets.ReadOnlyModelViewSet):
         acao = self.request.query_params.get('acao')
         if acao:
             qs = qs.filter(acao=acao)
+
+        grupo = self.request.query_params.get('grupo')
+        if grupo == 'contatos':
+            qs = qs.filter(acao__in=self.ACOES_LOG_CONTATOS)
+
+        municipe_id = self.request.query_params.get('municipe_id')
+        if municipe_id:
+            try:
+                mid = int(municipe_id)
+            except (TypeError, ValueError):
+                mid = None
+            if mid is not None:
+                ct_municipe = ContentType.objects.get_for_model(Municipe)
+                ct_perfil = ContentType.objects.get_for_model(PerfilMunicipe)
+                qs = qs.filter(
+                    Q(content_type=ct_municipe, object_id=mid)
+                    | Q(content_type=ct_perfil, payload__municipe_id=mid)
+                ).filter(acao__in=self.ACOES_LOG_CONTATOS)
 
         entidade = self.request.query_params.get('entidade')
         if entidade:
@@ -747,6 +776,9 @@ class LogDeAtividadeViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.filter(timestamp__date__lte=ate)
 
         user = self.request.user
+        if not user.is_superuser and not is_in_group(user, 'Secretária'):
+            qs = qs.filter(acao__in=self.ACOES_LOG_CONTATOS)
+
         if not user.is_superuser and hasattr(user, 'perfil'):
             contas = user.perfil.contas.all()
             qs = qs.filter(Q(conta__in=contas) | Q(conta__isnull=True))
@@ -2694,6 +2726,7 @@ class ExportMunicipesExcelView(APIView):
             categorias_efetivas_request,
         )
         from .services.perfil_municipe import (
+            campos_endereco_municipe,
             categorias_nomes_de_perfis,
             contas_ids_escopo_usuario,
             linhas_cargo_orgao_de_perfis,
@@ -2731,7 +2764,10 @@ class ExportMunicipesExcelView(APIView):
         sheet = workbook.active
         sheet.title = 'Contatos'
 
-        headers = ['Nome Completo', 'CPF', 'Data de Nascimento', 'Email Principal', 'Telefone Principal', 'Cargo', 'Órgão', 'Categoria', 'Contas Vinculadas']
+        headers = [
+            'Nome Completo', 'CPF', 'Data de Nascimento', 'Email Principal', 'Telefone Principal',
+            'Cargo', 'Logradouro', 'Número', 'Bairro', 'Cidade', 'Categoria', 'Contas Vinculadas',
+        ]
         sheet.append(headers)
 
         for municipe in queryset:
@@ -2746,7 +2782,7 @@ class ExportMunicipesExcelView(APIView):
             categoria_nome = ', '.join(categorias_nomes_de_perfis(perfis))
             linhas_cargo = linhas_cargo_orgao_de_perfis(perfis)
             cargo_exibir = '; '.join(linhas_cargo) if linhas_cargo else municipe.cargo
-            orgao_exibir = municipe.orgao if not linhas_cargo else ''
+            endereco = campos_endereco_municipe(municipe)
             contas_vinculadas = ", ".join([conta.nome for conta in municipe.contas.all()])
 
             sheet.append([
@@ -2756,7 +2792,10 @@ class ExportMunicipesExcelView(APIView):
                 email_principal,
                 telefone,
                 cargo_exibir,
-                orgao_exibir,
+                endereco['logradouro'],
+                endereco['numero'],
+                endereco['bairro'],
+                endereco['cidade'],
                 categoria_nome,
                 contas_vinculadas
             ])
@@ -2789,6 +2828,7 @@ class GerarPdfMunicipesReportView(APIView):
             categorias_efetivas_request,
         )
         from .services.perfil_municipe import (
+            campos_endereco_municipe,
             categorias_nomes_de_perfis,
             contas_ids_escopo_usuario,
             linhas_cargo_orgao_de_perfis,
@@ -2832,13 +2872,17 @@ class GerarPdfMunicipesReportView(APIView):
                 contas_ids=contas_escopo,
             )
             linhas_cargo = linhas_cargo_orgao_de_perfis(perfis)
+            endereco = campos_endereco_municipe(municipe)
             municipes_data.append({
                 'nome': municipe.nome_completo,
                 'telefone': telefone_principal,
                 'email': email_principal,
                 'cargo': '; '.join(linhas_cargo) if linhas_cargo else municipe.cargo,
-                'orgao': municipe.orgao if not linhas_cargo else '',
                 'categoria': ', '.join(categorias_nomes_de_perfis(perfis)),
+                'logradouro': endereco['logradouro'],
+                'numero': endereco['numero'],
+                'bairro': endereco['bairro'],
+                'cidade': endereco['cidade'],
             })
             
         # CABEÇALHO DO PDF

@@ -61,10 +61,11 @@ from .services.campanhas_email import prepare_campaign_recipients
 
 
 class AtendimentoAdminForm(forms.ModelForm):
-    """Form com data_criacao como campo explícito (model tem auto_now_add=True, não pode estar em Meta.fields)."""
-    data_criacao = forms.DateTimeField(
+    """Form com data_criacao editável (model usa auto_now_add=True)."""
+    data_criacao = forms.SplitDateTimeField(
         label='Data de Criação',
         required=True,
+        widget=admin.widgets.AdminSplitDateTime(),
         help_text='Ajuste aqui quando o registro foi inserido com data incorreta (ex.: dados retroativos).',
     )
 
@@ -80,7 +81,7 @@ class AtendimentoAdminForm(forms.ModelForm):
         if self.instance and self.instance.pk and self.instance.data_criacao:
             self.fields['data_criacao'].initial = tz.localtime(self.instance.data_criacao)
         elif not (self.instance and self.instance.pk):
-            self.fields['data_criacao'].initial = tz.now()
+            self.fields['data_criacao'].initial = tz.localtime(tz.now())
 
     def save(self, commit=True):
         obj = super().save(commit=False)
@@ -1262,14 +1263,12 @@ class AtendimentoAdmin(admin.ModelAdmin):
         "vetor_ia_atendimento",
     )
 
-    def get_form(self, request, obj=None, **kwargs):
-        """Excluir do model form os campos não editáveis; data_criacao vem do form explícito; protocolo/data_atualizacao em readonly."""
-        exclude = list(kwargs.get('exclude', []))
-        for f in ('protocolo', 'data_criacao', 'data_atualizacao'):
-            if f not in exclude:
-                exclude.append(f)
-        kwargs['exclude'] = exclude
-        return super().get_form(request, obj=obj, **kwargs)
+    def get_exclude(self, request, obj=None):
+        """Evita gerar data_criacao pelo model form; o campo editável vem de AtendimentoAdminForm."""
+        exclude = list(super().get_exclude(request, obj) or [])
+        if 'data_criacao' not in exclude:
+            exclude.append('data_criacao')
+        return exclude
 
     def tem_vetor_ia(self, obj):
         return bool(obj.vetor_ia_atendimento)

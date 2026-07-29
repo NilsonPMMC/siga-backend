@@ -159,6 +159,36 @@ class Command(BaseCommand):
             return "-"
         return (perfil.cargo or perfil.instituicao or perfil.departamento or "-").strip() or "-"
 
+    def _base_aniversariantes_queryset(self, conta, data_aniversario, categoria=None):
+        queryset = Municipe.objects.filter(
+            contas=conta,
+            data_nascimento__month=data_aniversario.month,
+            data_nascimento__day=data_aniversario.day,
+        ).distinct()
+        if categoria:
+            queryset = queryset.filter(
+                perfis__conta=conta,
+                perfis__ativo=True,
+                perfis__categoria__nome__iexact=categoria,
+            ).distinct()
+        return queryset
+
+    def _log_aniversariantes_inativos_excluidos(self, conta, data_aniversario, categoria=None):
+        inativos = (
+            self._base_aniversariantes_queryset(conta, data_aniversario, categoria)
+            .filter(ativo=False)
+            .order_by("nome_completo")
+        )
+        if not inativos.exists():
+            return
+        nomes = ", ".join(f"#{m.id} {m.nome_completo}" for m in inativos)
+        self.stdout.write(
+            self.style.WARNING(
+                f"Conta '{conta.nome}': {inativos.count()} aniversariante(s) inativo(s) "
+                f"excluído(s) do relatório para {data_aniversario.strftime('%d/%m/%Y')}: {nomes}"
+            )
+        )
+
     def handle(self, *args, **options):
         tables = connection.introspection.table_names()
         required = "atendimentos_automacaoaniversarioconta"
@@ -210,18 +240,20 @@ class Command(BaseCommand):
 
         for automacao in automacoes:
             categoria = (automacao.alerta_categoria or "").strip() or None
-            aniversariantes_qs = Municipe.objects.filter(
-                ativo=True,
-                contas=automacao.conta,
-                data_nascimento__month=data_aniversario.month,
-                data_nascimento__day=data_aniversario.day,
-            ).distinct().order_by("nome_completo")
-            if categoria:
-                aniversariantes_qs = aniversariantes_qs.filter(
-                    perfis__conta=automacao.conta,
-                    perfis__ativo=True,
-                    perfis__categoria__nome__iexact=categoria,
-                ).distinct()
+            self._log_aniversariantes_inativos_excluidos(
+                conta=automacao.conta,
+                data_aniversario=data_aniversario,
+                categoria=categoria,
+            )
+            aniversariantes_qs = (
+                self._base_aniversariantes_queryset(
+                    conta=automacao.conta,
+                    data_aniversario=data_aniversario,
+                    categoria=categoria,
+                )
+                .filter(ativo=True)
+                .order_by("nome_completo")
+            )
 
             aniversariantes = []
             for municipe in aniversariantes_qs:
